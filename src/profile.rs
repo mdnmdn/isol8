@@ -117,6 +117,18 @@ pub struct HomeReplace {
     pub seed: Vec<String>,
 }
 
+/// Command rewrite: ensure certain arguments are present in the confined command.
+///
+/// Gated by the layer's `filter` (e.g. `executables = ["claude"]`), so it only
+/// applies to matching commands. Missing args are inserted right after argv[0].
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rewrite {
+    /// Arguments that must be present; each is inserted after argv[0] if absent.
+    #[serde(default)]
+    pub ensure_args: Vec<String>,
+}
+
 /// One profile layer as authored in TOML/YAML — and also the merged result.
 ///
 /// ponytail: one struct for layer+merged; split if a merged-only field appears.
@@ -139,6 +151,8 @@ pub struct Profile {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub home_replace: Option<HomeReplace>,
+    #[serde(default)]
+    pub rewrite: Option<Rewrite>,
     #[serde(default)]
     pub macos: Option<MacosExtra>,
 }
@@ -429,6 +443,8 @@ pub fn merge(layers: &[Profile]) -> Profile {
     let mut caps: Vec<Capability> = Vec::new();
     let mut raw = String::new();
 
+    let mut ensure_args: Vec<String> = Vec::new();
+
     for (idx, layer) in layers.iter().enumerate() {
         // env: first writer wins.
         for (k, v) in &layer.env {
@@ -452,6 +468,15 @@ pub fn merge(layers: &[Profile]) -> Profile {
                 }
             }
             home_replace = Some(hr.clone());
+        }
+
+        // rewrite: union ensure_args across layers (first-seen order).
+        if let Some(rw) = &layer.rewrite {
+            for a in &rw.ensure_args {
+                if !ensure_args.contains(a) {
+                    ensure_args.push(a.clone());
+                }
+            }
         }
 
         // macos: union caps, concat raw.
@@ -489,6 +514,12 @@ pub fn merge(layers: &[Profile]) -> Profile {
         })
     };
 
+    let rewrite = if ensure_args.is_empty() {
+        None
+    } else {
+        Some(Rewrite { ensure_args })
+    };
+
     Profile {
         requires: Vec::new(),
         filter: None,
@@ -496,8 +527,30 @@ pub fn merge(layers: &[Profile]) -> Profile {
         paths,
         env,
         home_replace,
+        rewrite,
         macos,
     }
+}
+
+/// Apply a merged `rewrite` to the confined command: insert each missing
+/// `ensure_args` entry right after argv[0]. Already-present args are left alone.
+///
+/// ponytail: exact whole-arg match for "present"; doesn't understand `--flag=val`
+/// aliases — add normalization only if a profile actually needs it.
+pub fn apply_rewrite(cmd: &[String], rewrite: &Option<Rewrite>) -> Vec<String> {
+    let mut cmd = cmd.to_vec();
+    let Some(rw) = rewrite else { return cmd };
+    if cmd.is_empty() {
+        return cmd;
+    }
+    let mut insert_at = 1;
+    for arg in &rw.ensure_args {
+        if !cmd.contains(arg) {
+            cmd.insert(insert_at, arg.clone());
+            insert_at += 1;
+        }
+    }
+    cmd
 }
 
 /// Build the top invocation-override layer from `--add-dirs-rw` / `--add-dirs-ro`.
@@ -719,6 +772,55 @@ mod tests {
         assert!(m.capabilities.contains(&Capability::MachLookup));
         assert!(m.capabilities.contains(&Capability::Pasteboard));
         assert_eq!(m.raw, "(allow a)\n(allow b)\n"); // layer order
+    }
+
+    #[test]
+    fn merge_rewrite_unions_ensure_args() {
+        let low = Profile {
+            rewrite: Some(Rewrite {
+                ensure_args: vec!["--a".into(), "--b".into()],
+            }),
+            ..Default::default()
+        };
+        let high = Profile {
+            rewrite: Some(Rewrite {
+                ensure_args: vec!["--b".into(), "--c".into()],
+            }),
+            ..Default::default()
+        };
+        let merged = merge(&[low, high]);
+        let rw = merged.rewrite.unwrap();
+        assert_eq!(rw.ensure_args, vec!["--a", "--b", "--c"]); // deduped, first-seen order
+    }
+
+    #[test]
+    fn apply_rewrite_inserts_missing_after_argv0() {
+        let rw = Some(Rewrite {
+            ensure_args: vec!["--skip".into(), "--yes".into()],
+        });
+        let cmd = vec!["claude".into(), "-p".into(), "hi".into()];
+        let out = apply_rewrite(&cmd, &rw);
+        assert_eq!(out, vec!["claude", "--skip", "--yes", "-p", "hi"]);
+    }
+
+    #[test]
+    fn apply_rewrite_skips_already_present() {
+        let rw = Some(Rewrite {
+            ensure_args: vec!["--skip".into()],
+        });
+        let cmd = vec!["claude".into(), "--skip".into()];
+        let out = apply_rewrite(&cmd, &rw);
+        assert_eq!(out, vec!["claude", "--skip"]); // unchanged
+    }
+
+    #[test]
+    fn apply_rewrite_none_and_empty_cmd_are_noops() {
+        let cmd = vec!["claude".into()];
+        assert_eq!(apply_rewrite(&cmd, &None), cmd);
+        let rw = Some(Rewrite {
+            ensure_args: vec!["--x".into()],
+        });
+        assert!(apply_rewrite(&[], &rw).is_empty());
     }
 
     #[test]

@@ -127,6 +127,11 @@ leave nothing behind (cleaned on exit; `--keep` to inspect failures).
 | 6 | env allowlist | a non-allowlisted var (e.g. `SECRET_TOKEN`) | **EnvAbsent** |
 | 7 | env allowlist | `PATH` / `HOME` present | **EnvPresent** |
 | 8 | (N0, future) | TCP connect to a public host | **Denied** |
+| 9 | `rewrite` ensure-arg | run a probe whose injected arg creates a marker file | **Allowed** (file present) |
+
+Scenario 9 builds an ad-hoc layer with a `rewrite` (an external/in-memory profile,
+not a built-in), applies it via `profile::apply_rewrite`, and confirms the injected
+argument actually reached the executed program under the real sandbox.
 
 Scenarios 1–7 only need the path/env/HOME backend (Phase 1). Network scenarios
 are gated behind the net tiers (Phase 3) and skipped with a clear `SKIP` until

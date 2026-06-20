@@ -14,6 +14,8 @@ pub struct EffectivePolicy {
     pub profile: Profile,
     pub env: std::collections::HashMap<String, String>,
     pub home: EffectiveHome,
+    /// The command after profile `rewrite` rules are applied (what actually runs).
+    pub cmd: Vec<String>,
 }
 
 /// Resolve layer stack, home, merged profile, and env without spawning.
@@ -26,10 +28,12 @@ pub fn effective_policy(run: &RunArgs) -> Result<EffectivePolicy> {
     let effective_home = home::resolve(run, &layers)?;
     let merged = profile::load_merged(run, &layers, &effective_home, &ctx)?;
     let env_map = env::build_minimal(&merged, &effective_home.path);
+    let cmd = profile::apply_rewrite(&run.cmd, &merged.rewrite);
     Ok(EffectivePolicy {
         layer_names,
         profile: merged,
         env: env_map,
         home: effective_home,
+        cmd,
     })
 }

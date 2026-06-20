@@ -111,6 +111,7 @@ pub fn apply_layer_filter(mut layer: Profile, ctx: &RunContext) -> Profile {
             layer.paths.clear();
             layer.env.clear();
             layer.home_replace = None;
+            layer.rewrite = None;
             layer.macos = None;
             layer.policies.clear();
             return layer;

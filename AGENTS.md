@@ -58,7 +58,8 @@ enforced on macOS via Seatbelt:
 - **profile** — TOML load (`build.rs` embeds all `profiles/**/*.toml` + user config dir +
   `--profile-path` overlays), `requires` inheritance, deny-first `merge`, layer/policy
   `filter` (executable/OS/arch), and auto-profile selection. Types carry `Access`,
-  `MatchKind`, `Policy`, `ProfileFilter`, and macOS `capabilities` + raw SBPL.
+  `MatchKind`, `Policy`, `ProfileFilter`, command `rewrite` (`ensure_args`, gated by
+  the layer filter and applied to the confined command), and macOS `capabilities` + raw SBPL.
   `#[serde(deny_unknown_fields)]` throughout. ~70 Safehouse-derived layers embedded.
 - **home / env** — effective `$HOME` resolved first (`--home` > profile > auto-scratch),
   `~` expanded against it before merge; env sanitized to the allowlist, HOME applied first.

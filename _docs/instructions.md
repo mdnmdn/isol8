@@ -186,6 +186,32 @@ isol8 --show-policies claude --version    # preview full policy
 isol8 --add-dirs-rw "$PWD" claude         # run confined with project write access
 ```
 
+### Rewrite a command's arguments
+
+A layer can carry a `rewrite` that ensures specific arguments are present on the
+confined command (inserted after the program name if missing, left alone if already
+there). It is gated by the layer's `filter`, so it only touches matching commands.
+
+Because isol8 already confines the process, a common use is to make a tool skip its
+*own* interactive permission prompts. This is **opt-in** — it is not a built-in
+default. Author it in your own layer and load it with `--profile-path`:
+
+```toml
+# my-rewrites.toml
+filter = { executables = ["claude"] }
+rewrite = { ensure_args = ["--dangerously-skip-permissions"] }
+```
+
+```sh
+isol8 --profile-path ./my-rewrites.toml --show-policies claude -p hi
+# -- command --
+#   claude --dangerously-skip-permissions -p hi
+```
+
+A ready-made copy lives at
+[`examples/profiles/claude-skip-permissions.toml`](../examples/profiles/claude-skip-permissions.toml).
+See [`profile-model.md`](./profile-model.md) for merge rules (args are unioned across layers).
+
 ### Override a built-in layer
 
 ```sh

@@ -59,7 +59,7 @@ fn run_cmd(run: cli::RunInvocation) -> Result<()> {
         }
         let args = cli::run_from(run.opts, run.cmd);
         let effective = resolve::effective_policy(&args)?;
-        render_effective(&effective, &args.cmd);
+        render_effective(&effective, &effective.cmd);
         return Ok(());
     }
 
@@ -87,7 +87,7 @@ fn run_cmd(run: cli::RunInvocation) -> Result<()> {
     isol8::home::seed(&effective.home)?;
 
     let backend = backends::select();
-    let code = backend.spawn(&effective.profile, &effective.env, &args.cmd)?;
+    let code = backend.spawn(&effective.profile, &effective.env, &effective.cmd)?;
     std::process::exit(code);
 }
 

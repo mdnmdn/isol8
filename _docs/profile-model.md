@@ -25,7 +25,7 @@ portable profile core plus conditional filters. Anything not listed as parsed wi
 | Layer sources | **Builtin** → **user config dir** (`$XDG_CONFIG_HOME/isol8/profiles/`) → **`profile_paths`** / `--profile-path` (later wins on name collision). |
 | Config file | **`isol8.toml` / `isol8.yaml`** (cwd, `ISOL8_CONFIG_PATH`, or `~/.config/isol8/`). `default_profiles`, `auto_profiles`, `profile_paths`, path overrides. |
 | Profile language | **TOML** for layers. **TOML or YAML** for the global config file. |
-| Fields parsed | `requires`/`extends`, `filter`, `[[policies]]`, `paths`, `env`, `home_replace` (incl. `path`), `macos` (`capabilities`/`raw`). |
+| Fields parsed | `requires`/`extends`, `filter`, `[[policies]]`, `paths`, `env`, `home_replace` (incl. `path`), `rewrite` (`ensure_args`), `macos` (`capabilities`/`raw`). |
 | `access` | `none` / `ro` / `rw` / `metadata` — parsed; enforced by the macOS backend. |
 | `match` | `subpath` / `literal` / `prefix` / `regex` — parsed; macOS-enforced. Linux: `subpath` only today. |
 | Auto-selection | **`auto_profiles`** (config/CLI): layers with non-empty `filter.executables` matching `cmd[0]` basename are added to the stack. |
@@ -229,6 +229,7 @@ network:
 | `paths` | array of PathGrant | `[]` | no | Unconditional filesystem grants (R2). |
 | `env` | map<string,string> | `{}` | no | Env defaults, merged without override (R3.5). |
 | `home_replace` | HomeReplace | unset | no | HOME replacement policy (R4). |
+| `rewrite` | Rewrite | unset | no | Command rewrite: ensure args are present (see Rewrite below). |
 | `network` | NetworkPolicy | unset | no | Network tier + domain allowlist (R5). *Not parsed yet.* |
 | `macos` | MacosExtra | unset | no | macOS-only capability grants + raw SBPL passthrough (§8). |
 
@@ -303,6 +304,31 @@ explicit `paths` grant if needed. Resolution precedence: `--home` > layer
 `home_replace.path` > `auto_scratch` temp dir. The home token (`~` / `$HOME`) is
 isol8's equivalent of the Safehouse `HOME_DIR` placeholder.
 
+### Rewrite
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `ensure_args` | array of string | `[]` | Arguments the confined command must carry. Each entry absent from the command is inserted **right after `argv[0]`**; entries already present are left untouched. |
+
+The rewrite adjusts the *command line*, not a path/env grant. It is gated by the
+layer's `filter` (and any wrapping `[[policies]]`), so a layer with
+`filter = { executables = ["claude"] }` only rewrites `claude` invocations and is a
+no-op for everything else — put `rewrite` in a filtered layer so it never leaks onto
+an unrelated command. Presence is an exact whole-argument match (`--flag` and
+`--flag=value` are considered different); idempotent across repeated runs.
+
+Typical use: a process is already confined by isol8, so you want the wrapped tool to
+skip its *own* interactive permission prompts — e.g. inject
+`--dangerously-skip-permissions` for Claude Code. This is **opt-in**, not a built-in
+default; author it in your own layer (see
+[`examples/profiles/claude-skip-permissions.toml`](../examples/profiles/claude-skip-permissions.toml)).
+
+```toml
+# load with: isol8 --profile-path ./my-rewrites.toml ...
+filter = { executables = ["claude"] }
+rewrite = { ensure_args = ["--dangerously-skip-permissions"] }
+```
+
 ### NetworkPolicy — *Phase 3, not parsed yet (§0)*
 
 | Field | Type | Default | Meaning |
@@ -334,6 +360,9 @@ an explicit deny" — an appended deny is just a top-layer `none` grant.
   (R3.4) bypasses this and passes the host env through.
 - **home_replace** — taken from the **highest** layer that sets it; `seed` lists are
   unioned across layers.
+- **rewrite** — `ensure_args` are **unioned** across layers (deduped, first-seen
+  order). The merged list is applied to the command after the merge, inserting any
+  missing args after `argv[0]`.
 - **network** — `tier` = strongest requested (or `auto`); `allow_domains` = union;
   `deny_domains` = union and wins over allow; `inspect` = strongest (mitm > hostname)
   if any layer requests it; `sockets` = strongest requested.

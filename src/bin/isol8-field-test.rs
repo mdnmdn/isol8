@@ -15,7 +15,9 @@ use std::process;
 
 use isol8::backends;
 use isol8::env::build_minimal;
-use isol8::profile::{Access, Capability, MacosExtra, MatchKind, PathGrant, Profile};
+use isol8::profile::{
+    apply_rewrite, Access, Capability, MacosExtra, MatchKind, PathGrant, Profile, Rewrite,
+};
 
 fn grant(path: &str, access: Access, m: MatchKind) -> PathGrant {
     PathGrant {
@@ -50,6 +52,7 @@ fn profile_with(extra: Vec<PathGrant>) -> Profile {
         paths,
         env: HashMap::new(),
         home_replace: None,
+        rewrite: None,
         macos: Some(MacosExtra {
             capabilities: vec![Capability::ProcessExec, Capability::ProcessFork],
             raw: String::new(),
@@ -213,6 +216,24 @@ fn main() {
         name: "08 net-n0-deny",
         pass: None,
     });
+    // 9. command rewrite → an injected arg reaches the executed program.
+    // `touch base.txt` is rewritten to `touch injected.txt base.txt`; both appear.
+    {
+        let mut p = profile_with(vec![grant(ws, Access::Rw, MatchKind::Subpath)]);
+        let injected = format!("{ws}/injected.txt");
+        p.rewrite = Some(Rewrite {
+            ensure_args: vec![injected.clone()],
+        });
+        let base = vec!["/usr/bin/touch".to_string(), format!("{ws}/base.txt")];
+        let rewritten = apply_rewrite(&base, &p.rewrite);
+        let argv: Vec<&str> = rewritten.iter().map(String::as_str).collect();
+        let code = run(&p, &home, &argv);
+        let injected_made = workspace.join("injected.txt").exists();
+        results.push(Outcome {
+            name: "09 rewrite-injects-arg",
+            pass: Some(code == 0 && injected_made),
+        });
+    }
 
     let (mut passed, mut failed, mut skipped) = (0, 0, 0);
     for r in &results {

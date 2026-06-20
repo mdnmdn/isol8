@@ -1,0 +1,14 @@
+# Example external profile (load with --profile-path).
+#
+# Since isol8 already confines the process, you may want Claude Code to stop
+# asking for its own in-process permission prompts. This layer rewrites the
+# command for `claude`, inserting `--dangerously-skip-permissions` if absent.
+#
+# Usage:
+#   isol8 --profile-path ./examples/profiles/claude-skip-permissions.toml \
+#         --add-dirs-rw "$PWD" claude -p "do the thing"
+#
+# It is NOT a built-in default — opting in is your decision.
+
+filter = { executables = ["claude"] }
+rewrite = { ensure_args = ["--dangerously-skip-permissions"] }
