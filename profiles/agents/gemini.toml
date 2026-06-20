@@ -1,0 +1,12 @@
+# agents/gemini
+# Agent: Gemini Gemini CLI binary, state, and config paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/keychain"]
+
+paths = [
+  { path = "~/.local/bin/gemini", access = "rw", match = "prefix" },
+  { path = "~/.gemini", access = "rw" },
+  { path = "~/.cache/gemini", access = "rw" },
+  { path = "/Library/Application Support/GeminiCli", access = "ro" },
+]

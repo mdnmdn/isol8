@@ -3,6 +3,9 @@
 
 pub mod backends;
 pub mod cli;
+pub mod config;
 pub mod env;
+pub mod filter;
 pub mod home;
 pub mod profile;
+pub mod resolve;

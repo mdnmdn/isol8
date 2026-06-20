@@ -1,0 +1,29 @@
+# apps/claude-app
+# App: Claude Desktop Claude for Desktop (Electron) app bundle, preferences, and data paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/electron", "agents/claude-code"]
+
+paths = [
+  { path = "~/Library/Application Support/Claude", access = "rw" },
+  { path = "~/Library/Logs/Claude", access = "rw" },
+  { path = "~/Library/HTTPStorages/com.anthropic.claudefordesktop", access = "rw" },
+  { path = "~/Library/Caches/Claude", access = "rw" },
+  { path = "~/Library/Caches/com.anthropic.claudefordesktop", access = "rw", match = "prefix" },
+  { path = "~/Library/Saved Application State/com.anthropic.claudefordesktop.savedState", access = "rw" },
+  { path = "/Applications/Claude.app", access = "ro" },
+  { path = "~/Library/Preferences/com.anthropic.claudefordesktop.plist", access = "ro", match = "literal" },
+]
+
+[macos]
+raw = '''
+(allow user-preference-read user-preference-write
+    (preference-domain "com.anthropic.claudefordesktop")
+)
+(allow mach-lookup
+    (global-name-regex #"^com\.anthropic\.claudefordesktop\.MachPortRendezvousServer\.")
+)
+(allow mach-register
+    (global-name-regex #"^com\.anthropic\.claudefordesktop\.MachPortRendezvousServer\.")
+)
+'''

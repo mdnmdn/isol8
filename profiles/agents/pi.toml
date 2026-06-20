@@ -1,0 +1,11 @@
+# agents/pi
+# Agent: PI PI CLI binary, state, and config paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/.local/bin/pi", access = "rw", match = "prefix" },
+  { path = "~/.pi", access = "rw" },
+  { path = "~/Library", access = "metadata" },
+]

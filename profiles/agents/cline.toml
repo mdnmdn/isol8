@@ -1,0 +1,18 @@
+# agents/cline
+# Agent: Cline Cline CLI binary, state, and config paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/keychain"]
+
+paths = [
+  { path = "~/.local/bin/cline", access = "rw", match = "prefix" },
+  { path = "~/.cline", access = "rw" },
+  { path = "~/.config/cline", access = "rw" },
+  { path = "~/.cache/cline", access = "rw" },
+  { path = "~/.local/share/cline", access = "rw" },
+  { path = "~/.local/state/cline", access = "rw" },
+  { path = "~/Documents/Cline", access = "rw" },
+  { path = "~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev", access = "rw" },
+  { path = "~/.qwen/oauth_creds.json", access = "rw", match = "literal" },
+  { path = "~/.oca/config.json", access = "ro", match = "literal" },
+]

@@ -45,6 +45,8 @@ fn profile_with(extra: Vec<PathGrant>) -> Profile {
     paths.extend(extra);
     Profile {
         requires: vec![],
+        filter: None,
+        policies: vec![],
         paths,
         env: HashMap::new(),
         home_replace: None,

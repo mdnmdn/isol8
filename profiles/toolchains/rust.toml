@@ -1,0 +1,16 @@
+# toolchains/rust
+# Toolchain: Rust Rust toolchain via rustup/cargo, including config, cache, and optional sccache.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/.cargo", access = "rw" },
+  { path = "~/.config/cargo", access = "rw" },
+  { path = "~/.rustup", access = "rw" },
+  { path = "~/.cache/cargo", access = "rw" },
+  { path = "~/Library/Caches/cargo", access = "rw" },
+  { path = "~/.cache/sccache", access = "rw" },
+  { path = "~/Library/Caches/sccache", access = "rw" },
+  { path = "~/Library/Application Support/Mozilla.sccache", access = "rw" },
+]

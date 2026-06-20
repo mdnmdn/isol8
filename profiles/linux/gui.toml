@@ -1,0 +1,25 @@
+# linux/gui — X11/Wayland display stack essentials.
+#
+# Grants the minimum paths GUI toolkits need on Linux: X11 socket dir, DRM
+# render nodes, and fontconfig trees. Wayland compositor sockets live under
+# XDG_RUNTIME_DIR (/run/user, already granted by linux/system-runtime).
+
+requires = ["linux/system-runtime"]
+
+filter = { os = ["linux"] }
+
+paths = [
+  # X11 Unix-domain socket directory.
+  { path = "/tmp/.X11-unix", access = "ro" },
+
+  # DRM/KMS render nodes (Mesa, Chromium, Electron).
+  { path = "/dev/dri", access = "ro" },
+
+  # Fontconfig system trees.
+  { path = "/usr/share/fonts", access = "ro" },
+  { path = "/usr/share/fontconfig", access = "ro" },
+  { path = "/etc/fonts", access = "ro" },
+
+  # Per-user font cache.
+  { path = "~/.cache/fontconfig", access = "rw" },
+]

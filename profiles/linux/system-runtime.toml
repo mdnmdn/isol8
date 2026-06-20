@@ -1,0 +1,43 @@
+# linux/system-runtime — Linux system runtime essentials (namespaced layer).
+#
+# Enhanced Linux runtime: dynamic linker paths, pseudo-fs, writable temp areas,
+# and XDG base dirs. Adapted from Safehouse 10-system-runtime for Landlock.
+
+filter = { os = ["linux"] }
+
+requires = ["base"]
+
+paths = [
+  # Dynamic linker and shared libraries.
+  { path = "/lib", access = "ro" },
+  { path = "/lib64", access = "ro" },
+  { path = "/usr/lib", access = "ro" },
+  { path = "/usr/lib64", access = "ro" },
+
+  # Vendor trees (containers, IDEs, language runtimes).
+  { path = "/opt", access = "ro" },
+
+  # System configuration (passwd, nss, ssl certs, locale, fonts).
+  { path = "/etc", access = "ro" },
+
+  # Standard POSIX devices (/dev/null, /dev/urandom, tty nodes, …).
+  { path = "/dev", access = "ro" },
+
+  # Process and kernel introspection.
+  { path = "/proc", access = "ro" },
+
+  # Writable temp and cache locations.
+  { path = "/var/tmp", access = "rw" },
+  { path = "/var/cache", access = "rw" },
+
+  # Per-user runtime dir (XDG_RUNTIME_DIR parent).
+  { path = "/run/user", access = "rw" },
+
+  # Root inode for path resolution (Landlock ancestor walk).
+  { path = "/", access = "ro", match = "literal" },
+
+  # XDG base dirs — metadata for path resolution; higher layers grant specifics.
+  { path = "~/.config", access = "metadata" },
+  { path = "~/.cache", access = "metadata" },
+  { path = "~/.local", access = "metadata" },
+]

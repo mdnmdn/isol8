@@ -1,0 +1,15 @@
+# toolchains/bun
+# Toolchain: Bun Bun runtime, installer, and cache paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/.bun", access = "rw" },
+  { path = "~/.cache/bun", access = "rw" },
+  { path = "~/.local/state/bun", access = "rw" },
+  { path = "~/.local/share/bun", access = "rw" },
+  { path = "~/Library/Caches/bun", access = "rw" },
+  { path = "~/.bunfig.toml", access = "rw", match = "literal" },
+  { path = "~/.config/bunfig.toml", access = "rw", match = "literal" },
+]

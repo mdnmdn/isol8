@@ -1,141 +1,231 @@
 # isol8 — Usage Instructions
 
-How to build and run `isol8`. Reflects what is **implemented today**: the macOS
-Seatbelt backend plus the path / HOME / env pipeline (Phase 1). Linux and the
-network tiers are not wired yet — see [`AGENTS.md`](../AGENTS.md) "Current status".
+How to use `isol8` to confine commands, inspect policies, and manage profiles.
 
-> **Platform:** enforcement works on **macOS 12+** (via `/usr/bin/sandbox-exec`).
-> On other OSes the command parses and `--dry-run` works, but `run` will error
-> because no enforcing backend exists yet.
+> **Platform:** sandbox **enforcement** works on **macOS 12+** (via `sandbox-exec`).
+> On Linux and other OSes you can still inspect policies with `--show-policies` and
+> `--show-profiles`; running confined commands requires a working backend on that OS.
 
 ---
 
-## 1. Build
+## Command shape
+
+There is **no `run` subcommand**. Pass the command to confine directly after the options:
 
 ```sh
-cargo build                      # debug binary at target/debug/isol8
-just build                       # same, via the justfile
+isol8 [OPTIONS] <COMMAND> [ARGS]...
 ```
 
-The binary is `isol8`. A second binary, `isol8-field-test`, runs the real-sandbox
-field tests (see §6).
+Run `isol8` with no arguments (or `isol8 --help`) to print usage.
+
+**Meta commands** (config, layer admin) use an `@` prefix so they never collide with
+a confined program name:
+
+```sh
+isol8 @<meta-command> [OPTIONS] [ARGS]...
+```
 
 ---
 
-## 2. Command shape
+## Quick examples
 
-```
-isol8 run [OPTIONS] <CMD>...
-```
+### Run a command confined
 
-Everything after the options is the command to confine. Use `--` to separate
-isol8's flags from the target command's flags:
+Uses your config defaults (`base` + OS system-runtime) unless you override them:
 
 ```sh
-isol8 run --profile macos-system -- /bin/sh -c 'echo hello'
+isol8 echo hello
+isol8 --add-dirs-rw "$PWD" -- make build
+isol8 --profile toolchains/rust -- cargo test
 ```
 
-### Options
+### Inspect policy without running anything
+
+`--show-policies` prints the layer stack, path grants, environment, and generated
+sandbox policy (dry-run style):
+
+```sh
+isol8 --show-policies echo hi
+isol8 --show-policies --profile agents/claude-code claude --version
+```
+
+`--dry-run` is an alias for `--show-policies`.
+
+### See which profile layers apply
+
+`--show-profiles` **without** a command lists every known layer:
+
+```sh
+isol8 --show-profiles
+isol8 --show-profiles --verbose    # includes requires, filters, policy counts
+```
+
+`--show-profiles` **with** a command shows only the layers selected for that run
+(including auto-matched agent layers):
+
+```sh
+isol8 --show-profiles claude --version
+# → base, macos/system-runtime, agents/claude-code, …
+```
+
+### First-time setup
+
+Write a default config to `~/.config/isol8/isol8.toml` (or use `--path`):
+
+```sh
+isol8 @init
+isol8 @init --format yaml --path ~/my-isol8.yaml
+```
+
+### Browse built-in layers
+
+```sh
+isol8 @profiles-list
+isol8 @profiles-list --verbose
+isol8 @profiles-show agents/claude-code
+```
+
+---
+
+## Options
+
+These flags apply to normal runs and to `--show-policies` / `--show-profiles`:
 
 | Flag | Repeatable | Meaning |
 |------|:---------:|---------|
-| `--profile <NAME>` | yes | Enable a named profile layer. Layers merge deny-first; `requires` deps are pulled in automatically. |
-| `--add-dirs-rw <PATH>` | yes | Grant read-write access to a path (highest-priority override layer). |
-| `--add-dirs-ro <PATH>` | yes | Grant read-only access to a path. |
-| `--home <PATH>` | no | Use `<PATH>` as the confined `$HOME`. Defaults to an auto scratch home when a profile enables HOME replacement. |
-| `--dry-run` | no | Print the effective policy (grants, env, command, generated SBPL) and exit without running. |
-| `-h, --help` | no | Print help. |
+| `--profile <NAME>` | yes | Enable a profile layer (`requires` deps pulled in automatically). |
+| `--profile-path <PATH>` | yes | Load layers from a directory or single `.toml` file; overrides same-named builtins. |
+| `--auto-profiles` | no | Auto-select layers whose `filter.executables` matches the command name. |
+| `--add-dirs-rw <PATH>` | yes | Grant read-write access (top override layer). |
+| `--add-dirs-ro <PATH>` | yes | Grant read-only access. |
+| `--home <PATH>` | no | Replacement `$HOME` (or scratch home when the profile enables it). |
+| `--show-policies` | no | Print effective policy and exit (no execution). |
+| `--show-profiles` | no | List all layers, or show layers selected for the given command. |
+| `--dry-run` | no | Alias for `--show-policies`. |
+| `-v, --verbose` | no | Verbose layer listing (with `--show-profiles` or `@profiles-list`). |
+
+When a flag accepts a path or profile name, you can repeat it.
 
 ---
 
-## 3. Built-in profiles
+## Meta commands (`@…`)
 
-Embedded in the binary (authored in `profiles/`):
+| Command | Purpose |
+|---------|---------|
+| `isol8 @init` | Create a default config file. |
+| `isol8 @profiles-list` | List all profile layers and their source (builtin, user config, profile-path). |
+| `isol8 @profiles-show <NAME>` | Dump one layer as TOML (e.g. `base`, `agents/claude-code`). |
 
-- **`base`** — cross-platform minimum: ro `/usr` + `/bin`, rw `/tmp`, a minimal
-  `PATH`, and an auto-scratch `$HOME` seeded read-only with `~/.gitconfig`.
-- **`macos-system`** — `requires = ["base"]`; adds the macOS runtime essentials a
-  command needs to start under `(deny default)` (ro `/System`, the mandatory
-  `literal "/"`, `/private/var/select`, and the `process-exec`/`process-fork`
-  capabilities). **This is the layer to start from on macOS.**
-
-User profiles can be dropped into `$XDG_CONFIG_HOME/isol8/profiles/` (or
-`~/.config/isol8/profiles/`) as `<name>.toml`; they're selectable by `--profile`.
-See [`profile-model.md`](./profile-model.md) for the full schema.
+Unknown `@` commands print a short hint and exit with an error.
 
 ---
 
-## 4. Examples
+## Configuration
 
-```sh
-# Inspect the effective policy without running anything (works on any OS):
-isol8 run --profile macos-system --dry-run -- echo hi
+isol8 reads a global config file before each run. Search order:
 
-# Run a trivial command confined (macOS):
-isol8 run --profile macos-system -- /bin/sh -c true
+1. `ISOL8_CONFIG_PATH` (file, or directory containing `isol8.toml` / `isol8.yaml`)
+2. `./isol8.toml` or `./isol8.yaml` in the current directory
+3. `~/.config/isol8/isol8.toml` (or `.yaml`)
 
-# Confine a command and give it read-write access to one project directory:
-isol8 run --profile macos-system --add-dirs-rw "$PWD" -- /bin/sh -c 'echo built > out.txt'
+Example:
 
-# Read-only access to a reference dir, plus a project workdir:
-isol8 run --profile macos-system \
-  --add-dirs-ro /opt/reference \
-  --add-dirs-rw "$PWD" \
-  -- some-tool
-
-# Use an explicit replacement HOME instead of an auto scratch dir:
-isol8 run --profile macos-system --home /tmp/agent-home -- /bin/sh -c 'echo $HOME'
+```toml
+default_profiles = ["base", "macos/system-runtime"]
+auto_profiles = true
+profile_paths = []
+# profile_paths = ["/my/extra-profiles", "/my/override.toml"]
+add_dirs_rw = []
 ```
 
-Via `just`:
+**Environment overrides** (applied after config, before CLI flags):
+
+| Variable | Effect |
+|----------|--------|
+| `ISOL8_CONFIG_PATH` | Config file or directory |
+| `ISOL8_PROFILE` | Comma-separated `--profile` layers |
+| `ISOL8_PROFILE_PATH` | Comma-separated `--profile-path` entries |
+| `ISOL8_ADD_DIRS_RW` | Extra read-write directories |
+| `ISOL8_ADD_DIRS_RO` | Extra read-only directories |
+| `ISOL8_HOME` | Replacement home |
+| `ISOL8_DRY_RUN=1` | Same as `--show-policies` |
+
+---
+
+## Built-in profiles
+
+Roughly 70 layers are embedded (Safehouse-derived), including:
+
+| Layer | Role |
+|-------|------|
+| `base` | Minimal runtime: ro `/usr`+`/bin`, rw `/tmp`, scratch `$HOME`. |
+| `macos/system-runtime` / `linux/system-runtime` | OS essentials (in default stack). |
+| `macos-system` / `linux-system` | Backward-compatible aliases. |
+| `agents/claude-code` | Auto-selected when the command is `claude`. |
+| `toolchains/rust`, `integrations/git`, … | Opt in with `--profile`. |
+
+**Overlay order** (later wins on name collision): builtin → `~/.config/isol8/profiles/` →
+`profile_paths` / `--profile-path`.
+
+Custom layers: drop `.toml` files under `~/.config/isol8/profiles/`, or point
+`--profile-path` at your own directory.
+
+See [`profile-model.md`](./profile-model.md) for the full schema (`filter`, `[[policies]]`, etc.).
+
+---
+
+## Common workflows
+
+### Confine an AI agent CLI
+
+With `auto_profiles = true` in config (the `@init` default), agent layers match by executable name:
 
 ```sh
-just run run --profile macos-system --dry-run -- echo hi
+isol8 --show-profiles claude --version    # preview layers
+isol8 --show-policies claude --version    # preview full policy
+isol8 --add-dirs-rw "$PWD" claude         # run confined with project write access
+```
+
+### Override a built-in layer
+
+```sh
+# my-override.toml redefines agents/claude-code paths
+isol8 --profile-path ./my-override.toml --show-policies claude --version
+```
+
+### Developer toolchain
+
+```sh
+isol8 --profile toolchains/rust --add-dirs-rw "$HOME/.cargo" -- cargo build
+```
+
+### Explicit system profile (legacy name)
+
+```sh
+isol8 --profile macos-system --show-policies date
 ```
 
 ---
 
-## 5. What confinement does
+## What confinement does
 
-- **Filesystem** — deny-by-default. Only the merged profile's grants are reachable;
-  everything else returns `Operation not permitted`. `--add-dirs-rw`/`-ro` win over
-  profile layers.
-- **HOME** — replaced first, before any path grant is computed. `~`-relative grants
-  target the replacement home, and the real home is **not** granted unless re-added.
-- **Environment** — sanitized to an allowlist (`HOME`, `PATH`, `SHELL`, `TMPDIR`,
-  `USER`, `LOGNAME`, `PWD`); host secrets like `SECRET_TOKEN` do not pass through.
-  Profile `env` defaults are folded in without overriding allowlisted host values.
-
----
-
-## 6. Tests
-
-```sh
-just test            # unit + integration tests (cargo test) — all platforms
-just field-test      # real-sandbox field tests on this machine (macOS)
-just ci              # full gate: fmt-check + clippy -D warnings + build + test
-```
-
-Field tests build ad-hoc profiles + scratch dirs under the temp dir, run probes
-through the **real** sandbox, and assert the OS actually enforced the policy
-(deny outside grants, allow rw workspace, deny writes to ro, scratch HOME, env
-sanitization). Pass `--keep` to retain the temp workspace for inspection:
-
-```sh
-just field-test --keep
-```
+- **Filesystem** — deny-by-default. Only merged profile grants are reachable;
+  everything else gets `Operation not permitted`. `--add-dirs-rw` / `--add-dirs-ro`
+  win over profile layers.
+- **HOME** — resolved before path grants. `~` in profiles targets the replacement
+  home; the real home is not granted unless you add it explicitly.
+- **Environment** — sanitized to a small allowlist (`HOME`, `PATH`, `SHELL`, `TMPDIR`,
+  `USER`, `LOGNAME`, `PWD`). Secrets in the host environment do not pass through.
 
 ---
 
-## 7. Troubleshooting
+## Troubleshooting
 
-- **`getcwd: Operation not permitted` noise** — the confined process inherits
-  isol8's working directory, which isn't granted automatically yet. Add it with
-  `--add-dirs-rw "$PWD"` (or `cd /` first). Auto-cwd-grant is a planned follow-up.
-- **`git` / `cargo` fail to start on macOS** — the system `git`/`cargo` are
-  xcode-select shims that need developer-tool paths beyond `macos-system`. Grant
-  the needed paths with `--add-dirs-ro` or add a toolchain profile layer.
-- **`macos backend not yet implemented` / errors on Linux** — only macOS has an
-  enforcing backend today. Use `--dry-run` elsewhere to inspect the policy.
-- **Policy failed to compile** — `--dry-run` prints the generated SBPL; that's the
-  fastest way to see what was emitted and why `sandbox-exec` rejected it.
+- **`getcwd: Operation not permitted`** — the working directory is not granted by default.
+  Add `--add-dirs-rw "$PWD"` or run from a granted path.
+- **`git` / `cargo` fail on macOS** — system shims need extra developer paths. Add
+  `--profile toolchains/rust` or grant paths with `--add-dirs-ro`.
+- **Policy rejected by sandbox** — use `--show-policies` to print the generated policy
+  and see what was emitted before running.
+- **No enforcing backend on this OS** — use `--show-policies` to verify the policy;
+  execution may fail until the Landlock backend is fully working on your platform.

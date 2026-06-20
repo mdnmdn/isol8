@@ -1,0 +1,119 @@
+# macos/system-runtime
+# System Runtime Process execution, tmp/dev access, system binaries, and baseline mach services.
+filter = { os = ["macos"] }
+
+requires = ["base"]
+
+paths = [
+  { path = "/usr", access = "ro" },
+  { path = "/bin", access = "ro" },
+  { path = "/sbin", access = "ro" },
+  { path = "/opt", access = "ro" },
+  { path = "/System/Library", access = "ro" },
+  { path = "/System/Volumes/Preboot", access = "ro" },
+  { path = "/Library/Apple", access = "ro" },
+  { path = "/Library/Frameworks", access = "ro" },
+  { path = "/Library/Fonts", access = "ro" },
+  { path = "/Library/Filesystems/NetFSPlugins", access = "ro" },
+  { path = "/Library/Preferences/Logging", access = "ro" },
+  { path = "/Library/Preferences/.GlobalPreferences.plist", access = "ro", match = "literal" },
+  { path = "/Library/Preferences/com.apple.networkd.plist", access = "ro", match = "literal" },
+  { path = "/dev", access = "ro", match = "literal" },
+  { path = "/System", access = "metadata" },
+  { path = "/private/var/run", access = "metadata" },
+  { path = "/private", access = "ro", match = "literal" },
+  { path = "/private/var", access = "ro", match = "literal" },
+  { path = "/private/var/db/timezone", access = "ro" },
+  { path = "/private/var/select/sh", access = "ro", match = "literal" },
+  { path = "/private/var/select/developer_dir", access = "ro", match = "literal" },
+  { path = "/var/select/developer_dir", access = "ro", match = "literal" },
+  { path = "/private/var/db/xcode_select_link", access = "ro", match = "literal" },
+  { path = "/var/db/xcode_select_link", access = "ro", match = "literal" },
+  { path = "/private/etc/hosts", access = "ro", match = "literal" },
+  { path = "/private/etc/resolv.conf", access = "ro", match = "literal" },
+  { path = "/private/etc/services", access = "ro", match = "literal" },
+  { path = "/private/etc/protocols", access = "ro", match = "literal" },
+  { path = "/private/etc/shells", access = "ro", match = "literal" },
+  { path = "/private/etc/ssl", access = "ro" },
+  { path = "/private/etc/localtime", access = "ro", match = "literal" },
+  { path = "/etc", access = "ro", match = "literal" },
+  { path = "/var", access = "ro", match = "literal" },
+  { path = "/home", access = "metadata", match = "literal" },
+  { path = "/private/etc", access = "metadata", match = "literal" },
+  { path = "/dev", access = "metadata" },
+  { path = "~/.config", access = "metadata", match = "literal" },
+  { path = "~/.cache", access = "metadata", match = "literal" },
+  { path = "~/.local", access = "metadata", match = "literal" },
+  { path = "~/.local/share", access = "metadata", match = "literal" },
+  { path = "~/Library/Preferences/.GlobalPreferences", access = "ro", match = "prefix" },
+  { path = "~/Library/Preferences/com.apple.GlobalPreferences", access = "ro", match = "prefix" },
+  { path = "~/Library/Preferences/ByHost", access = "ro" },
+  { path = "~/.CFUserTextEncoding", access = "ro", match = "literal" },
+  { path = "~/.config", access = "ro", match = "literal" },
+  { path = "~/.cache", access = "ro", match = "literal" },
+  { path = "~/.local/bin", access = "ro", match = "literal" },
+  { path = "/tmp", access = "rw" },
+  { path = "/private/tmp", access = "rw" },
+  { path = "/var/folders", access = "rw" },
+  { path = "/private/var/folders", access = "rw" },
+  { path = "^/private/tmp/com\\.apple\\.launchd\\.[^/]+/Listeners$", access = "none", match = "regex" },
+  { path = "^/tmp/com\\.apple\\.launchd\\.[^/]+/Listeners$", access = "none", match = "regex" },
+  { path = "/dev/fd", access = "rw" },
+  { path = "/dev/stdout", access = "rw", match = "literal" },
+  { path = "/dev/stderr", access = "rw", match = "literal" },
+  { path = "/dev/null", access = "rw", match = "literal" },
+  { path = "/dev/tty", access = "rw", match = "literal" },
+  { path = "/dev/ptmx", access = "rw", match = "literal" },
+  { path = "/dev/dtracehelper", access = "rw", match = "literal" },
+  { path = "^/dev/tty", access = "rw", match = "regex" },
+  { path = "^/dev/ttys", access = "rw", match = "regex" },
+  { path = "^/dev/pty", access = "rw", match = "regex" },
+  { path = "/dev/zero", access = "ro", match = "literal" },
+  { path = "/dev/autofs_nowait", access = "ro", match = "literal" },
+  { path = "/dev/dtracehelper", access = "ro", match = "literal" },
+  { path = "/dev/urandom", access = "ro", match = "literal" },
+  { path = "/dev/random", access = "ro", match = "literal" },
+]
+
+[macos]
+capabilities = ["process-exec", "process-fork", "sysctl-read", "pseudo-tty"]
+raw = '''
+(allow process-info* (target same-sandbox))
+(allow signal (target same-sandbox))
+(allow mach-priv-task-port (target same-sandbox))
+(allow file-ioctl
+    (literal "/dev/tty")                                              
+    (literal "/dev/ptmx")                                             
+    (regex #"^/dev/ttys")                                             ;; tcsetattr/tcgetattr and window-size ioctls on macOS slave ttys.
+    (regex #"^/dev/pty")                                              ;; Legacy PTY naming used by some tools.
+)
+(allow file-ioctl
+    (literal "/dev/dtracehelper")                                     
+    (literal "/dev/tty")                                              
+    (literal "/dev/ptmx")                                             
+    (regex #"^/dev/tty")                                              ;; Dynamic /dev/ttyN paths created for active terminal sessions.
+    (regex #"^/dev/ttys")                                             ;; Alternate macOS dynamic TTY naming.
+    (regex #"^/dev/pty")                                              ;; Legacy PTY naming used by some terminal libraries.
+)
+(allow mach-lookup
+    (global-name "com.apple.system.notification_center")              
+    (global-name "com.apple.system.opendirectoryd.libinfo")           
+    (global-name "com.apple.logd")                                    
+    (global-name "com.apple.FSEvents")                                
+    (global-name "com.apple.SystemConfiguration.configd")             
+    (global-name "com.apple.SystemConfiguration.DNSConfiguration")    
+    (global-name "com.apple.trustd.agent")                            
+    (global-name "com.apple.diagnosticd")                             
+    (global-name "com.apple.analyticsd")                              
+    (global-name "com.apple.dnssd.service")                           
+    (global-name "com.apple.CoreServices.coreservicesd")              
+    (global-name "com.apple.DiskArbitration.diskarbitrationd")        
+    (global-name "com.apple.analyticsd.messagetracer")                
+    (global-name "com.apple.system.logger")                           
+    (global-name "com.apple.coreservices.launchservicesd")            
+)
+(allow system-socket)
+(allow ipc-posix-shm-read-data
+    (ipc-posix-name "apple.shm.notification_center")                  
+)
+'''

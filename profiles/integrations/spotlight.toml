@@ -1,0 +1,14 @@
+# integrations/spotlight
+# Integration: Spotlight Spotlight search via mdfind/mdls/mdutil for filesystem indexing.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+[macos]
+raw = '''
+(allow mach-lookup
+    (global-name "com.apple.metadata.mds")             
+    (global-name "com.apple.metadata.mds.legacy")      
+    (global-name "com.apple.PowerManagement.control")  
+)
+'''

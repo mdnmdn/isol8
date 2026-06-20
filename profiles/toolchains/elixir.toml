@@ -1,0 +1,10 @@
+# toolchains/elixir
+# Toolchain: Elixir Elixir runtime, Mix build tool, and Hex package manager paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/.mix", access = "rw" },
+  { path = "~/.hex", access = "rw" },
+]

@@ -1,0 +1,17 @@
+# toolchains/perl
+# Toolchain: Perl Perl runtime, cpan/cpanm, and version-manager paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/.perlbrew", access = "rw" },
+  { path = "~/.plenv", access = "rw" },
+  { path = "~/.cpan", access = "rw" },
+  { path = "~/.cpanm", access = "rw" },
+  { path = "~/.perl-cpm", access = "rw" },
+  { path = "~/perl5", access = "rw" },
+  { path = "~/.local/lib/perl5", access = "rw" },
+  { path = "~/Library/Caches/cpanm", access = "rw" },
+  { path = "~/.cpanrc", access = "rw", match = "literal" },
+]

@@ -1,0 +1,5 @@
+# integrations/vscode
+# Integration: VS Code Explicit VS Code desktop/editor support for workflows that want to launch
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/macos-gui"]

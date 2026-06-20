@@ -1,0 +1,14 @@
+# integrations/ssh-agent-default-deny
+# Integration: SSH Agent Default Deny Default-deny SSH agent unix sockets; ssh integration can re-open later.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+[macos]
+raw = '''
+(deny network-outbound
+    (remote unix-socket (path-regex #"^/private/tmp/com\.apple\.launchd\.[^/]+/Listeners$"))
+    (remote unix-socket (path-regex #"^/tmp/com\.apple\.launchd\.[^/]+/Listeners$"))
+    (remote unix-socket (path-regex (string-append "^" HOME_DIR "/\\.ssh/agent(/.*)?$")))
+)
+'''

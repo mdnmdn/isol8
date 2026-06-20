@@ -1,0 +1,16 @@
+# integrations/scm-clis
+# Integration: SCM CLIs GitHub CLI (gh) and GitLab CLI (glab) config, cache, and state access.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime", "integrations/git"]
+
+paths = [
+  { path = "~/.config/gh", access = "rw" },
+  { path = "~/.cache/gh", access = "rw" },
+  { path = "~/.local/share/gh", access = "rw" },
+  { path = "~/.local/state/gh", access = "rw" },
+  { path = "~/.config/glab-cli", access = "rw" },
+  { path = "~/.cache/glab-cli", access = "rw" },
+  { path = "~/.local/share/glab-cli", access = "rw" },
+  { path = "~/.local/state/glab-cli", access = "rw" },
+]

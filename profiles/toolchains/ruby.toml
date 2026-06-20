@@ -1,0 +1,24 @@
+# toolchains/ruby
+# Toolchain: Ruby Ruby runtime, gem, and bundler cache paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "/Library", access = "ro", match = "literal" },
+  { path = "/Library/Ruby", access = "ro", match = "literal" },
+  { path = "/Library/Ruby/Gems", access = "ro" },
+  { path = "~/.rbenv", access = "rw" },
+  { path = "~/.rvm", access = "rw" },
+  { path = "~/.rubies", access = "rw" },
+  { path = "~/.bundle", access = "rw" },
+  { path = "~/.gem", access = "rw" },
+  { path = "~/.cache/bundler", access = "rw" },
+  { path = "~/.cache/rubygems", access = "rw" },
+  { path = "~/Library/Caches/bundle", access = "rw" },
+  { path = "~/.gemrc", access = "rw", match = "literal" },
+  { path = "~/.irbrc", access = "rw", match = "literal" },
+  { path = "~/.irb_history", access = "rw", match = "literal" },
+  { path = "~/.pryrc", access = "rw", match = "literal" },
+  { path = "~/.pry_history", access = "rw", match = "literal" },
+]

@@ -1,0 +1,19 @@
+# agents/kilo-code
+# Agent: Kilo Code Kilo Code CLI binary, state, and config paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/keychain"]
+
+paths = [
+  { path = "~/.local/bin/kilo", access = "rw", match = "prefix" },
+  { path = "~/.local/bin/kilocode", access = "rw", match = "prefix" },
+  { path = "~/.kilocode", access = "rw" },
+  { path = "~/.roo", access = "rw" },
+  { path = "~/.config/kilo", access = "rw" },
+  { path = "~/.cache/kilo", access = "rw" },
+  { path = "~/.local/share/kilo", access = "rw" },
+  { path = "~/.local/state/kilo", access = "rw" },
+  { path = "~/Documents/Kilo-Code/MCP", access = "rw" },
+  { path = "~/Library/Application Support/Code/User/globalStorage/kilocode.kilo-code", access = "rw" },
+  { path = "/Library/Application Support/RooCode", access = "ro" },
+]

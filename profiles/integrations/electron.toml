@@ -1,0 +1,27 @@
+# integrations/electron
+# Integration: Electron Chromium/Electron runtime: GPU, Metal shaders, crashpad, and WebView.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/macos-gui"]
+
+paths = [
+  { path = "/private/var/db/.AppleSetupDone", access = "metadata", match = "literal" },
+]
+
+[macos]
+raw = '''
+(allow mach-lookup
+    (global-name "com.apple.MTLCompilerService")
+    (global-name "com.apple.SafariPlatformSupport.Helper")
+)
+(allow iokit-open
+    (iokit-user-client-class "IOSurfaceRootUserClient")
+    (iokit-user-client-class "AGXDeviceUserClient")
+)
+(allow mach-lookup
+    (global-name-regex #"^org\.chromium\.crashpad\.child_port_handshake\.")
+)
+(allow mach-register
+    (global-name-regex #"^org\.chromium\.crashpad\.child_port_handshake\.")
+)
+'''

@@ -1,0 +1,18 @@
+# toolchains/go
+# Toolchain: Go Go toolchain, module cache, and build cache paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/go", access = "rw" },
+  { path = "~/.cache/go-build", access = "rw" },
+  { path = "~/Library/Caches/go-build", access = "rw" },
+  { path = "~/.config/go", access = "rw" },
+  { path = "~/.cache/golangci-lint", access = "rw" },
+  { path = "~/Library/Caches/golangci-lint", access = "rw" },
+  { path = "~/.config/golangci-lint", access = "rw" },
+  { path = "~/.local/share/go", access = "rw" },
+  { path = "~/.goenv", access = "rw" },
+  { path = "~/.cache/gopls", access = "rw" },
+]

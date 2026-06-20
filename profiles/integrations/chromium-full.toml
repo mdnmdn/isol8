@@ -1,0 +1,50 @@
+# integrations/chromium-full
+# Integration: Chromium Full Additional full-browser Chrome channel allowances layered on top of
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/chromium-headless"]
+
+paths = [
+  { path = "~/Library/Application Support/Google", access = "metadata", match = "literal" },
+  { path = "~/Library/Application Support/Google/Chrome", access = "metadata", match = "literal" },
+  { path = "~/Library/Application Support/Google/Chrome/Crashpad", access = "metadata", match = "literal" },
+  { path = "~/Library/Application Support/Google/Chrome for Testing", access = "metadata", match = "literal" },
+  { path = "~/Library/Application Support/Google/Chrome for Testing/Crashpad", access = "metadata", match = "literal" },
+  { path = "~/Library/Google", access = "metadata", match = "literal" },
+  { path = "/Applications", access = "ro", match = "literal" },
+  { path = "/Applications/Google Chrome.app", access = "ro" },
+  { path = "/System", access = "ro", match = "literal" },
+  { path = "/System/Volumes", access = "ro", match = "literal" },
+  { path = "/System/Volumes/Data", access = "ro", match = "literal" },
+  { path = "/System/Volumes/Data/Applications", access = "ro", match = "literal" },
+  { path = "/System/Volumes/Data/Applications/Google Chrome.app", access = "ro" },
+  { path = "/Library", access = "ro", match = "literal" },
+  { path = "~/Library/Preferences/com.google.Chrome.plist", access = "ro", match = "literal" },
+  { path = "~/Library/Preferences/com.google.chrome.for.testing.plist", access = "ro", match = "literal" },
+  { path = "~/Library/Google/Google Chrome Brand.plist", access = "ro", match = "literal" },
+  { path = "~/Library/Application Support/Google/Chrome/DevToolsActivePort", access = "rw", match = "literal" },
+  { path = "~/Library/Application Support/Google/Chrome/Crashpad", access = "rw" },
+  { path = "~/Library/Application Support/Google/Chrome for Testing/Crashpad", access = "rw" },
+]
+
+[macos]
+raw = '''
+(allow file-read-xattr file-write-xattr
+    (home-subpath "/Library/Application Support/Google/Chrome for Testing/Crashpad")       
+)
+(allow mach-register
+    (global-name-regex #"^com\.google\.Chrome\.MachPortRendezvousServer\.")
+    (global-name-regex #"^com\.google\.Chrome\.crashpad\.child_port_handshake\.")
+    (global-name-regex #"^com\.google\.chrome\.for\.testing\.MachPortRendezvousServer\.")
+    (global-name-regex #"^com\.google\.chrome\.for\.testing\.crashpad\.child_port_handshake\.")
+)
+(allow mach-lookup
+    (global-name-regex #"^com\.google\.Chrome\.MachPortRendezvousServer\.")
+    (global-name-regex #"^com\.google\.Chrome\.crashpad\.child_port_handshake\.")
+    (global-name-regex #"^com\.google\.chrome\.for\.testing\.MachPortRendezvousServer\.")
+    (global-name-regex #"^com\.google\.chrome\.for\.testing\.crashpad\.child_port_handshake\.")
+    (global-name "com.apple.pasteboard.1")
+    (global-name "com.apple.system.opendirectoryd.api")
+    (global-name "com.apple.ctkd.token-client")
+)
+'''

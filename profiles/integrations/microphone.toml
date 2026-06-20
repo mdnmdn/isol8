@@ -1,0 +1,26 @@
+# integrations/microphone
+# Integration: Microphone Microphone capture support via TCC, CoreAudio, and CMIO registration paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+[macos]
+raw = '''
+(allow device-microphone)
+(allow iokit-open-user-client
+    (require-all
+        (iokit-connection "AppleHDAEngineInput")                      
+        (iokit-user-client-class
+            "IOAudioControlUserClient"                                
+            "IOAudioEngineUserClient"                                 
+        )
+    )
+)
+(allow mach-lookup
+    (global-name "com.apple.tccd")                                    
+    (global-name "com.apple.tccd.system")                             
+    (global-name "com.apple.audio.AudioComponentRegistrar")           
+    (global-name "com.apple.audio.audiohald")                         
+    (global-name "com.apple.cmio.registerassistantservice.system-extensions")  
+)
+'''

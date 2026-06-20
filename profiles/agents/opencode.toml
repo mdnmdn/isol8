@@ -1,0 +1,24 @@
+# agents/opencode
+# Agent: openCode openCode CLI binary, state, and config paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/.opencode/bin/opencode", access = "rw", match = "prefix" },
+  { path = "~/.local/bin/opencode", access = "rw", match = "prefix" },
+  { path = "~/bin/opencode", access = "rw", match = "prefix" },
+  { path = "~/.config", access = "rw", match = "literal" },
+  { path = "~/.cache", access = "rw", match = "literal" },
+  { path = "~/.local", access = "rw", match = "literal" },
+  { path = "~/.local/share", access = "rw", match = "literal" },
+  { path = "~/.local/state", access = "rw", match = "literal" },
+  { path = "~/.opencode", access = "rw" },
+  { path = "~/.config/opencode", access = "rw" },
+  { path = "~/.cache/opencode", access = "rw" },
+  { path = "~/.local/share/opencode", access = "rw" },
+  { path = "~/.local/share/opentui", access = "rw" },
+  { path = "~/.local/state/opencode", access = "rw" },
+  { path = "~/.opencode.json", access = "rw", match = "literal" },
+  { path = "~/.config/github-copilot", access = "ro" },
+]

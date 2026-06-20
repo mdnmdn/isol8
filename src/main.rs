@@ -1,39 +1,162 @@
-use anyhow::Result;
-use clap::Parser;
+use std::io::Write;
 
-use isol8::{backends, cli, env, home, profile};
+use anyhow::{bail, Context, Result};
+
+use isol8::{backends, cli, config, profile, resolve};
 
 fn main() -> Result<()> {
-    let args = cli::Cli::parse();
-    match args.command {
-        cli::Command::Run(run) => run_cmd(run),
+    match cli::parse() {
+        cli::ParsedCli::Help => {
+            cli::print_help();
+            Ok(())
+        }
+        cli::ParsedCli::Run(mut run) => {
+            prepare_run(&mut run)?;
+            run_cmd(run)
+        }
+        cli::ParsedCli::Init(init) => init_cmd(init),
+        cli::ParsedCli::ProfilesList(list) => profiles_list_cmd(list),
+        cli::ParsedCli::ProfilesShow(show) => profiles_show_cmd(show),
     }
 }
 
-fn run_cmd(run: cli::RunArgs) -> Result<()> {
-    // 1. Resolve the effective $HOME FIRST (R4.2), so every $HOME-relative grant in
-    //    every layer is computed against the replacement home, not the real one.
-    let layers = profile::resolved_layers(&run)?;
-    let effective_home = home::resolve(&run, &layers)?;
+fn prepare_run(run: &mut cli::RunInvocation) -> Result<()> {
+    let mut args = cli::run_from(run.opts.clone(), run.cmd.clone());
+    let cfg = config::load()?;
+    config::apply_to_run(&cfg, &mut args);
+    config::apply_env_overrides(&mut args);
+    run.opts = args.opts;
+    run.cmd = args.cmd;
+    Ok(())
+}
 
-    // 2. Load + merge profile layers (expands `~` against the effective home), then
-    //    fold in --add-dirs / --home invocation overrides as the top layer.
-    let profile = profile::load(&run, &effective_home)?;
+fn prepare_opts(opts: &mut cli::ProfileOpts) -> Result<()> {
+    let cfg = config::load()?;
+    let mut run = cli::run_from(opts.clone(), vec![]);
+    config::apply_to_run(&cfg, &mut run);
+    config::apply_env_overrides(&mut run);
+    *opts = run.opts;
+    Ok(())
+}
 
-    // 3. Build sanitized env (HOME authoritative, applied first).
-    let env = env::build_minimal(&profile, &effective_home.path);
-
-    // 4. Pick backend for this OS and apply policy.
-    let backend = backends::select();
-
-    if run.dry_run {
-        backends::render_dry_run(&profile, &env, &run.cmd);
+fn run_cmd(run: cli::RunInvocation) -> Result<()> {
+    if run.show_policies() {
+        if run.cmd.is_empty() {
+            bail!("--show-policies requires a command (e.g. isol8 --show-policies -- echo hi)");
+        }
+        let args = cli::run_from(run.opts, run.cmd);
+        let effective = resolve::effective_policy(&args)?;
+        render_effective(&effective, &args.cmd);
         return Ok(());
     }
 
-    // Seed allowlisted real-home entries read-only into the (scratch) home (R4.4).
-    home::seed(&effective_home)?;
+    if run.show_profiles() {
+        if run.cmd.is_empty() {
+            return profiles_list(registry_from_run(&run)?, run.verbose());
+        }
+        let args = cli::run_from(run.opts, run.cmd);
+        let effective = resolve::effective_policy(&args)?;
+        println!("== selected layers ==");
+        for name in &effective.layer_names {
+            println!("  {name}");
+        }
+        return Ok(());
+    }
 
-    let code = backend.spawn(&profile, &env, &run.cmd)?;
+    if run.cmd.is_empty() {
+        cli::print_help();
+        return Ok(());
+    }
+
+    let args = cli::run_from(run.opts, run.cmd);
+    let effective = resolve::effective_policy(&args)?;
+
+    isol8::home::seed(&effective.home)?;
+
+    let backend = backends::select();
+    let code = backend.spawn(&effective.profile, &effective.env, &args.cmd)?;
     std::process::exit(code);
+}
+
+fn registry_from_run(run: &cli::RunInvocation) -> Result<profile::LayerRegistry> {
+    profile::LayerRegistry::load(run.profile_paths())
+}
+
+fn render_effective(effective: &resolve::EffectivePolicy, cmd: &[String]) {
+    println!("== layer stack ==");
+    for name in &effective.layer_names {
+        println!("  {name}");
+    }
+    backends::render_dry_run(&effective.profile, &effective.env, cmd);
+}
+
+fn init_cmd(init: cli::InitArgs) -> Result<()> {
+    let format = match init.format {
+        cli::ConfigFormat::Toml => "toml",
+        cli::ConfigFormat::Yaml => "yaml",
+    };
+    let path = init
+        .path
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| config::default_init_path(format));
+    if path.exists() {
+        anyhow::bail!(
+            "config already exists at {} (refusing to overwrite)",
+            path.display()
+        );
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating config directory {}", parent.display()))?;
+    }
+    let body = config::init_template(format)?;
+    let mut file = std::fs::File::create(&path)
+        .with_context(|| format!("creating config file {}", path.display()))?;
+    file.write_all(body.as_bytes())?;
+    println!("wrote {}", path.display());
+    Ok(())
+}
+
+fn profiles_list_cmd(list: cli::ProfilesListArgs) -> Result<()> {
+    let mut opts = list.opts;
+    prepare_opts(&mut opts)?;
+    let registry = profile::LayerRegistry::load(opts.profile_paths.as_slice())?;
+    profiles_list(registry, opts.verbose)
+}
+
+fn profiles_list(registry: profile::LayerRegistry, verbose: bool) -> Result<()> {
+    for (name, source) in registry.list() {
+        if verbose {
+            if let Some(p) = registry.get(&name) {
+                let filt = p
+                    .filter
+                    .as_ref()
+                    .map(|f| format!("{f:?}"))
+                    .unwrap_or_else(|| "none".into());
+                println!(
+                    "{name}\trequires={:?}\tfilter={filt}\tpolicies={}\tsource={source:?}",
+                    p.requires,
+                    p.policies.len()
+                );
+            }
+        } else {
+            println!("{name}\t{source:?}");
+        }
+    }
+    Ok(())
+}
+
+fn profiles_show_cmd(mut show: cli::ProfilesShowArgs) -> Result<()> {
+    prepare_opts(&mut show.opts)?;
+    let registry = profile::LayerRegistry::load(show.opts.profile_paths.as_slice())?;
+    let Some(p) = registry.get(&show.name) else {
+        anyhow::bail!("unknown profile '{}'", show.name);
+    };
+    let src = registry
+        .source(&show.name)
+        .map(|s| format!("{s:?}"))
+        .unwrap_or_default();
+    println!("# source: {src}");
+    print!("{}", profile::format_layer(p)?);
+    Ok(())
 }

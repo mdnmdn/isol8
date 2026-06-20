@@ -1,0 +1,42 @@
+# toolchains/python
+# Toolchain: Python Python runtime, pip, uv, and virtualenv paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/.local/bin/uv", access = "rw", match = "literal" },
+  { path = "~/.local/bin/uvx", access = "rw", match = "literal" },
+  { path = "~/.local/share/uv", access = "rw" },
+  { path = "~/.local/state/uv", access = "rw" },
+  { path = "~/.local/pipx", access = "rw" },
+  { path = "~/.cache/uv", access = "rw" },
+  { path = "~/Library/Caches/uv", access = "rw" },
+  { path = "~/.config/uv", access = "rw" },
+  { path = "~/.cache/pip", access = "rw" },
+  { path = "~/.config/pip", access = "rw" },
+  { path = "~/Library/Caches/pip", access = "rw" },
+  { path = "~/.cache/pypoetry", access = "rw" },
+  { path = "~/.config/pypoetry", access = "rw" },
+  { path = "~/.local/share/pypoetry", access = "rw" },
+  { path = "~/Library/Caches/pypoetry", access = "rw" },
+  { path = "~/.cache/pdm", access = "rw" },
+  { path = "~/.config/pdm", access = "rw" },
+  { path = "~/.local/share/pdm", access = "rw" },
+  { path = "~/.cache/pre-commit", access = "rw" },
+  { path = "~/.cache/mypy", access = "rw" },
+  { path = "~/.cache/ruff", access = "rw" },
+  { path = "~/.virtualenvs", access = "rw" },
+  { path = "~/.ipython", access = "rw" },
+  { path = "~/.jupyter", access = "rw" },
+  { path = "~/.pyenv", access = "rw" },
+  { path = "~/.pypirc", access = "rw", match = "literal" },
+  { path = "~/.python_history", access = "rw", match = "literal" },
+  { path = "~/.conda", access = "rw" },
+  { path = "~/miniconda3", access = "rw" },
+  { path = "~/miniforge3", access = "rw" },
+  { path = "~/.condarc", access = "rw", match = "literal" },
+  { path = "~/.cache/hatch", access = "rw" },
+  { path = "~/.config/hatch", access = "rw" },
+  { path = "~/.local/share/hatch", access = "rw" },
+]

@@ -1,0 +1,15 @@
+# agents/goose
+# Agent: Goose Goose CLI binary, state, and config paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/keychain"]
+
+paths = [
+  { path = "~/.local/bin/goose", access = "rw", match = "prefix" },
+  { path = "~/.goose", access = "rw" },
+  { path = "~/.config/goose", access = "rw" },
+  { path = "~/.cache/goose", access = "rw" },
+  { path = "~/.local/share/goose", access = "rw" },
+  { path = "~/.local/state/goose", access = "rw" },
+  { path = "~/Library/Application Support/Block.goose", access = "rw" },
+]

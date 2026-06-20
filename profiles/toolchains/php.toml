@@ -1,0 +1,17 @@
+# toolchains/php
+# Toolchain: PHP PHP runtime and Composer paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/.composer", access = "rw" },
+  { path = "~/.config/composer", access = "rw" },
+  { path = "~/.cache/composer", access = "rw" },
+  { path = "~/Library/Caches/composer", access = "rw" },
+  { path = "~/.local/share/composer", access = "rw" },
+  { path = "~/.phpenv", access = "rw" },
+  { path = "~/.config/php", access = "rw" },
+  { path = "~/.cache/php", access = "rw" },
+  { path = "~/.pearrc", access = "rw", match = "literal" },
+]

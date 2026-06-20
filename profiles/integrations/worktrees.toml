@@ -1,0 +1,5 @@
+# integrations/worktrees
+# Integration: Worktrees Launch-time snapshot of sibling Git worktree paths for cross-worktree read access.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/git"]

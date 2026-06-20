@@ -1,0 +1,8 @@
+# shared/ipc-sysv-sem
+# Category: Shared IPC (SysV semaphores) LMDB on macOS uses System V semaphores (`ftok`/`semget`/`semop`) for
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+[macos]
+capabilities = ["sysv-sem"]

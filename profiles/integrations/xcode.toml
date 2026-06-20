@@ -1,0 +1,61 @@
+# integrations/xcode
+# Integration: Xcode Xcode command-line developer roots plus scoped user build/simulator state.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["toolchains/apple-toolchain-core", "integrations/macos-gui"]
+
+paths = [
+  { path = "/Library", access = "ro", match = "literal" },
+  { path = "/Library/Developer", access = "ro", match = "literal" },
+  { path = "/Library/Developer/CommandLineTools", access = "ro", match = "literal" },
+  { path = "/Library/Developer/CommandLineTools", access = "ro" },
+  { path = "/Library/Developer/PrivateFrameworks", access = "ro", match = "literal" },
+  { path = "/Library/Developer/PrivateFrameworks", access = "ro" },
+  { path = "/Library/Developer/CoreSimulator", access = "ro", match = "literal" },
+  { path = "/Library/Developer/CoreSimulator", access = "ro" },
+  { path = "/Applications", access = "ro", match = "literal" },
+  { path = "/Applications/Xcode.app", access = "ro" },
+  { path = "/Applications/Xcode-beta.app", access = "ro" },
+  { path = "^/Applications/Xcode[^/]*\\.app(/.*)?$", access = "ro", match = "regex" },
+  { path = "/System", access = "ro", match = "literal" },
+  { path = "/System/Volumes", access = "ro", match = "literal" },
+  { path = "/System/Volumes/Data", access = "ro", match = "literal" },
+  { path = "/System/Volumes/Data/Applications", access = "ro", match = "literal" },
+  { path = "/System/Volumes/Data/Applications/Xcode.app", access = "ro" },
+  { path = "/System/Volumes/Data/Applications/Xcode-beta.app", access = "ro" },
+  { path = "^/System/Volumes/Data/Applications/Xcode[^/]*\\.app(/.*)?$", access = "ro", match = "regex" },
+  { path = "~/Library/Preferences/com.apple.dt.Xcode.plist", access = "ro", match = "literal" },
+  { path = "/Library/Preferences", access = "ro", match = "literal" },
+  { path = "/Library/Preferences/com.apple.dt.Xcode.plist", access = "ro", match = "literal" },
+  { path = "~/Library/Developer/Xcode", access = "rw" },
+  { path = "~/Library/Developer/CoreSimulator", access = "rw" },
+  { path = "~/Library/Developer/XCTestDevices", access = "rw" },
+  { path = "~/Library/Developer/CoreDevice", access = "rw" },
+  { path = "~/Library/Caches/com.apple.dt.Xcode", access = "rw" },
+  { path = "~/Library/Caches/org.swift.swiftpm", access = "rw" },
+]
+
+[macos]
+raw = '''
+(allow file-write*
+    (home-literal "/Library")
+    (home-literal "/Library/Developer")
+    (home-literal "/Library/Developer/Xcode")
+    (home-literal "/Library/Developer/CoreSimulator")
+    (home-literal "/Library/Developer/XCTestDevices")
+    (home-literal "/Library/Developer/CoreDevice")
+    (home-literal "/Library/Caches")
+    (home-literal "/Library/Caches/com.apple.dt.Xcode")
+    (home-literal "/Library/Caches/org.swift.swiftpm")
+    (home-literal "/Library/Preferences/com.apple.dt.Xcode.plist")
+)
+(allow user-preference-read user-preference-write
+    (preference-domain "com.apple.dt.Xcode")
+)
+(allow mach-lookup
+    (global-name-regex #"^com\.apple\.CoreSimulator(\.|$)")          ;; CoreSimulatorService, simdiskimaged, SimulatorTrampoline, and per-device SimDevice.* endpoints.
+    (global-name "com.apple.remoted.coredevice")                     ;; CoreDevice transport used by physical-device tooling.
+    (global-name "com.apple.CoreDevice.remotepairingd")              ;; Remote pairing service used by devicectl/device flows.
+    (global-name-regex #"^com\.apple\.coredevice\.devicemanager(\.|$)")  ;; CoreDevice manager variants for paired-device operations.
+)
+'''

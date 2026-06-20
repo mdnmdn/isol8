@@ -15,7 +15,7 @@ build:
 release:
     cargo build --release
 
-# Run the binary (pass args: `just run run --dry-run --profile rust -- echo hi`).
+# Run the binary (pass args: `just run --show-policies -- echo hi`).
 run *args:
     cargo run -- {{args}}
 

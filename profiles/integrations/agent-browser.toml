@@ -1,0 +1,13 @@
+# integrations/agent-browser
+# Integration: Agent Browser Local agent-browser CLI state and launcher-path allowances for skill-driven
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/chromium-full"]
+
+paths = [
+  { path = "~", access = "rw", match = "literal" },
+  { path = "~/.agent-browser", access = "rw", match = "literal" },
+  { path = "~/.agent-browser", access = "rw" },
+  { path = "~/Library", access = "metadata", match = "literal" },
+  { path = "~/Library/pnpm", access = "metadata", match = "literal" },
+]

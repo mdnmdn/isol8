@@ -1,0 +1,13 @@
+# integrations/cloud-storage
+# Integration: Cloud Storage FileProvider XPC access for macOS cloud storage mounts (Google Drive,
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime", "network"]
+
+[macos]
+raw = '''
+(allow mach-lookup
+    (global-name "com.apple.FileProvider")                                 
+    (global-name "com.apple.FileCoordination")                             
+)
+'''

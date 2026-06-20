@@ -1,0 +1,37 @@
+# toolchains/java
+# Toolchain: Java Java runtime, Maven, Gradle, SBT, and Coursier paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "/Library/Java", access = "ro" },
+  { path = "~/.m2", access = "rw" },
+  { path = "~/.gradle", access = "rw" },
+  { path = "~/.ivy2", access = "rw" },
+  { path = "~/.sbt", access = "rw" },
+  { path = "~/.jenv", access = "rw" },
+  { path = "~/.sdkman", access = "rw" },
+  { path = "~/.cache/coursier", access = "rw" },
+  { path = "~/.coursier", access = "rw" },
+  { path = "~/Library/Java", access = "rw" },
+  { path = "~/Library/Application Support/Coursier", access = "rw" },
+  { path = "~/Library/Caches/Coursier", access = "rw" },
+  { path = "~/.java", access = "rw" },
+  { path = "~/.mavenrc", access = "rw", match = "literal" },
+  { path = "/Library", access = "metadata", match = "literal" },
+  { path = "/Library/Internet Plug-Ins", access = "metadata", match = "literal" },
+  { path = "~/Library", access = "metadata", match = "literal" },
+  { path = "~/Library/Internet Plug-Ins", access = "metadata", match = "literal" },
+]
+
+[macos]
+raw = '''
+(allow sysctl-write
+    (sysctl-name "kern.grade_cputype")
+)
+(allow mach-lookup
+    (global-name "com.apple.bsd.dirhelper")
+    (global-name "com.apple.system.opendirectoryd.membership")
+)
+'''

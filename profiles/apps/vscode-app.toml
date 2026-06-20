@@ -1,0 +1,47 @@
+# apps/vscode-app
+# App: Visual Studio Code VS Code / VS Code Insiders desktop app bundle, preferences, and data paths,
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/keychain", "integrations/electron"]
+
+paths = [
+  { path = "~/Library/Application Support/Code", access = "rw" },
+  { path = "~/Library/Logs/Code", access = "rw" },
+  { path = "~/Library/HTTPStorages/com.microsoft.VSCode", access = "rw" },
+  { path = "~/Library/Caches/com.microsoft.VSCode", access = "rw" },
+  { path = "~/Library/Caches/com.microsoft.VSCode.ShipIt", access = "rw" },
+  { path = "~/Library/Saved Application State/com.microsoft.VSCode.savedState", access = "rw" },
+  { path = "~/Library/Application Support/Microsoft/DeveloperTools", access = "rw" },
+  { path = "~/Library/Application Support/com.openai.chat/app_pairing_extensions", access = "rw" },
+  { path = "~/.vscode", access = "rw" },
+  { path = "~/.cache/claude/vscode-editor-stable", access = "rw" },
+  { path = "~/.cache/claude/vscode-editor-insiders", access = "rw" },
+  { path = "~/Library/Preferences/com.microsoft.VSCode.plist", access = "rw", match = "literal" },
+  { path = "~/Library/Preferences/com.microsoft.VSCodeInsiders.plist", access = "rw", match = "literal" },
+  { path = "~/Library/Application Support/Code - Insiders", access = "rw" },
+  { path = "~/Library/Logs/Code - Insiders", access = "rw" },
+  { path = "~/Library/HTTPStorages/com.microsoft.VSCodeInsiders", access = "rw" },
+  { path = "~/Library/Caches/com.microsoft.VSCodeInsiders", access = "rw" },
+  { path = "~/Library/Caches/com.microsoft.VSCodeInsiders.ShipIt", access = "rw" },
+  { path = "~/Library/Saved Application State/com.microsoft.VSCodeInsiders.savedState", access = "rw" },
+  { path = "~/.vscode-insiders", access = "rw" },
+  { path = "/Applications", access = "ro", match = "literal" },
+  { path = "/Applications/Visual Studio Code.app", access = "ro" },
+  { path = "/Applications/Visual Studio Code - Insiders.app", access = "ro" },
+]
+
+[macos]
+raw = '''
+(allow user-preference-read user-preference-write
+    (preference-domain "com.microsoft.VSCode")
+    (preference-domain "com.microsoft.VSCodeInsiders")
+)
+(allow mach-lookup
+    (global-name-regex #"^com\.microsoft\.VSCode\.MachPortRendezvousServer\.")
+    (global-name-regex #"^com\.microsoft\.VSCodeInsiders\.MachPortRendezvousServer\.")
+)
+(allow mach-register
+    (global-name-regex #"^com\.microsoft\.VSCode\.MachPortRendezvousServer\.")
+    (global-name-regex #"^com\.microsoft\.VSCodeInsiders\.MachPortRendezvousServer\.")
+)
+'''

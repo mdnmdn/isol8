@@ -1,0 +1,29 @@
+# integrations/docker
+# Integration: Docker Docker daemon socket access for container operations. High-risk.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "/var/run/docker.sock", access = "rw", match = "literal" },
+  { path = "/private/var/run/docker.sock", access = "rw", match = "literal" },
+  { path = "~/.docker/run/docker.sock", access = "rw", match = "literal" },
+  { path = "~/.orbstack/run/docker.sock", access = "rw", match = "literal" },
+  { path = "~/.docker", access = "rw" },
+  { path = "~/.colima", access = "rw" },
+  { path = "~/.rd/docker.sock", access = "rw", match = "literal" },
+  { path = "/Applications/OrbStack.app/Contents/Resources/completions", access = "ro" },
+]
+
+[macos]
+raw = '''
+(allow network-outbound
+    (remote unix-socket (path-literal "/var/run/docker.sock"))
+    (remote unix-socket (path-literal "/private/var/run/docker.sock"))
+    (remote unix-socket (path-regex (string-append "^" HOME_DIR "/\\.docker/run/docker\\.sock$")))
+    (remote unix-socket (path-regex (string-append "^" HOME_DIR "/\\.orbstack/run/docker\\.sock$")))
+    (remote unix-socket (path-regex (string-append "^" HOME_DIR "/\\.colima/docker\\.sock$")))
+    (remote unix-socket (path-regex (string-append "^" HOME_DIR "/\\.colima/[^/]+/docker\\.sock$")))
+    (remote unix-socket (path-regex (string-append "^" HOME_DIR "/\\.rd/docker\\.sock$")))
+)
+'''

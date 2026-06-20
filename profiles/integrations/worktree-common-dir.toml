@@ -1,0 +1,5 @@
+# integrations/worktree-common-dir
+# Integration: Git Worktree Common Dir Minimal support for running inside a linked Git worktree.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/git"]

@@ -1,0 +1,14 @@
+# shared/agent-common
+# Category: Shared Agent Context Shared permissions for skills, agents, and guidance files.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/.skills", access = "rw" },
+  { path = "~/.agents", access = "rw" },
+  { path = "~/AGENTS.md", access = "rw", match = "literal" },
+  { path = "~/.claude/agents", access = "ro" },
+  { path = "~/.claude/skills", access = "ro" },
+  { path = "~/CLAUDE.md", access = "ro", match = "literal" },
+]

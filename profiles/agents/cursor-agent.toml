@@ -1,0 +1,21 @@
+# agents/cursor-agent
+# Agent: Cursor Cursor CLI binary, state, config, and app bundle paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/keychain"]
+
+paths = [
+  { path = "~/.local/bin/agent", access = "rw", match = "prefix" },
+  { path = "~/.local/bin/cursor-agent", access = "rw", match = "prefix" },
+  { path = "~/.local/bin/cursor", access = "rw", match = "prefix" },
+  { path = "~/.local/share/cursor-agent", access = "rw" },
+  { path = "~/.cursor", access = "rw" },
+  { path = "~/.config/cursor", access = "rw" },
+  { path = "~/.cache/cursor-compile-cache", access = "rw" },
+  { path = "~/Library/Caches/cursor-compile-cache", access = "rw" },
+  { path = "~/Library/Application Support/Cursor", access = "ro" },
+  { path = "/Applications", access = "ro", match = "literal" },
+  { path = "/usr/local/bin/cursor", access = "ro", match = "literal" },
+  { path = "/opt/homebrew/bin/cursor", access = "ro", match = "literal" },
+  { path = "/Applications/Cursor.app", access = "ro" },
+]

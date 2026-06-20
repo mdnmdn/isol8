@@ -1,0 +1,15 @@
+# integrations/git
+# Integration: Git Git client configuration and XDG config directory access.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime", "shared/agent-common"]
+
+paths = [
+  { path = "~/.gitconfig", access = "ro", match = "prefix" },
+  { path = "~/.gitignore", access = "ro", match = "prefix" },
+  { path = "~/.config/git", access = "ro" },
+  { path = "~/.gitattributes", access = "ro", match = "literal" },
+  { path = "~/.ssh", access = "ro", match = "literal" },
+  { path = "~/.ssh/config", access = "ro", match = "literal" },
+  { path = "~/.ssh/known_hosts", access = "ro", match = "literal" },
+]

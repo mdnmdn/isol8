@@ -1,0 +1,19 @@
+# integrations/launch-services
+# Integration: Launch Services macOS Launch Services access needed by the `open` command to resolve
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+[macos]
+raw = '''
+(allow mach-lookup
+    (global-name "com.apple.lsd.mapdb")                          
+    (global-name "com.apple.lsd.modifydb")                       
+    (global-name "com.apple.coreservices.quarantine-resolver")    
+)
+(allow file-issue-extension
+    (extension-class "com.apple.app-sandbox.read")
+    (extension-class "com.apple.app-sandbox.read-write")
+)
+(allow lsopen)
+'''

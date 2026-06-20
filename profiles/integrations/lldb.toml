@@ -1,0 +1,32 @@
+# integrations/lldb
+# Integration: LLDB LLDB/debugserver toolchain access and debugger-grade host process inspection.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/process-control"]
+
+paths = [
+  { path = "~/.lldbinit", access = "ro", match = "prefix" },
+  { path = "/Library", access = "ro", match = "literal" },
+  { path = "/Library/Developer", access = "ro", match = "literal" },
+  { path = "/Library/Developer/CommandLineTools", access = "ro" },
+  { path = "/Library/Developer/PrivateFrameworks", access = "ro", match = "literal" },
+  { path = "/Library/Developer/PrivateFrameworks", access = "ro" },
+  { path = "/Applications", access = "ro", match = "literal" },
+  { path = "/Applications/Xcode.app", access = "ro" },
+  { path = "/Applications/Xcode-beta.app", access = "ro" },
+  { path = "^/Applications/Xcode[^/]*\\.app(/.*)?$", access = "ro", match = "regex" },
+  { path = "/System", access = "ro", match = "literal" },
+  { path = "/System/Volumes", access = "ro", match = "literal" },
+  { path = "/System/Volumes/Data", access = "ro", match = "literal" },
+  { path = "/System/Volumes/Data/Applications", access = "ro", match = "literal" },
+  { path = "/System/Volumes/Data/Applications/Xcode.app", access = "ro" },
+  { path = "/System/Volumes/Data/Applications/Xcode-beta.app", access = "ro" },
+  { path = "^/System/Volumes/Data/Applications/Xcode[^/]*\\.app(/.*)?$", access = "ro", match = "regex" },
+]
+
+[macos]
+raw = '''
+(allow process-info-pidinfo)
+(allow process-info-setcontrol)
+(allow mach-priv-task-port)
+'''

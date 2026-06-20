@@ -1,0 +1,15 @@
+# agents/codex
+# Agent: Codex Codex CLI binary, state, and config paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/keychain"]
+
+paths = [
+  { path = "~/.local/bin/codex", access = "rw", match = "prefix" },
+  { path = "~/.codex", access = "rw" },
+  { path = "~/.cache/codex", access = "rw" },
+  { path = "~/Library/Preferences/com.openai.codex.plist", access = "ro", match = "literal" },
+  { path = "/Library/Preferences/com.openai.codex.plist", access = "ro", match = "literal" },
+  { path = "/Library/Managed Preferences/com.openai.codex.plist", access = "ro", match = "literal" },
+  { path = "/etc/codex", access = "ro" },
+]

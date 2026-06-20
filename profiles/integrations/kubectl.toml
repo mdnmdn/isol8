@@ -1,0 +1,23 @@
+# integrations/kubectl
+# Integration: kubectl Kubernetes CLI config, cache, and plugin-manager state.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/.kube", access = "ro" },
+  { path = "~/.krew", access = "ro" },
+]
+
+[macos]
+raw = '''
+(allow file-write*
+    (home-literal "/.kube")                                         
+    (home-literal "/.kube/config")                                  
+    (home-literal "/.kube/kuberc")                                  
+    (home-subpath "/.kube/cache")                                   
+    (home-subpath "/.kube/http-cache")                              
+    (home-literal "/.krew")                                         
+    (home-subpath "/.krew")                                         
+)
+'''

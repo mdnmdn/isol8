@@ -1,0 +1,10 @@
+# agents/auggie
+# Agent: Auggie Auggie CLI binary, state, and config paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/.local/bin/auggie", access = "rw", match = "prefix" },
+  { path = "~/.augment", access = "rw" },
+]

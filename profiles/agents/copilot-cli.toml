@@ -1,0 +1,14 @@
+# agents/copilot-cli
+# Agent: GitHub Copilot CLI GitHub Copilot CLI default state/config directory and auth integration.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/keychain"]
+
+paths = [
+  { path = "~/.local/bin/copilot", access = "rw", match = "prefix" },
+  { path = "~/bin/copilot", access = "rw", match = "prefix" },
+  { path = "~/Library/Caches/copilot", access = "rw" },
+  { path = "~/.copilot", access = "rw" },
+  { path = "~/Library", access = "metadata", match = "literal" },
+  { path = "~/Library/Caches", access = "metadata", match = "literal" },
+]

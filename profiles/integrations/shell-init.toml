@@ -1,0 +1,29 @@
+# integrations/shell-init
+# Integration: Shell Init Opt-in reads for shell init/config files under /etc and $HOME.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "/private/etc/profile", access = "ro", match = "literal" },
+  { path = "/private/etc/paths", access = "ro", match = "literal" },
+  { path = "/private/etc/paths.d", access = "ro" },
+  { path = "/private/etc/bashrc", access = "ro", match = "literal" },
+  { path = "/private/etc/zprofile", access = "ro", match = "literal" },
+  { path = "/private/etc/zshrc", access = "ro", match = "literal" },
+  { path = "~/.zshenv", access = "ro", match = "literal" },
+  { path = "~/.zprofile", access = "ro", match = "literal" },
+  { path = "~/.zshrc", access = "ro", match = "literal" },
+  { path = "~/.zcompdump", access = "ro", match = "literal" },
+  { path = "~/.zcompdump", access = "ro", match = "prefix" },
+  { path = "/Applications", access = "ro", match = "literal" },
+  { path = "/System/Volumes/Data/Applications", access = "ro", match = "literal" },
+  { path = "^/Applications/[^/]+\\.app/Contents/Resources(/[^/]+)*/(_[^/]+|[^/]+\\.(bash|fish|zsh)|[^/]+\\.(bash|fish|zsh)-completion)$", access = "ro", match = "regex" },
+  { path = "^/System/Volumes/Data/Applications/[^/]+\\.app/Contents/Resources(/[^/]+)*/(_[^/]+|[^/]+\\.(bash|fish|zsh)|[^/]+\\.(bash|fish|zsh)-completion)$", access = "ro", match = "regex" },
+  { path = "/private/etc/fish/config.fish", access = "ro", match = "literal" },
+  { path = "/private/etc/fish/conf.d", access = "ro" },
+  { path = "~/.config/fish", access = "ro", match = "literal" },
+  { path = "~/.config/fish/config.fish", access = "ro", match = "literal" },
+  { path = "~/.config/fish/conf.d", access = "ro" },
+  { path = "~/.config/fish/fish_variables", access = "ro", match = "literal" },
+]

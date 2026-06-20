@@ -55,19 +55,25 @@ Modules (see spec §7):
 **Phase 1 — macOS MVP working.** The full path/HOME/env pipeline is implemented and
 enforced on macOS via Seatbelt:
 
-- **profile** — TOML load (embedded `profiles/*.toml` + user config dir), `requires`
-  inheritance (transitive, cycle-detected, deps-first), and deny-first `merge` are real.
-  Types carry `Access` (none/ro/rw/metadata), `MatchKind`, and the macOS `capabilities`
-  + raw-SBPL block (`MacosExtra`). `#[serde(deny_unknown_fields)]` throughout.
+- **profile** — TOML load (`build.rs` embeds all `profiles/**/*.toml` + user config dir +
+  `--profile-path` overlays), `requires` inheritance, deny-first `merge`, layer/policy
+  `filter` (executable/OS/arch), and auto-profile selection. Types carry `Access`,
+  `MatchKind`, `Policy`, `ProfileFilter`, and macOS `capabilities` + raw SBPL.
+  `#[serde(deny_unknown_fields)]` throughout. ~70 Safehouse-derived layers embedded.
 - **home / env** — effective `$HOME` resolved first (`--home` > profile > auto-scratch),
   `~` expanded against it before merge; env sanitized to the allowlist, HOME applied first.
 - **macOS backend** — renders the merged profile to SBPL (`(deny default)` + per-grant
   allows/denies, ancestor metadata, typed capabilities, raw passthrough) and runs it under
   `/usr/bin/sandbox-exec -p`. Symlinked paths (`/tmp`→`/private/tmp`, `/var`→`/private/var`)
   are emitted in both forms — Seatbelt matches the literal accessed path, not a canonical one.
-- **--dry-run** prints the effective grants, env, command, and the generated SBPL.
-- **profiles** — built-in `base` + `macos-system` layers; `isol8 run --profile macos-system`
-  confines real commands (`sh`, `env`, `date`, `cat`, …).
+- **--dry-run** / `isol8 policies show` print layer stack + effective grants, env, command, SBPL.
+- **config** — `isol8.toml`/`isol8.yaml` (cwd, `ISOL8_CONFIG_PATH`, or `~/.config/isol8/`),
+  `ISOL8_*` env overrides, `isol8 init`. Defaults: `base` + OS system-runtime; `auto_profiles`
+  selects agent layers by executable name (e.g. `claude` → `agents/claude-code`).
+- **CLI** — direct `isol8 CMD` (no `run`); `--show-policies` / `--show-profiles`;
+  meta commands `@init`, `@profiles-list`, `@profiles-show`; `--profile-path`.
+- **profiles** — Safehouse port embedded; `macos-system` / `linux-system` are backward-compat
+  aliases. `isol8 echo hi` works without `--profile` when config defaults apply.
 - **tests** — unit + integration (`cargo test`) and a real-sandbox field-test binary
   (`just field-test`, scenarios 1–7) prove the OS actually enforces the policy.
 
@@ -132,10 +138,13 @@ cargo build
 cargo test
 just field-test          # real-sandbox field tests (macOS)
 
-# run a command confined (macOS):
-isol8 run --profile macos-system --add-dirs-rw /my/project -- /bin/sh -c 'echo hi'
-# inspect the effective policy without running:
-isol8 run --profile macos-system --dry-run -- echo hi
+# run with defaults (base + macos/system-runtime) and auto agent profiles:
+isol8 --add-dirs-rw /my/project -- /bin/sh -c 'echo hi'
+# inspect layers + policy for a command:
+isol8 --show-profiles claude --version
+isol8 --show-policies echo hi
+# override built-in layers from a file or directory:
+isol8 --profile-path ./my-profiles echo hi
 ```
 
 Full usage: [`_docs/instructions.md`](_docs/instructions.md).

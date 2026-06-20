@@ -1,0 +1,18 @@
+# agents/amp
+# Agent: Amp Amp CLI binary, state, and config paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/clipboard"]
+
+paths = [
+  { path = "~/.amp/bin/amp", access = "rw", match = "literal" },
+  { path = "~/.local/bin/amp", access = "rw", match = "literal" },
+  { path = "~/.amp", access = "rw" },
+  { path = "~/.config/amp", access = "rw" },
+  { path = "~/.cache/amp", access = "rw" },
+  { path = "~/.local/share/amp", access = "rw" },
+  { path = "~/.local/state/amp", access = "rw" },
+  { path = "/home", access = "ro", match = "literal" },
+  { path = "/System/Volumes/Data/home", access = "ro", match = "literal" },
+  { path = "~/.claude", access = "ro" },
+]

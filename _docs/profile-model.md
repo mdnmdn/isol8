@@ -12,37 +12,49 @@
 
 ---
 
-## 0. Implementation status (Phase 1)
+## 0. Implementation status (Phase 1+)
 
-This document describes the **full target model**. The loader implemented today
-(`src/profile.rs`, `#[serde(deny_unknown_fields)]`) is a subset — anything below
-that isn't yet parsed will **error on load**, not be ignored:
+The loader (`src/profile.rs`, `#[serde(deny_unknown_fields)]`) implements the
+portable profile core plus conditional filters. Anything not listed as parsed will
+**error on load**, not be ignored:
 
 | Area | Status |
 |------|--------|
-| File format | **One layer per file** only (`<stem>.toml` = layer name). The `[profile.<name>]` multi-layer form (§4) is **not** parsed yet. |
-| Language | **TOML only.** YAML (§1/§4) is not accepted yet. |
-| Fields parsed | `requires`/`extends`, `paths` (`path`/`access`/`match`), `env`, `home_replace` (incl. `path`), `macos` (`capabilities`/`raw`). |
-| `access` | `none` / `ro` / `rw` / `metadata` — all parsed; all enforced by the macOS backend. |
-| `match` | `subpath` / `literal` / `prefix` / `regex` — parsed; macOS-enforced (`prefix` as an anchored regex). |
-| `network` block | **Not parsed yet** (Phase 3). Including `network`/`sockets`/`deny_domains`/`inspect` in a layer currently fails to load. |
-| Enforcement | **macOS only.** The Linux backend is stubbed. |
+| File format | **One layer per file** (`profiles/**/*.toml`). Layer id = relative path without extension (e.g. `agents/claude-code`). The `[profile.<name>]` multi-layer form (§4) is **not** parsed yet. |
+| Embed | **`build.rs`** walks `profiles/` and emits `profiles_embedded.rs` (~70 Safehouse-derived layers). |
+| Layer sources | **Builtin** → **user config dir** (`$XDG_CONFIG_HOME/isol8/profiles/`) → **`profile_paths`** / `--profile-path` (later wins on name collision). |
+| Config file | **`isol8.toml` / `isol8.yaml`** (cwd, `ISOL8_CONFIG_PATH`, or `~/.config/isol8/`). `default_profiles`, `auto_profiles`, `profile_paths`, path overrides. |
+| Profile language | **TOML** for layers. **TOML or YAML** for the global config file. |
+| Fields parsed | `requires`/`extends`, `filter`, `[[policies]]`, `paths`, `env`, `home_replace` (incl. `path`), `macos` (`capabilities`/`raw`). |
+| `access` | `none` / `ro` / `rw` / `metadata` — parsed; enforced by the macOS backend. |
+| `match` | `subpath` / `literal` / `prefix` / `regex` — parsed; macOS-enforced. Linux: `subpath` only today. |
+| Auto-selection | **`auto_profiles`** (config/CLI): layers with non-empty `filter.executables` matching `cmd[0]` basename are added to the stack. |
+| `network` block | **Not parsed yet** (Phase 3). Including `network` in a layer fails to load. |
+| Enforcement | **macOS** via Seatbelt. Linux Landlock backend exists but is stubbed/broken in some environments. |
+| Introspection | `isol8 profiles list|show|resolve`, `isol8 policies show`, `--dry-run` (layer stack + effective policy). |
 
-The examples below that include a `network` block illustrate the *target* schema;
-omit it to author a layer that loads today.
+Examples below that include a `network` block illustrate the *target* schema; omit
+it to author a layer that loads today.
 
 ---
 
 ## 1. Concepts
 
-- **Layer** — one named profile fragment (a TOML/YAML table). Contributes path
-  grants, env defaults, a home-replacement policy, and network allowlist domains.
+- **Layer** — one named profile fragment (a TOML file). Contributes unconditional
+  grants plus optional conditional **policies** (§5). May carry a layer-level
+  `filter` that gates its grants by run context.
+- **Policy** — a conditional grant bundle: `filter` + `paths` (+ optional `macos`).
+  Matching policies are folded into the layer before merge; non-matching policies
+  are dropped.
 - **Inheritance** — a layer declares prerequisites with `requires` (alias
-  `extends`); the set is expanded transitively before merging (§3).
-- **Stack** — the ordered list of enabled layers (after inheritance expansion),
-  resolved deny-first into one effective `Profile`.
-- **Override** — values supplied at invocation (`--add-dirs-rw`, `--home`,
-  `--enable`, …). Treated as the highest-priority layer.
+  `extends`); the set is expanded transitively before merging (§3). `requires`
+  edges are unconditional — a dependency is always pulled when its parent is selected,
+  but its grants may be empty if the layer filter fails.
+- **Stack** — layers selected by config defaults, `--profile`, and auto-profile
+  matching (§3), expanded over `requires`, filtered, then merged deny-first into
+  one effective `Profile`.
+- **Override** — values supplied at invocation (`--add-dirs-rw`, `--home`, …) or
+  via `profile_paths` overlay. CLI path overrides are the highest-priority merge layer.
 
 Default for everything is **deny / minimal**. A layer only ever *adds* capability;
 the merge decides who wins on conflict (§6).
@@ -70,8 +82,16 @@ not the sole ordering authority. Mirrors the Safehouse model (R6):
 --  appended           explicitly appended profiles
 ```
 
-`--profile NAME` (repeatable) and `--enable NAME,…` select layers; their transitive
-`requires` are pulled in automatically.
+Layers are selected by:
+
+1. **`default_profiles`** in config (OS-specific: `base` + `macos/system-runtime` or
+   `linux/system-runtime`; aliases `macos-system` / `linux-system` still work).
+2. **`--profile NAME`** (repeatable) and config `ISOL8_PROFILE`.
+3. **`auto_profiles`** — layers whose `filter.executables` contains the command
+   basename (e.g. `claude` → `agents/claude-code`).
+
+Transitive `requires` are pulled in automatically. `--enable NAME,…` (Phase 3) will
+be an alias for optional integration layers.
 
 ---
 
@@ -91,10 +111,16 @@ requires = ["keychain", "browser-native-messaging", "microphone"]
 
 Layer ids may be namespaced (`shared/agent-common`, `toolchains/rust`).
 
-**Resolution algorithm** (`resolve_requires`, runs before `merge`):
+**Selection algorithm** (`select_layer_names`, before `resolve_requires`):
 
-1. Start from the explicitly selected layers (`--profile` / `--enable` / detected).
-2. DFS over `requires`, collecting every transitive dependency.
+1. Start from `default_profiles` (config) and explicit `--profile` names.
+2. If `auto_profiles`: scan all known layers; include any whose `filter.executables`
+   is non-empty and matches the confined command's basename.
+3. Deduplicate, preserving first-seen order.
+
+**Inheritance algorithm** (`resolve_requires`, after selection, before filter/merge):
+
+1. DFS over `requires` from the selected set, collecting every transitive dependency.
 3. **Cycle detection** — a back-edge is a hard error reporting the cycle path.
 4. **Dedup** — each layer appears once, even if required via multiple paths
    (diamonds: `claude-app → electron → macos-gui` and `… → vscode → macos-gui`
@@ -103,27 +129,55 @@ Layer ids may be namespaced (`shared/agent-common`, `toolchains/rust`).
    number (§2), then declaration order. A required layer lands at the earliest
    position that satisfies all its dependents.
 
-The output is an ordered `Vec<ProfileLayer>` fed straight into `merge` (§6).
-Inheritance is purely a layer-ordering resolver in front of the merge pipeline —
-it adds no new merge rule.
+The output is an ordered `Vec<Profile>` (deps-first). Each layer then passes through
+`filter::apply_layer_filter` (§5.1): layer-level `filter` may zero out grants; matching
+`[[policies]]` are folded in. Finally `merge` (§6) runs on the filtered layers plus
+the CLI override layer (`--add-dirs-*`).
 
 ---
 
 ## 4. File format
 
-TOML is primary (built-in `profiles/*.toml`, embedded at build time). User layers
-live in the config dir (`$XDG_CONFIG_HOME/isol8/profiles/`, or the platform
-equivalent). YAML is a *target* format and not accepted yet (see §0).
-
-A file may define one or many layers. Two forms (only the first is parsed today — §0):
-
-**One layer per file** (file stem = layer name) — **the supported form**:
+TOML is primary for layers (built-in `profiles/**/*.toml`, embedded via `build.rs`).
+Layers may be namespaced by subdirectory:
 
 ```toml
-# profiles/rust.toml  → layer "rust"
-requires = ["system-runtime"]
-paths = [ { path = "~/.cargo", access = "rw" }, { path = "~/.rustup", access = "ro" } ]
-env   = { CARGO_TERM_COLOR = "always" }
+# profiles/toolchains/rust.toml  → layer "toolchains/rust"
+requires = ["macos/system-runtime"]
+paths = [ { path = "~/.cargo", access = "rw" } ]
+```
+
+**Layer overlay sources** (lowest → highest priority on name collision):
+
+| Source | Location | Missing path behaviour |
+|--------|----------|------------------------|
+| Built-in | `profiles/**/*.toml` (embedded) | N/A |
+| User config | `$XDG_CONFIG_HOME/isol8/profiles/**/*.toml` | Silent skip if dir absent |
+| Profile path | `--profile-path` / `config.profile_paths` | **Hard error** if path missing |
+
+A profile-path entry may be a **directory** (recurse `**/*.toml`, id = relative path
+without extension) or a **single file** (id = filename stem).
+
+**Global config** (`isol8.toml` / `isol8.yaml`) — separate from layer files:
+
+```toml
+default_profiles = ["base", "macos/system-runtime"]
+auto_profiles = true
+profile_paths = ["/proj/my-profiles", "/proj/override.toml"]
+add_dirs_rw = []
+```
+
+See [`instructions.md`](./instructions.md) for discovery order and `ISOL8_*` env vars.
+
+A file may define one or many layers. Two forms (only the first is parsed — §0):
+
+**One layer per file** — **the supported form**:
+
+```toml
+# profiles/agents/claude-code.toml  → layer "agents/claude-code"
+filter = { executables = ["claude"] }
+requires = ["integrations/keychain", "integrations/browser-native-messaging"]
+paths = [ { path = "~/.claude", access = "rw" } ]
 ```
 
 **Multiple layers in one file** (explicit `[profile.<name>]`) — *target only, not parsed yet (§0)*:
@@ -170,14 +224,52 @@ network:
 | Field | Type | Default | Req | Meaning |
 |---|---|---|---|---|
 | `requires` | array of string | `[]` | no | Layers pulled in transitively, deps-first (§3). Alias: `extends`. |
-| `paths` | array of PathGrant | `[]` | no | Filesystem grants (R2). |
+| `filter` | ProfileFilter | unset | no | Layer-level gate (see ProfileFilter + Filter application below). When set and no match, grants/env/home/macos are dropped but `requires` still participates in graph resolution. |
+| `policies` | array of Policy | `[]` | no | Conditional grant bundles (see Policy below). |
+| `paths` | array of PathGrant | `[]` | no | Unconditional filesystem grants (R2). |
 | `env` | map<string,string> | `{}` | no | Env defaults, merged without override (R3.5). |
 | `home_replace` | HomeReplace | unset | no | HOME replacement policy (R4). |
-| `network` | NetworkPolicy | unset | no | Network tier + domain allowlist (R5). |
+| `network` | NetworkPolicy | unset | no | Network tier + domain allowlist (R5). *Not parsed yet.* |
 | `macos` | MacosExtra | unset | no | macOS-only capability grants + raw SBPL passthrough (§8). |
 
-Layer name comes from the file stem (one-per-file form) or the `[profile.<name>]`
-table key. It is not a field inside the table.
+Layer name comes from the file's relative path under its source root (one-per-file
+form) or the `[profile.<name>]` table key. It is not a field inside the table.
+
+### ProfileFilter
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `executables` | array of string | `[]` | Match `cmd[0]` basename (path stripped, `.exe` stripped on Windows). Empty = no constraint. |
+| `os` | array of string | `[]` | Match `macos` / `linux` / `windows`. Empty = no constraint. |
+| `arch` | array of string | `[]` | Match `aarch64` / `x86_64` / … Empty = no constraint. |
+
+Multiple fields in one filter use **AND** semantics. A filter with all fields empty
+matches every run context.
+
+**Auto-selection** uses only layers with a **non-empty `executables`** list. OS/arch
+filters gate grants when a layer is selected (via defaults, `--profile`, requires, or
+auto-select) but do not alone trigger auto-selection.
+
+### Policy (`[[policies]]`)
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `filter` | ProfileFilter | `{}` | All constraints must match for this policy's grants to apply. |
+| `paths` | array of PathGrant | `[]` | Grants contributed when filter matches. |
+| `macos` | MacosExtra | unset | macOS extras contributed when filter matches. |
+
+### Filter application
+
+After `resolve_requires`, each layer passes through `apply_layer_filter(ctx)`:
+
+1. If layer `filter` is set and fails → clear `paths`, `env`, `home_replace`, `macos`,
+   `policies` (the layer shell remains for ordering; `requires` was already expanded).
+2. Fold each `[[policies]]` entry whose `filter` matches into the layer's unconditional
+   fields; drop non-matching policies.
+3. Feed filtered layers to `merge` (§6).
+
+Dependencies pulled via `requires` are **not** re-filtered by the parent's executable
+filter — only each layer's own `filter` / `policies` apply.
 
 ### PathGrant
 
@@ -259,8 +351,15 @@ resolved **before** any merge (R4.2). So a layer written as `~/.cargo` targets t
 scratch/replacement home when one is active — collapsing a large class of grants
 into one decision and keeping the real dotfiles untouched (R4.5/R4.6).
 
-Order guarantee: `home::resolve` → `resolve_requires` → expand `~` in all layers →
-`merge` → backend render.
+Order guarantee:
+
+```
+select_layer_names → resolve_requires → apply_layer_filter (per layer)
+  → home::resolve → expand ~ → merge (+ CLI overrides) → backend render
+```
+
+`home::resolve` reads `home_replace` from the **filtered** layer stack, so a
+layer skipped by OS filter does not contribute home policy.
 
 ---
 
@@ -307,5 +406,34 @@ three home macros are covered by `match` + `~`-expansion (§5/§7).
 - Unknown fields are rejected (`#[serde(deny_unknown_fields)]`) to catch typos —
   a silently-ignored grant is a security footgun.
 - A `macos` block on a non-macOS run is loaded but ignored, with a warning.
-- `--dry-run` renders the fully merged effective policy (including inheritance
-  expansion) so the model is auditable before any process starts.
+- `--show-policies` / `--dry-run` render the layer stack and fully merged effective
+  policy so the model is auditable before any process starts.
+- `--show-profiles` (no command) or `isol8 @profiles-list` shows every known layer
+  and its source (`Builtin`, `UserConfig`, `ProfilePath(path)`).
+- `--show-profiles CMD...` shows which layers were selected (defaults, explicit,
+  auto-match) for that command.
+- `profile_paths` / `--profile-path` must exist; a typo is a load error, not a
+  silent widening of policy.
+
+---
+
+## 10. Built-in layer inventory (Safehouse port)
+
+The embedded tree mirrors [Agent Safehouse](https://github.com/eugene1g/agent-safehouse)
+composition bands (generalized cross-platform):
+
+| Band | Path prefix | Examples |
+|------|-------------|----------|
+| 00 base | `base` | deny-by-default baseline, scratch HOME |
+| 10 system-runtime | `macos/system-runtime`, `linux/system-runtime` | OS essentials; aliases `macos-system`, `linux-system` |
+| 20 network | `network` | requires-only stub until Phase 3 |
+| 30 toolchains | `toolchains/*` | `rust`, `node`, `python`, … |
+| 40 shared | `shared/*` | `agent-common`, `ipc-sysv-sem` |
+| 50–55 integrations | `integrations/*` | `git`, `keychain`, `macos-gui`, `electron`, … |
+| 60 agents | `agents/*` | `claude-code` (auto: `claude`), `codex`, … |
+| 65 apps | `apps/*` | `claude-app`, `vscode-app`, … |
+| Linux-only | `linux/*` | `secret-service`, `gui` |
+
+macOS-specific Seatbelt rules live in `[macos]` blocks (`capabilities` + `raw` using
+TOML literal strings `'''…'''` for regex-heavy SBPL). Linux counterparts use path
+grants and OS filters where no Landlock/Mach equivalent exists.

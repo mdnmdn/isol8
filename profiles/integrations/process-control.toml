@@ -1,0 +1,14 @@
+# integrations/process-control
+# Integration: Process Control Host process enumeration and signalling for local supervision workflows.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+[macos]
+capabilities = ["signal"]
+raw = '''
+(allow mach-lookup
+    (global-name "com.apple.sysmond")  
+)
+(kill, pkill, kill -0)
+'''

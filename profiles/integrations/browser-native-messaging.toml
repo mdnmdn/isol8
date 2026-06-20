@@ -1,0 +1,32 @@
+# integrations/browser-native-messaging
+# Integration: Browser Native Messaging Browser native messaging host registration (Chromium + Firefox) and Chromium extension detection.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/Library/Application Support/Google/Chrome", access = "ro", match = "literal" },
+  { path = "~/Library/Application Support/BraveSoftware/Brave-Browser", access = "ro", match = "literal" },
+  { path = "~/Library/Application Support/Arc/User Data", access = "ro", match = "literal" },
+  { path = "~/Library/Application Support/Microsoft Edge", access = "ro", match = "literal" },
+  { path = "~/Library/Application Support/Chromium", access = "ro", match = "literal" },
+  { path = "~/Library/Application Support/Vivaldi", access = "ro", match = "literal" },
+  { path = "~/Library/Application Support/com.operasoftware.Opera", access = "ro", match = "literal" },
+  { path = "~/Library/Application Support/Firefox", access = "ro", match = "literal" },
+  { path = "~/Library/Application Support/Mozilla", access = "ro", match = "literal" },
+  { path = "~/Library/Application Support/Google/Chrome/Default/Extensions", access = "ro" },
+  { path = "~/Library/Application Support/BraveSoftware/Brave-Browser/Default/Extensions", access = "ro" },
+  { path = "~/Library/Application Support/Arc/User Data/Default/Extensions", access = "ro" },
+  { path = "~/Library/Application Support/Microsoft Edge/Default/Extensions", access = "ro" },
+  { path = "~/Library/Application Support/Chromium/Default/Extensions", access = "ro" },
+  { path = "~/Library/Application Support/Vivaldi/Default/Extensions", access = "ro" },
+  { path = "~/Library/Application Support/com.operasoftware.Opera/Default/Extensions", access = "ro" },
+  { path = "~/Library/Application Support/Google/Chrome/NativeMessagingHosts", access = "rw" },
+  { path = "~/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts", access = "rw" },
+  { path = "~/Library/Application Support/Arc/User Data/NativeMessagingHosts", access = "rw" },
+  { path = "~/Library/Application Support/Microsoft Edge/NativeMessagingHosts", access = "rw" },
+  { path = "~/Library/Application Support/Chromium/NativeMessagingHosts", access = "rw" },
+  { path = "~/Library/Application Support/Vivaldi/NativeMessagingHosts", access = "rw" },
+  { path = "~/Library/Application Support/com.operasoftware.Opera/NativeMessagingHosts", access = "rw" },
+  { path = "~/Library/Application Support/Mozilla/NativeMessagingHosts", access = "rw" },
+]

@@ -1,0 +1,32 @@
+# integrations/keychain
+# Integration: Keychain macOS Keychain and Security framework for agent authentication/credential storage.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/Library/Keychains", access = "rw" },
+  { path = "~/Library/Preferences/com.apple.security.plist", access = "rw", match = "literal" },
+  { path = "/Library/Preferences/com.apple.security.plist", access = "ro", match = "literal" },
+  { path = "/Library/Keychains/System.keychain", access = "ro", match = "literal" },
+  { path = "/private/var/db/mds", access = "ro" },
+  { path = "~/Library", access = "metadata", match = "literal" },
+  { path = "~/Library/Keychains", access = "metadata", match = "literal" },
+  { path = "/Library", access = "metadata", match = "literal" },
+  { path = "/Library/Keychains", access = "metadata", match = "literal" },
+]
+
+[macos]
+raw = '''
+(allow mach-lookup
+    (global-name "com.apple.SecurityServer")                   
+    (global-name "com.apple.security.agent")                   
+    (global-name "com.apple.securityd.xpc")                    
+    (global-name "com.apple.security.authhost")                
+    (global-name "com.apple.secd")                             
+    (global-name "com.apple.trustd")                           
+)
+(allow ipc-posix-shm-read-data ipc-posix-shm-write-create ipc-posix-shm-write-data
+    (ipc-posix-name "com.apple.AppleDatabaseChanged")          
+)
+'''

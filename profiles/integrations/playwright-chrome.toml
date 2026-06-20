@@ -1,0 +1,5 @@
+# integrations/playwright-chrome
+# Integration: Playwright Chrome Metadata-only Playwright Chrome profile that requires the shared full Chrome
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/chromium-full"]

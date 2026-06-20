@@ -1,0 +1,28 @@
+# agents/claude-code
+# Agent: Claude Code Claude Code CLI binary, state, config, and MCP integration paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+filter = { executables = ["claude"] }
+
+requires = ["integrations/keychain", "integrations/browser-native-messaging", "integrations/microphone"]
+
+paths = [
+  { path = "~/.local/bin/claude", access = "rw", match = "prefix" },
+  { path = "~/.cache/claude", access = "rw" },
+  { path = "~/.claude", access = "rw" },
+  { path = "~/.claude.json", access = "rw", match = "prefix" },
+  { path = "~/.claude.lock", access = "rw", match = "literal" },
+  { path = "~/.config/claude", access = "rw" },
+  { path = "~/.local/state/claude", access = "rw" },
+  { path = "~/.local/share/claude", access = "rw" },
+  { path = "~/.mcp.json", access = "rw", match = "literal" },
+  { path = "~/.claude.json.", access = "ro", match = "prefix" },
+  { path = "~/Library/Application Support/Claude/claude_desktop_config.json", access = "ro", match = "literal" },
+  { path = "/Library/Application Support/ClaudeCode/.claude", access = "ro" },
+  { path = "/Library/Application Support/ClaudeCode/managed-settings.json", access = "ro", match = "literal" },
+  { path = "/Library/Application Support/ClaudeCode/managed-mcp.json", access = "ro", match = "literal" },
+  { path = "/Library/Application Support/ClaudeCode/CLAUDE.md", access = "ro", match = "literal" },
+  { path = "/Applications", access = "metadata", match = "literal" },
+  { path = "/Applications/Visual Studio Code.app", access = "metadata" },
+  { path = "/Applications/Visual Studio Code - Insiders.app", access = "metadata" },
+]

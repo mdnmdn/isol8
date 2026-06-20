@@ -1,0 +1,9 @@
+# integrations/cleanshot
+# Integration: CleanShot Read access to CleanShot screenshot/recording media for pasting into agents.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/macos-gui"]
+
+paths = [
+  { path = "~/Library/Application Support/CleanShot/media", access = "ro" },
+]

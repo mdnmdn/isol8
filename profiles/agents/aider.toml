@@ -1,0 +1,17 @@
+# agents/aider
+# Agent: Aider Aider CLI binary, state, and config paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime", "integrations/git", "toolchains/python"]
+
+paths = [
+  { path = "~/.local/bin/aider", access = "rw", match = "prefix" },
+  { path = "~/.local/bin/aider-install", access = "rw", match = "prefix" },
+  { path = "~/.aider", access = "rw", match = "prefix" },
+  { path = "~/.aider.conf.yml", access = "rw", match = "literal" },
+  { path = "~/.aider.model.settings.yml", access = "rw", match = "literal" },
+  { path = "~/.aider.model.metadata.json", access = "rw", match = "literal" },
+  { path = "~/.config/aider", access = "rw" },
+  { path = "~/.cache/aider", access = "rw" },
+  { path = "~/.local/share/aider", access = "rw" },
+]

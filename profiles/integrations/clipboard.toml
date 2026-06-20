@@ -1,0 +1,14 @@
+# integrations/clipboard
+# Integration: Clipboard Clipboard read/write access for macOS pbcopy/pbpaste and related workflows.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+[macos]
+raw = '''
+(allow mach-lookup
+    (global-name "com.apple.pasteboard.1")                               
+    (global-name "com.apple.lsd.mapdb")                                  
+    (global-name "com.apple.lsd.modifydb")
+)
+'''

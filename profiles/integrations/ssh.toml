@@ -1,0 +1,35 @@
+# integrations/ssh
+# Integration: SSH SSH agent sockets, system config, key deny rules, and safe config access.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/.ssh", access = "none" },
+  { path = "~/.ssh", access = "metadata", match = "literal" },
+  { path = "~/.ssh/known_hosts", access = "ro", match = "literal" },
+  { path = "~/.ssh/config", access = "ro", match = "literal" },
+  { path = "~/.ssh/config.d", access = "ro" },
+  { path = "~/.ssh/allowed_signers", access = "ro", match = "literal" },
+  { path = "/private/etc/ssh/ssh_config", access = "ro", match = "literal" },
+  { path = "/private/etc/ssh/ssh_config.d", access = "ro" },
+  { path = "/private/etc/ssh/crypto.conf", access = "ro", match = "literal" },
+  { path = "/private/etc/ssh/crypto", access = "ro" },
+  { path = "~/.ssh/agent", access = "metadata", match = "literal" },
+  { path = "^/private/tmp/com\\.apple\\.launchd\\.[^/]+/Listeners$", access = "rw", match = "regex" },
+  { path = "^/tmp/com\\.apple\\.launchd\\.[^/]+/Listeners$", access = "rw", match = "regex" },
+  { path = "~/.ssh/agent", access = "rw" },
+]
+
+[macos]
+raw = '''
+(allow file-write*
+    (home-literal "/.ssh/known_hosts")                              
+    (home-literal "/.ssh/known_hosts.old")                          
+)
+(allow network-outbound
+    (remote unix-socket (path-regex #"^/private/tmp/com\.apple\.launchd\.[^/]+/Listeners$"))
+    (remote unix-socket (path-regex #"^/tmp/com\.apple\.launchd\.[^/]+/Listeners$"))
+    (remote unix-socket (path-regex (string-append "^" HOME_DIR "/\\.ssh/agent(/.*)?$")))
+)
+'''

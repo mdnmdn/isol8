@@ -1,0 +1,5 @@
+# network
+# Network Network policy; intentionally fully open for reliable agent operation.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["base", "macos/system-runtime"]

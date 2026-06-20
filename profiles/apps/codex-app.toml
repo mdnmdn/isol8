@@ -1,0 +1,30 @@
+# apps/codex-app
+# App: OpenAI Codex Desktop OpenAI Codex Desktop app bundle, preferences, and data paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["integrations/keychain", "integrations/electron"]
+
+paths = [
+  { path = "~/Library/Application Support/Codex", access = "rw" },
+  { path = "~/Library/Caches/com.openai.codex", access = "rw" },
+  { path = "~/Library/Logs/com.openai.codex", access = "rw" },
+  { path = "~/Library/HTTPStorages/com.openai.codex", access = "rw" },
+  { path = "~/Library/HTTPStorages/com.openai.codex.binarycookies", access = "rw", match = "literal" },
+  { path = "/Applications/Codex.app", access = "ro" },
+  { path = "~/Library/Preferences/com.openai.codex.plist", access = "ro", match = "literal" },
+]
+
+[macos]
+raw = '''
+(allow user-preference-read user-preference-write
+    (preference-domain "com.openai.codex")
+)
+(allow mach-lookup
+    (global-name-regex #"^com\.openai\.codex\.MachPortRendezvousServer\.")
+    (global-name-regex #"^com\.openai\.codex-spks")
+)
+(allow mach-register
+    (global-name-regex #"^com\.openai\.codex\.MachPortRendezvousServer\.")
+    (global-name-regex #"^com\.openai\.codex-spks")
+)
+'''

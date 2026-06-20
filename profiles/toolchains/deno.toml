@@ -1,0 +1,11 @@
+# toolchains/deno
+# Toolchain: Deno Deno runtime, cache, and config paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/.deno", access = "rw" },
+  { path = "~/.cache/deno", access = "rw" },
+  { path = "~/Library/Caches/deno", access = "rw" },
+]

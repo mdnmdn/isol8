@@ -1,0 +1,30 @@
+# toolchains/runtime-managers
+# Toolchain: Runtime Managers Cross-language version managers (mise, asdf, proto, pkgx).
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+requires = ["macos/system-runtime"]
+
+paths = [
+  { path = "~/.config/mise", access = "rw" },
+  { path = "~/.local/share/mise", access = "rw" },
+  { path = "~/.local/state/mise", access = "rw" },
+  { path = "~/.cache/mise", access = "rw" },
+  { path = "~/Library/Caches/mise", access = "rw" },
+  { path = "~/.mise.toml", access = "rw", match = "literal" },
+  { path = "~/.volta", access = "rw" },
+  { path = "~/.asdf", access = "rw" },
+  { path = "~/.config/asdf", access = "rw" },
+  { path = "~/.local/share/asdf", access = "rw" },
+  { path = "~/.local/state/asdf", access = "rw" },
+  { path = "~/.cache/asdf", access = "rw" },
+  { path = "~/Library/Caches/asdf", access = "rw" },
+  { path = "~/.asdfrc", access = "rw", match = "literal" },
+  { path = "~/.tool-versions", access = "rw", match = "literal" },
+  { path = "~/.proto", access = "rw" },
+  { path = "~/.prototools", access = "rw", match = "literal" },
+  { path = "~/.pkgx", access = "rw" },
+  { path = "~/.local/share/pkgx", access = "rw" },
+  { path = "~/.cache/pkgx", access = "rw" },
+  { path = "~/Library/Caches/pkgx", access = "rw" },
+  { path = "~/Library/Packages", access = "rw" },
+]

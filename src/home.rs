@@ -40,7 +40,7 @@ pub fn resolve(run: &RunArgs, layers: &[Profile]) -> Result<EffectiveHome> {
         }
     }
 
-    let path = if let Some(home) = &run.home {
+    let path = if let Some(home) = run.home() {
         PathBuf::from(home)
     } else if let Some(p) = hr_path {
         PathBuf::from(p)

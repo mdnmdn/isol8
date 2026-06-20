@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Deny-by-default cross-platform sandbox for AI coding agents and CLI tools"
 default-run = "isol8"
+build = "build.rs"
 
 [lib]
 name = "isol8"
@@ -22,7 +23,11 @@ path = "src/bin/isol8-field-test.rs"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+serde_yaml = "0.9"
 anyhow = "1"
+
+[build-dependencies]
+# build.rs only walks profiles/; no extra deps needed.
 
 # platform backends
 [target.'cfg(target_os = "linux")'.dependencies]

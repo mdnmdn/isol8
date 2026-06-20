@@ -5,10 +5,16 @@
 > *destination*; the current tree (Phase 1, macOS MVP working — see
 > [`AGENTS.md`](../AGENTS.md)) deliberately consolidates some of it:
 >
-> - `profile/` is a single `src/profile.rs` (types + load + merge + `resolve_requires`),
->   not a submodule dir, and there is no separate `profile/render.rs`.
-> - `--dry-run` rendering (`render_dry_run`) lives in `src/backends/mod.rs`, and the
->   spawn/exec logic is inside each backend rather than a separate `src/spawn.rs`.
+> - `profile/` is a single `src/profile.rs` (types + `LayerRegistry` + load + merge +
+>   `resolve_requires` + `select_layer_names`), not a submodule dir; there is no
+>   separate `profile/render.rs`.
+> - `build.rs` walks `profiles/**/*.toml` and emits `profiles_embedded.rs` (~70
+>   Safehouse-derived layers embedded at compile time).
+> - `config.rs`, `filter.rs`, and `resolve.rs` are real: global config discovery,
+>   conditional layer/policy filters, and the shared effective-policy pipeline.
+> - `--dry-run` / `isol8 policies show` render via `backends::render_dry_run` (in
+>   `src/backends/mod.rs`); `main.rs` also prints the resolved layer stack. Spawn/exec
+>   logic is inside each backend rather than a separate `src/spawn.rs`.
 > - A `src/lib.rs` exposes the modules so the binaries and `tests/` share the crate.
 > - `home.rs`, `env.rs`, `backends/macos.rs`, and the `isol8-field-test` bin are real;
 >   `net/`, `caps.rs`, the N3 helper, and `backends/linux.rs` are still stubs/future.
@@ -23,45 +29,46 @@
 ```
 isol8/
 ├── Cargo.toml                  # workspace-less single crate; main bin + net helper bin
+├── build.rs                    # walks profiles/**/*.toml → OUT_DIR/profiles_embedded.rs
 ├── AGENTS.md
 ├── _docs/
 │   ├── project-description.md  # requirements + ecosystem research
+│   ├── profile-model.md        # on-disk schema, merge, filters
 │   └── project-structure.md    # this file
-├── profiles/                   # built-in TOML profile layers, embedded at build time
+├── profiles/                   # built-in TOML layers (~70), embedded at build time
 │   ├── base.toml
-│   ├── rust.toml
-│   ├── node.toml
-│   ├── python.toml
-│   └── net/
-│       ├── github.toml
-│       └── npm.toml
+│   ├── macos-system.toml       # backward-compat alias → macos/system-runtime
+│   ├── linux-system.toml       # backward-compat alias → linux/system-runtime
+│   ├── macos/system-runtime.toml
+│   ├── linux/system-runtime.toml
+│   ├── toolchains/rust.toml
+│   ├── integrations/git.toml
+│   ├── agents/claude-code.toml
+│   └── …                       # full Safehouse port (see profiles/)
 ├── src/
-│   ├── main.rs                 # bin entrypoint: parse → resolve → apply → exec
-│   ├── cli.rs                  # clap definitions
-│   ├── profile/
-│   │   ├── mod.rs              # Profile, ProfileLayer, Access, PathGrant, merge
-│   │   ├── load.rs             # embedded defaults + user TOML dir discovery
-│   │   └── render.rs           # backend-agnostic effective-policy view (--dry-run)
+│   ├── main.rs                 # bin: parse → config → resolve → exec / introspection
+│   ├── cli.rs                  # clap: run, init, profiles *, policies *
+│   ├── config.rs               # isol8.toml/yaml discovery, ISOL8_* overrides, init template
+│   ├── filter.rs               # ProfileFilter matching, apply_layer_filter, policies fold
+│   ├── resolve.rs              # effective_policy() shared by run + policies show
+│   ├── profile.rs              # Profile, Policy, LayerRegistry, merge, resolve_requires
 │   ├── env.rs                  # sanitized environment construction (HOME first)
 │   ├── home.rs                 # R4 effective-home resolution + seeding
-│   ├── spawn.rs                # cross-platform child exec + teardown + exit code
+│   ├── spawn.rs                # (target) cross-platform child exec — not split out yet
 │   ├── backends/
-│   │   ├── mod.rs              # Backend trait, select(), capability probe
-│   │   ├── linux.rs           # Landlock ruleset + optional user/mount ns
-│   │   ├── macos.rs           # Seatbelt policy text + sandbox-exec
-│   │   └── windows.rs         # AppContainer + Job Objects (Phase 5, stub until then)
-│   ├── net/
-│   │   ├── mod.rs             # NetTier, NetworkPolicy, tier auto-select (R5.7)
-│   │   ├── proxy.rs          # N1 filtering proxy (hostname/SNI; optional MITM)
-│   │   ├── pasta.rs          # N2 rootless userspace stack orchestration
-│   │   └── helper.rs         # N3 client side: talk to isol8-net-helper
-│   └── caps.rs                # capability probing/dropping (CAP_NET_ADMIN, userns)
+│   │   ├── mod.rs              # Backend trait, select(), render_dry_run
+│   │   ├── linux.rs            # Landlock ruleset (stub/broken in some envs)
+│   │   ├── macos.rs            # Seatbelt policy text + sandbox-exec
+│   │   └── windows.rs          # AppContainer + Job Objects (Phase 5, stub)
+│   ├── net/                    # (Phase 3, not started)
+│   └── caps.rs                 # (Phase 3, not started)
 ├── src/bin/
-│   ├── isol8-net-helper.rs # small privileged N3 helper (setcap cap_net_admin+ep)
-│   └── isol8-field-test.rs # real-sandbox field tests (see _docs/testing-strategies.md)
+│   ├── isol8-net-helper.rs     # (Phase 3) privileged N3 helper
+│   └── isol8-field-test.rs     # real-sandbox field tests
 └── tests/
-    ├── profile_merge.rs        # unit-ish: deny-first merge semantics
-    └── integration_linux.rs    # run real cmds, assert allowed/denied (Linux only)
+    ├── profile_merge.rs        # deny-first merge + inheritance
+    ├── profile_path.rs         # profile-path overlay + auto-profile selection
+    └── integration_linux.rs    # (target) Linux enforcement harness
 ```
 
 **Two binaries.** `isol8` (main, always unprivileged) and
@@ -71,36 +78,48 @@ namespace. The main binary never needs root.
 
 ---
 
-## 2. Data flow (one `isol8 run` invocation)
+## 2. Data flow (one `isol8 <cmd>` invocation)
 
 ```
 cli::Cli::parse()
-   │  RunArgs { profiles, add_dirs_rw/ro, home, env flags, net tier, dry_run, cmd }
+   │  RunArgs { opts: ProfileOpts, cmd }
    ▼
-home::resolve(&run)                      ── R4: effective $HOME FIRST
-   │  EffectiveHome { path, seed: Vec<SeedEntry> }
+config::load()                           ── isol8.toml/yaml (cwd, ISOL8_CONFIG_PATH,
+   │  Config { default_profiles, auto_profiles, profile_paths, … }   or ~/.config/isol8/)
    ▼
-profile::load(&run.profiles)             ── embedded defaults + user TOML dir
-   │  Vec<ProfileLayer>
+config::apply_to_run() + apply_env_overrides()   ── precedence: defaults < config < ISOL8_* < CLI
    ▼
-profile::resolve_requires(selected)      ── inheritance: transitive `requires`,
-   │  Vec<ProfileLayer>  (deps-first)        cycle detect, dedup, topo-sort (band tiebreak)
-   ▼
-profile::merge(layers, &overrides)       ── deny-first union; folds --add-dirs-*,
-   │  Profile { paths, env, home_replace, network }   home, env, net into final layer
-   ▼
-env::build_minimal(&profile, &home)      ── R3.1 allowlist, HOME applied first
-   │  HashMap<String,String>
-   ▼
-caps::probe()  +  backends::select()     ── strongest supported net tier (R5.7)
+resolve::effective_policy(&run)
    │
-   ├── run.dry_run ? profile::render::dump(&profile, &env, &cmd) ; return
+   ├─ profile::LayerRegistry::load(profile_paths)
+   │     builtin (build.rs embed) → user config dir → profile-path overlays
+   │
+   ├─ filter::RunContext::from_cmd(&cmd)
+   ├─ profile::select_layer_names()        ── default_profiles + --profile + auto_profiles
+   │     (executable filter match on layer.filter.executables)
+   ├─ profile::resolve_requires()           ── transitive requires, cycle detect, dedup
+   ├─ filter::apply_layer_filter() per layer   ── skip grants when os/arch/executable mismatch;
+   │     fold matching [[policies]] into layer
+   ├─ home::resolve(&run, &layers)         ── R4: effective $HOME FIRST (on filtered layers)
+   ├─ profile::load_merged()               ── ~ expansion, --add-dirs-* override layer, merge
+   └─ env::build_minimal()                 ── R3.1 allowlist, HOME applied first
+   │  EffectivePolicy { layer_names, profile, env, home }
+   ▼
+backends::select()
+   │
+   ├── run.dry_run / policies show ? render layer stack + render_dry_run() ; return
+   ▼
+home::seed(&effective.home)              ── R4.4 read-only seed into scratch home
    ▼
 backend.spawn(&profile, &env, &cmd)      ── apply OS policy, exec, wait
    │  i32 exit code
    ▼
 std::process::exit(code)
 ```
+
+Introspection (`--show-policies`, `--show-profiles`, `@profiles-list`, `@profiles-show`)
+reuses `LayerRegistry`, `select_layer_names`, and `resolve::effective_policy` without
+spawning.
 
 **Ordering invariant:** `home::resolve` runs *before* `profile::merge`, so every
 `$HOME`-relative grant in every layer is computed against the replacement home, not
@@ -112,90 +131,110 @@ the real one (R4.2/R4.6).
 
 ### `cli.rs`
 
-clap derive. `Cli { command: Command }`, `Command::Run(RunArgs)`. `RunArgs` carries
-every knob from the spec:
+No `run` subcommand — the confined command is passed directly. Meta/admin commands
+use an `@` prefix (`cli::META_PREFIX`) so they never collide with the confined argv.
 
 ```rust
-pub struct RunArgs {
-    pub profiles: Vec<String>,        // --profile (repeatable, R6 layers)
-    pub add_dirs_rw: Vec<String>,     // --add-dirs-rw (R2.5)
-    pub add_dirs_ro: Vec<String>,     // --add-dirs-ro (R2.5)
-    pub home: Option<String>,         // --home (R4.1)
-    pub env_pass: Vec<String>,        // --env-pass NAMES (R3.2)
-    pub env_file: Option<String>,     // --env=FILE   (R3.3)
-    pub env_inherit: bool,            // --env full passthrough escape hatch (R3.4)
-    pub net_tier: Option<NetTier>,    // --net n0|n1|n2|n3 (R5); default = auto
-    pub enable: Vec<String>,          // --enable github,npm (R5.3 / R6 opt-in layers)
-    pub dry_run: bool,                // --dry-run effective policy dump
-    pub cmd: Vec<String>,             // trailing_var_arg, the confined command
+// Normal usage:
+isol8 [ProfileOpts] <COMMAND> [ARGS]...
+
+pub struct ProfileOpts {
+    pub profiles: Vec<String>,        // --profile
+    pub profile_paths: Vec<String>,   // --profile-path
+    pub auto_profiles: bool,          // --auto-profiles
+    pub add_dirs_rw/ro: Vec<String>,
+    pub home: Option<String>,
+    pub show_policies: bool,          // --show-policies (alias: --dry-run)
+    pub show_profiles: bool,         // --show-profiles (list or resolve)
+    pub verbose: bool,
 }
+
+// Meta commands (never passed to the confined process):
+isol8 @init [--path DIR] [--format toml|yaml]
+isol8 @profiles-list [--verbose] [ProfileOpts]
+isol8 @profiles-show <NAME> [ProfileOpts]
+
+// Bare `isol8` → help.
 ```
 
-### `profile/mod.rs` — the core (drives everything)
+`cli::parse()` returns `ParsedCli::{Help, Run, Init, ProfilesList, ProfilesShow}`.
+`RunArgs` remains the type consumed by `resolve::effective_policy`.
+
+### `profile.rs` — the core (drives everything)
+
+Implemented as a single module (target `profile/` split is deferred). Key types:
 
 ```rust
-pub enum Access { None, Ro, Rw }            // default deny = None
+pub enum Access { None, Ro, Rw, Metadata }
 
-pub struct PathGrant { pub path: String, pub access: Access }
+pub struct PathGrant { pub path: String, pub access: Access, pub r#match: MatchKind }
 
-pub struct HomeReplace { pub enabled: bool, pub auto_scratch: bool, pub seed: Vec<String> }
+pub struct ProfileFilter { pub os: Vec<String>, pub arch: Vec<String>, pub executables: Vec<String> }
 
-pub struct NetworkPolicy { pub tier: NetTier, pub allow_domains: Vec<String> }
+pub struct Policy { pub filter: ProfileFilter, pub paths: Vec<PathGrant>, pub macos: Option<MacosExtra> }
 
-// One TOML layer as authored.
-pub struct ProfileLayer {
-    pub name: String,
-    pub requires: Vec<String>,            // inheritance edges (alias `extends`)
-    pub paths: Vec<PathGrant>,
-    pub env: HashMap<String, String>,
-    pub home_replace: Option<HomeReplace>,
-    pub network: Option<NetworkPolicy>,
-    pub macos: Option<MacosExtra>,        // macOS-only caps + raw SBPL passthrough
-}
-
-/// Expand selected layers over their transitive `requires` graph.
-/// Topo-sort, deps-first; cycle detection (error), dedup, band-number tiebreak.
-/// Runs before merge — see _docs/profile-model.md §3.
-pub fn resolve_requires(selected: &[String]) -> Result<Vec<ProfileLayer>>;
-
-// The merged, effective policy handed to a backend.
+// One TOML layer as authored (also the merged result — ponytail: split if needed).
 pub struct Profile {
+    pub requires: Vec<String>,
+    pub filter: Option<ProfileFilter>,   // layer-level: skip grants when no match
+    pub policies: Vec<Policy>,           // conditional grant bundles
     pub paths: Vec<PathGrant>,
     pub env: HashMap<String, String>,
     pub home_replace: Option<HomeReplace>,
-    pub network: NetworkPolicy,
+    pub macos: Option<MacosExtra>,
+    // Phase 3: network: Option<NetworkPolicy>
 }
 
-/// Deny-first union (R2.4/R6). Order = base → system → network → toolchains →
-/// shared → integrations → --enable → auto-detected → workdir → custom → appended.
-/// Per path: most-recent explicit grant wins; env merged without override unless
-/// --env escape; network allowlist = union of enabled layers.
-pub fn merge(layers: &[ProfileLayer], overrides: &Overrides) -> Profile;
+pub enum LayerSource { Builtin, UserConfig, ProfilePath(String) }
+
+pub struct LayerRegistry { /* HashMap<name, LayerEntry> */ }
+
+pub fn select_layer_names(run, registry, ctx) -> Result<Vec<String>>;
+pub fn resolve_requires(selected, all) -> Result<Vec<Profile>>;
+pub fn merge(layers) -> Profile;
+pub fn load_merged(run, layers, home, ctx) -> Result<Profile>;
 ```
 
-TOML schema (authoring side), matching spec §7:
+**Layer registry overlay** (lowest → highest priority on name collision):
 
-```toml
-[profile.base]
-paths = [
-  { path = "/usr", access = "ro" },
-  { path = "/tmp", access = "rw" },
-]
-env = { PATH = "/usr/bin:/bin" }
-home_replace = { enabled = true, auto_scratch = true, seed = ["~/.gitconfig"] }
-network = { tier = "n1", allow_domains = ["github.com", "*.githubusercontent.com"] }
+1. Built-in — `build.rs` embed of `profiles/**/*.toml` (namespaced: `agents/claude-code`)
+2. User config dir — `$XDG_CONFIG_HOME/isol8/profiles/**/*.toml` (silent skip if absent)
+3. Profile paths — `--profile-path` / `config.profile_paths` (file or directory; hard error if missing)
 
-[profile.rust]
-paths = [ { path = "~/.cargo", access = "rw" } ]
+**Selection** (`select_layer_names`): `default_profiles` (from config) ∪ explicit
+`--profile` ∪ layers auto-selected when `auto_profiles` is on and
+`filter.executables` matches the command basename. Then `resolve_requires` expands
+deps; `filter::apply_layer_filter` strips non-matching grants (deps still pulled).
+
+See [`profile-model.md`](./profile-model.md) for schema and merge rules.
+
+### `config.rs`
+
+```rust
+pub struct Config {
+    pub default_profiles: Vec<String>,  // e.g. ["base", "macos/system-runtime"]
+    pub auto_profiles: bool,
+    pub profile_paths: Vec<String>,
+    pub add_dirs_rw: Vec<String>,
+    pub add_dirs_ro: Vec<String>,
+    pub home: Option<String>,
+    pub dry_run: bool,
+}
 ```
 
-- `profile/load.rs` — `load(names) -> Vec<ProfileLayer>`. Built-in layers embedded
-  via `include_str!` from `profiles/`; user layers read from a config dir
-  (`$XDG_CONFIG_HOME/isol8` or platform equivalent). Auto-detection heuristics
-  (`--profile-for cargo`) live here.
-- `profile/render.rs` — `dump(&Profile, &env, &cmd)` for `--dry-run`: human-readable
-  effective grants + env + resolved tier. Machine-readable (JSON) export for agent
-  frameworks is a Phase 4 add here.
+Discovery: `ISOL8_CONFIG_PATH` (file or dir) → `./isol8.toml|yaml` →
+`~/.config/isol8/isol8.toml`. `ISOL8_PROFILE`, `ISOL8_PROFILE_PATH`,
+`ISOL8_ADD_DIRS_RW`, `ISOL8_HOME`, `ISOL8_DRY_RUN`, etc. mirror CLI flags.
+
+### `filter.rs`
+
+`RunContext { cmd, os, arch }`, `filter_matches`, `apply_layer_filter`,
+`apply_policies` (fold `[[policies]]` into unconditional fields when filter matches).
+
+### `resolve.rs`
+
+`effective_policy(&RunArgs) -> EffectivePolicy` — shared pipeline for `run`,
+`policies show`, and `--dry-run`.
 
 ### `home.rs` — R4, first-class
 
@@ -282,8 +321,11 @@ main sandboxed process into the prepared namespace.
   main binary never escalates.
 - **Single binary, no daemons.** No persistent state; scratch homes are temp dirs
   cleaned on exit.
-- **Trust via transparency.** `--dry-run` renders the exact effective policy;
-  backends surface *why* an access was denied with actionable fixes.
+- **Trust via transparency.** `--dry-run` / `isol8 policies show` render the layer
+  stack and exact effective policy; `isol8 profiles resolve` shows which layers matched.
+- **Config precedence.** Built-in defaults < config file < `ISOL8_*` env < CLI flags.
+- **Profile-path overlay.** External dirs/files override same-named built-in layers;
+  missing profile-path entries are hard errors (unlike the optional user config dir).
 
 ---
 
@@ -291,8 +333,8 @@ main sandboxed process into the prepared namespace.
 
 | Phase | Modules that become real |
 |---|---|
-| 1 | `cli`, `profile/*`, `env`, `home`, `spawn`, `backends/{linux,macos}` (MVP) |
-| 2 | full `env` flags, R1.3 limits in `linux`, `profile/render` dump, WSL2 paths |
+| 1 | `cli`, `profile.rs`, `config`, `filter`, `resolve`, `build.rs`, `env`, `home`, `backends/{linux,macos}` (MVP) |
+| 2 | full `env` flags, R1.3 limits in `linux`, structured JSON policy dump, WSL2 paths |
 | 3 | `net/*`, `caps`, `src/bin/isol8-net-helper.rs` |
 | 4 | seccomp in `linux`, JSON export in `render`, `tests/integration_*` |
 | 5 | `backends/windows` |
