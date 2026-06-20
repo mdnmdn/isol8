@@ -3,6 +3,8 @@
 //! replacement home, not the real one (profile-model §7).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
@@ -30,6 +32,9 @@ pub fn resolve(run: &RunArgs, layers: &[Profile]) -> Result<EffectiveHome> {
     let mut seed: Vec<String> = Vec::new();
     for layer in layers {
         if let Some(hr) = &layer.home_replace {
+            if !hr.enabled {
+                continue;
+            }
             hr_path = hr.path.clone();
             auto_scratch = hr.auto_scratch;
             for s in &hr.seed {
@@ -40,21 +45,52 @@ pub fn resolve(run: &RunArgs, layers: &[Profile]) -> Result<EffectiveHome> {
         }
     }
 
+    let real = real_home();
     let path = if let Some(home) = run.home() {
-        PathBuf::from(home)
+        PathBuf::from(expand_tilde(home, &real))
     } else if let Some(p) = hr_path {
-        PathBuf::from(p)
+        PathBuf::from(expand_tilde(&p, &real))
     } else if auto_scratch {
-        let dir = std::env::temp_dir().join(format!("isol8-{}-home", std::process::id()));
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("creating scratch home at {}", dir.display()))?;
-        dir
+        create_scratch_home()?
     } else {
         // No replacement requested: fall back to the real home.
-        real_home()
+        real
     };
 
     Ok(EffectiveHome { path, seed })
+}
+
+/// Create a unique scratch home under the OS temp dir (not predictable from PID alone).
+fn create_scratch_home() -> Result<PathBuf> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    for attempt in 0..16 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "isol8-home-{}-{}-{}-{attempt}",
+            std::process::id(),
+            nanos,
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => {
+                let meta = std::fs::symlink_metadata(&dir)
+                    .with_context(|| format!("stat scratch home {}", dir.display()))?;
+                if meta.file_type().is_symlink() {
+                    continue;
+                }
+                return Ok(dir);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("creating scratch home at {}", dir.display()));
+            }
+        }
+    }
+    anyhow::bail!("failed to create a unique scratch home directory after 16 attempts");
 }
 
 /// The real `$HOME`, or `/` if unset (never panics on user environment).
@@ -141,6 +177,70 @@ mod tests {
         assert_eq!(expand_tilde("/usr/bin", Path::new("/scratch")), "/usr/bin");
         // mid-string tilde is not a home reference
         assert_eq!(expand_tilde("/a/~/b", Path::new("/scratch")), "/a/~/b");
+    }
+
+    #[test]
+    fn resolve_expands_tilde_in_cli_home() {
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", "/real/home");
+
+        let run = crate::cli::run_from(
+            crate::cli::ProfileOpts {
+                home: Some("~/scratch".into()),
+                ..Default::default()
+            },
+            vec!["echo".into()],
+        );
+        let home = resolve(&run, &[]).unwrap();
+        assert_eq!(home.path, PathBuf::from("/real/home/scratch"));
+
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn resolve_honors_home_replace_enabled_false() {
+        let run = crate::cli::run_from(Default::default(), vec!["echo".into()]);
+        let layers = vec![crate::profile::Profile {
+            home_replace: Some(crate::profile::HomeReplace {
+                enabled: false,
+                auto_scratch: true,
+                path: None,
+                seed: vec![],
+            }),
+            ..Default::default()
+        }];
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", "/real/home");
+
+        let home = resolve(&run, &layers).unwrap();
+        assert_eq!(home.path, PathBuf::from("/real/home"));
+
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn scratch_home_paths_are_unique() {
+        let run = crate::cli::run_from(Default::default(), vec!["echo".into()]);
+        let layers = vec![crate::profile::Profile {
+            home_replace: Some(crate::profile::HomeReplace {
+                enabled: true,
+                auto_scratch: true,
+                path: None,
+                seed: vec![],
+            }),
+            ..Default::default()
+        }];
+        let a = resolve(&run, &layers).unwrap().path;
+        let b = resolve(&run, &layers).unwrap().path;
+        assert_ne!(a, b);
+        let _ = std::fs::remove_dir_all(a);
+        let _ = std::fs::remove_dir_all(b);
     }
 
     #[test]

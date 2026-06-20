@@ -147,4 +147,14 @@ isol8 --show-policies echo hi
 isol8 --profile-path ./my-profiles echo hi
 ```
 
-Full usage: [`_docs/instructions.md`](_docs/instructions.md).
+
+## Docs
+
+| Doc | Contents |
+|-----|----------|
+| [`_docs/instructions.md`](_docs/instructions.md) | User guide: CLI, flags, config, examples |
+| [`_docs/profile-model.md`](_docs/profile-model.md) | Profile format, filters, inheritance, merge |
+| [`_docs/project-structure.md`](_docs/project-structure.md) | Code layout and data flow |
+| [`_docs/project-description.md`](_docs/project-description.md) | Full requirements |
+| [`_docs/testing-strategies.md`](_docs/testing-strategies.md) | Unit + field tests |
+| [`AGENTS.md`](AGENTS.md) | Guide for contributors and agents |

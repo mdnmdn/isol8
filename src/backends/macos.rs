@@ -78,15 +78,22 @@ impl Backend for MacosBackend {
             .with_context(|| format!("waiting for {SANDBOX_EXEC}"))?;
 
         // sandbox-exec uses exit 64/65/71 for its own usage/policy/exec failures.
-        // 65 in particular is a policy-compile error: surface the policy so the user
-        // can see what was generated (and that --dry-run prints it).
-        if status.code() == Some(65) {
-            bail!(
+        match status.code() {
+            Some(64) => bail!(
+                "sandbox-exec reported a usage error (exit 64). Check that the confined \
+                 command and arguments are valid."
+            ),
+            Some(65) => bail!(
                 "sandbox-exec rejected the generated Seatbelt policy (exit 65). This is \
                  a policy-compile error, not the command failing. Generated policy:\n\
                  ----\n{policy}\n----\n\
-                 Re-run with --dry-run to inspect the effective policy."
-            );
+                 Re-run with --show-policies to inspect the effective policy."
+            ),
+            Some(71) => bail!(
+                "sandbox-exec failed to execute the confined command (exit 71). The \
+                 command may be missing or not executable."
+            ),
+            _ => {}
         }
 
         Ok(exit_code(&status))

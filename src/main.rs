@@ -21,20 +21,33 @@ fn main() -> Result<()> {
 }
 
 fn prepare_run(run: &mut cli::RunInvocation) -> Result<()> {
+    let cli_auto = run.opts.auto_profiles_cli_override();
     let mut args = cli::run_from(run.opts.clone(), run.cmd.clone());
     let cfg = config::load()?;
-    config::apply_to_run(&cfg, &mut args);
-    config::apply_env_overrides(&mut args);
+    config::apply_to_run(&cfg, &mut args, cli_auto);
+    config::apply_env_overrides(&mut args, cli_auto.is_some());
+    if let Some(v) = cli_auto {
+        args.opts.auto_profiles = v;
+    }
+    if !args.profile_paths().is_empty() {
+        eprintln!(
+            "warning: --profile-path may load raw Seatbelt rules; only use profiles from trusted sources"
+        );
+    }
     run.opts = args.opts;
     run.cmd = args.cmd;
     Ok(())
 }
 
 fn prepare_opts(opts: &mut cli::ProfileOpts) -> Result<()> {
+    let cli_auto = opts.auto_profiles_cli_override();
     let cfg = config::load()?;
     let mut run = cli::run_from(opts.clone(), vec![]);
-    config::apply_to_run(&cfg, &mut run);
-    config::apply_env_overrides(&mut run);
+    config::apply_to_run(&cfg, &mut run, cli_auto);
+    config::apply_env_overrides(&mut run, cli_auto.is_some());
+    if let Some(v) = cli_auto {
+        run.opts.auto_profiles = v;
+    }
     *opts = run.opts;
     Ok(())
 }

@@ -10,5 +10,5 @@ raw = '''
 (allow mach-lookup
     (global-name "com.apple.sysmond")  
 )
-(kill, pkill, kill -0)
+;; shell process-control helpers (not SBPL): kill, pkill, kill -0
 '''

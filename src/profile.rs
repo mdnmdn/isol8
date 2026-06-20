@@ -320,16 +320,26 @@ pub fn select_layer_names(
     }
 
     if run.auto_profiles() {
-        for (name, entry) in &registry.entries {
-            if filter::is_auto_selectable(&entry.profile.filter)
-                && entry
-                    .profile
-                    .filter
-                    .as_ref()
-                    .is_some_and(|f| filter::filter_matches(f, ctx))
-            {
-                push(name)?;
-            }
+        let mut auto_names: Vec<String> = registry
+            .entries
+            .iter()
+            .filter_map(|(name, entry)| {
+                if filter::is_auto_selectable(&entry.profile.filter)
+                    && entry
+                        .profile
+                        .filter
+                        .as_ref()
+                        .is_some_and(|f| filter::filter_matches(f, ctx))
+                {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        auto_names.sort();
+        for name in auto_names {
+            push(&name)?;
         }
     }
 

@@ -2,16 +2,18 @@
 
 **Date:** Sat Jun 20 2026
 **Reviewer:** opencode (mimo-v2-5-free)
-**Scope:** Full codebase review — safety, correctness, soundness
-**Codebase state:** Phase 1 (macOS MVP working, Linux Landlock partial)
+**Scope:** macOS Seatbelt backend, profile system, env/home isolation (Linux deferred)
+**Codebase state:** Phase 1 macOS MVP working; Linux backend deferred
 
 ---
 
 ## Executive Summary
 
-isol8 is a well-architected deny-by-default sandbox with a solid security foundation. The core design — profile-driven, deny-first merge, env sanitization, HOME replacement — is sound. The macOS Seatbelt backend correctly implements last-match-wins SBPL generation. The Linux backend correctly applies `PR_SET_NO_NEW_PRIVS` + Landlock.
+isol8 is a well-architected deny-by-default sandbox with a solid security foundation. The core design — profile-driven, deny-first merge, env sanitization, HOME replacement — is sound. The macOS Seatbelt backend correctly implements last-match-wins SBPL generation.
 
-However, several bugs, security gaps, and design issues need attention before the codebase is production-ready. The most critical issues are: (1) a broken YAML init template, (2) `--home` tilde not expanded, (3) `HomeReplace.enabled` field never checked, (4) no network confinement in the default policy, and (5) the Linux backend doesn't enforce HOME via bind-mount.
+The three most critical correctness bugs (YAML init template, `--home` tilde expansion, `HomeReplace.enabled` check) have been fixed. The scratch home predictability issue has also been addressed with a unique-name strategy. What remains are security design gaps (no network confinement, unconstrained raw SBPL passthrough, broad mach-lookup capability), a broken built-in profile, and minor hardening opportunities.
+
+Linux-specific code (Landlock, namespace helpers, `PR_SET_NO_NEW_PRIVS`, bind-mount) is explicitly out of scope for this review.
 
 ---
 
@@ -24,50 +26,34 @@ However, several bugs, security gaps, and design issues need attention before th
 | **MEDIUM** | Bug or design gap; fix before wide adoption |
 | **LOW** | Minor issue or hardening opportunity |
 | **INFO** | Observation or documentation gap |
+| **FIXED** | Previously identified, now resolved in codebase |
+| **OOS** | Out of scope (Linux backend, deferred) |
 
 ---
 
 ## 1. Bugs (Correctness)
 
-### BUG-01 [MEDIUM] — `init_template` YAML output is actually TOML
+### BUG-01 [FIXED] — `init_template` YAML output was TOML
 
-**File:** `src/config.rs:173-185`
+**File:** `src/config.rs:188-226`
 
-Both the `"yaml" | "yml"` branch and the default (TOML) branch produce identical TOML-formatted output. Running `isol8 @init --format yaml` creates an invalid YAML file.
-
-```rust
-// Both branches emit the same TOML string:
-"yaml" | "yml" => Ok(format!(
-    r#"default_profiles = {dp:?}"#  // TOML syntax, not YAML
-)),
-```
-
-**Fix:** The YAML branch should emit YAML syntax (`default_profiles: [...]` with colon-separator and dash-list format).
+Previously both branches emitted identical TOML. Now fixed: the YAML branch (line 192) generates proper YAML with `default_profiles:` (colon separator), `- item` list syntax, and YAML-style comments. The TOML branch (line 213) correctly uses `=` and `[...]`.
 
 ---
 
-### BUG-02 [MEDIUM] — `--home` value tilde is not expanded
+### BUG-02 [FIXED] — `--home` value tilde was not expanded
 
-**File:** `src/home.rs:43-44`
+**File:** `src/home.rs:49-50`
 
-When a user passes `--home ~/scratch` or `ISOL8_HOME=~/scratch`, the tilde is never expanded. The effective HOME becomes the literal path `~/scratch`. All subsequent `~` expansion of path grants (in `load_merged`) produces broken paths like `~/scratch/.cargo`.
-
-```rust
-let path = if let Some(home) = run.home() {
-    PathBuf::from(home)  // no expand_tilde()
-```
-
-**Fix:** Call `home::expand_tilde` on the `--home` value before using it.
+Previously `PathBuf::from(home)` was used without expansion. Now fixed: `expand_tilde(home, &real)` is called (line 50). A dedicated test (`resolve_expands_tilde_in_cli_home`, line 183) verifies `~/scratch` resolves against the real home.
 
 ---
 
-### BUG-03 [MEDIUM] — `HomeReplace.enabled` field is never checked
+### BUG-03 [FIXED] — `HomeReplace.enabled` was never checked
 
-**Files:** `src/profile.rs:107-118`, `src/home.rs:26-57`
+**File:** `src/home.rs:35-37`
 
-The `HomeReplace` struct defines `enabled: bool`, but `home::resolve()` never reads it. The behavior is driven entirely by whether `path` is `Some` or `auto_scratch` is `true`. A profile author writing `home_replace = { enabled = false, auto_scratch = true }` would expect home replacement to be disabled, but `auto_scratch: true` still triggers scratch-home creation.
-
-**Fix:** Add `if hr.enabled` check in `home::resolve()`, or remove the field if it's not intended.
+Previously the `enabled` field on `HomeReplace` was ignored. Now fixed: `if !hr.enabled { continue; }` skips disabled home_replace layers. A dedicated test (`resolve_honors_home_replace_enabled_false`, line 204) verifies the behavior.
 
 ---
 
@@ -79,7 +65,7 @@ The `HomeReplace` struct defines `enabled: bool`, but `home::resolve()` never re
 (kill, pkill, kill -0)
 ```
 
-This is shell syntax, not valid SBPL. If this layer is included in a macOS sandbox policy, `sandbox-exec` rejects it with exit 65 (policy-compile error). The backend catches this, but the built-in profile is broken.
+This is shell syntax, not valid SBPL. If this layer is included in a macOS sandbox policy, `sandbox-exec` rejects it with exit 65 (policy-compile error). The backend catches this, but the built-in profile is broken and cannot be used.
 
 **Fix:** Either remove the line or replace with a proper SBPL comment (`;; kill, pkill, kill -0`).
 
@@ -149,7 +135,7 @@ Capability::MachLookup => "(allow mach-lookup)",
 
 Without a `(global-name ...)` filter, the confined process can talk to any Mach service on the system (keychain, network config, privileged services).
 
-**Mitigation:** Profiles that use the blanket `MachLookup` capability (e.g., `macos/system-runtime.toml` grants specific services via raw SBPL instead). But some integration profiles do grant the blanket capability.
+**Mitigation:** The `macos/system-runtime.toml` grants specific services via raw SBPL instead of the blanket capability. But integration profiles that use `Capability::MachLookup` directly grant broad access.
 
 **Fix:** Consider splitting into specific vs. blanket mach-lookup variants. Document the risk.
 
@@ -167,27 +153,19 @@ Regex patterns like `.*` would grant access to the entire filesystem. A crafted 
 
 ---
 
-### SEC-05 [MEDIUM] — Scratch home directory path is predictable
+### SEC-05 [FIXED] — Scratch home directory path was predictable
 
-**File:** `src/home.rs:48`
+**File:** `src/home.rs:63-94`
 
-```rust
-let dir = std::env::temp_dir().join(format!("isol8-{}-home", std::process::id()));
-```
-
-On a shared system, an attacker who knows the PID could potentially create a symlink at the expected path before the directory is created.
-
-**Mitigation:** `create_dir_all` follows symlinks, so a symlink attack would fail if the attacker creates a symlink (it would try to create dirs inside the target). But if the attacker creates a directory first, seed files go into the attacker's directory.
-
-**Fix:** Use a random component (e.g., `tempfile::tempdir_in` or `random u64`). After `create_dir_all`, verify the path is a real directory via `fs::symlink_metadata`.
+Previously used PID-only naming (`isol8-{pid}-home`). Now fixed: `create_scratch_home()` uses PID + nanosecond timestamp + atomic counter for uniqueness, retries up to 16 times, and verifies the created path is not a symlink via `symlink_metadata`. A test (`scratch_home_paths_are_unique`, line 228) verifies two consecutive calls produce different paths.
 
 ---
 
 ### SEC-06 [MEDIUM] — No `PR_SET_NO_NEW_PRIVS` on macOS
 
-**Files:** `src/backends/macos.rs`, `src/backends/linux.rs:310-319`
+**File:** `src/backends/macos.rs`
 
-The Linux backend correctly calls `set_no_new_privs()`. The macOS backend does not. While Seatbelt policy is inherited across `exec()`, `no_new_privs` would be an additional defense layer if a sandbox escape is found.
+The Linux backend correctly calls `set_no_new_privs()` (out of scope, but noted as reference). The macOS backend does not. While Seatbelt policy is inherited across `exec()`, `no_new_privs` would be an additional defense layer if a sandbox escape is found.
 
 **Fix:** Consider using `proc_set_no_new_privs` (available via `nix` crate on macOS) as hardening.
 
@@ -239,7 +217,7 @@ The merge function uses highest-layer-wins for each `(path, match)` key. A highe
 
 ### SEC-11 [LOW] — Seed files follow symlinks silently
 
-**File:** `src/home.rs:105-119`
+**File:** `src/home.rs:140-156`
 
 `copy_readonly` uses `symlink_metadata` to check the source type, but `std::fs::copy` follows symlinks. A symlinked seed entry could exfiltrate data from outside the real home.
 
@@ -269,15 +247,13 @@ Grants `rw` to `~/.ssh/agent` and `network-outbound` to SSH agent sockets. The `
 
 ## 3. Design Issues
 
-### DES-01 [MEDIUM] — Linux HOME bind-mount not wired
+### DES-01 [OOS] — Linux HOME bind-mount not wired
 
-**File:** `src/backends/linux.rs:275-301`
+**File:** `src/backends/linux.rs:275-301` (out of scope)
 
-The `child_setup_and_exec` function receives `_effective_home` (prefixed with underscore, indicating unused) but never bind-mounts it over the real HOME. The `bind_mount_home()` function exists (line 361) but is `#[allow(dead_code)]` and never called.
+The `child_setup_and_exec` function receives `_effective_home` but never bind-mounts it. The `bind_mount_home()` function exists but is `#[allow(dead_code)]`. This means on Linux, HOME replacement is only enforced via the environment variable.
 
-This means on Linux, HOME replacement is only enforced via the environment variable, not via mount namespace isolation. A process that uses `getpwuid()` or hardcoded paths could bypass the HOME replacement.
-
-**Fix:** Wire up user namespace + mount namespace + bind-mount when available. The dead code is ready — it needs integration.
+**Status:** Out of scope — Linux backend deferred.
 
 ---
 
@@ -325,9 +301,9 @@ for entry in std::fs::read_dir(dir)?.flatten() {
 
 ### DES-06 [INFO] — `--home` path not validated for existence
 
-**File:** `src/home.rs:43-44`
+**File:** `src/home.rs:49-50`
 
-When `--home` is provided, the path is used directly without checking if it exists, is a directory, or is writable.
+When `--home` is provided, the path is used directly after tilde expansion without checking if it exists, is a directory, or is writable.
 
 ---
 
@@ -383,22 +359,22 @@ Uses `unwrap()` for `CARGO_MANIFEST_DIR`, `OUT_DIR`, and `fs::write`. Acceptable
 
 ## 5. Positive Findings
 
-The following aspects are well-implemented and correct:
+The following aspects are well-implemented and correct (macOS-focused):
 
 | Area | Details |
 |------|---------|
-| **Deny-by-default** | Both backends start with deny-by-default (macOS: `(deny default)`, Linux: Landlock implicit deny) |
-| **Env sanitization** | Hardcoded 7-variable allowlist; `env_clear()` before `envs()` in both backends; secrets are dropped |
-| **HOME resolution order** | `--home` > profile `home_replace.path` > auto-scratch > real home; resolved BEFORE any path computation |
-| **~ expansion** | Only expands leading `~` or `~/...`; mid-string tilde not expanded (tested) |
+| **Deny-by-default** | macOS: `(deny default)` always first in generated SBPL |
+| **Env sanitization** | Hardcoded 7-variable allowlist; `env_clear()` before `envs()`; secrets dropped |
+| **HOME resolution order** | `--home` > profile `home_replace.path` > auto-scratch > real home; resolved BEFORE path computation |
+| **~ expansion** | Only expands leading `~` or `~/...`; mid-string tilde not expanded; tilde in `--home` now expanded (tested) |
+| **`HomeReplace.enabled`** | Now checked in `home::resolve()`; disabled layers skipped (tested) |
+| **Scratch home uniqueness** | Uses PID + timestamp + atomic counter; symlink check; retry loop (tested) |
 | **Profile merge** | Deny-first merge with highest-wins per `(path, match)` key; env first-writer-wins |
 | **Cycle detection** | DFS topo-sort with gray/black states; errors with the cycle path |
 | **serde(deny_unknown_fields)** | Consistently applied on all profile and config structs |
 | **macOS symlink resolution** | Both `/tmp` and `/private/tmp` forms emitted for each grant |
 | **Last-match-wins ordering** | Ancestor metadata → allows → none denies → capabilities → raw passthrough |
 | **`none` deny uses `file-read* file-write*`** | Not bare `file*` which doesn't block writes (verified against real sandbox-exec) |
-| **Landlock deny-by-default** | `Access::None` simply omits the rule; no rule = no access |
-| **PR_SET_NO_NEW_PRIVS** | Called first in child setup before Landlock rules |
 | **Exit code 65 handling** | Policy-compile errors surfaced with the full generated policy |
 | **Field tests** | 8 scenarios covering read denial, write, seed, env, and network |
 | **Profile validation** | All ~70 built-in profiles parse correctly |
@@ -409,29 +385,31 @@ The following aspects are well-implemented and correct:
 
 ### Must Fix (Before Any Release)
 
-1. **BUG-02** — Expand tilde in `--home` value
-2. **BUG-03** — Check `HomeReplace.enabled` in `home::resolve()`
-3. **BUG-04** — Fix `process-control.toml` invalid SBPL
-4. **BUG-01** — Fix YAML init template to emit actual YAML
-5. **SEC-01** — Document prominently that network is not confined
+1. **BUG-04** — Fix `process-control.toml` invalid SBPL
+2. **SEC-01** — Document prominently that network is not confined
 
 ### Should Fix (Before Production)
 
-6. **DES-01** — Wire up Linux HOME bind-mount
-7. **SEC-02** — Warn when `--profile-path` is used (raw SBPL trust)
-8. **SEC-05** — Use random component in scratch home name
-9. **ERR-01** — Catch sandbox-exec exit codes 64 and 71
-10. **BUG-05** — Make auto-selected layer order deterministic
+3. **SEC-02** — Warn when `--profile-path` is used (raw SBPL trust)
+4. **SEC-06** — Add `PR_SET_NO_NEW_PRIVS` on macOS
+5. **ERR-01** — Catch sandbox-exec exit codes 64 and 71
+6. **BUG-05** — Make auto-selected layer order deterministic
 
 ### Nice to Have
 
-11. **SEC-03** — Split MachLookup into specific/blanket variants
-12. **SEC-04** — Warn on regex grants in `--show-policies`
-13. **SEC-06** — Add `PR_SET_NO_NEW_PRIVS` on macOS
-14. **SEC-12** — Default cloud credentials to `ro`
-15. **SEC-13** — Make SSH agent access opt-in
-16. **DES-03** — Canonicalize paths during merge
-17. **DES-04** — Separate `MergedProfile` type
+7. **SEC-03** — Split MachLookup into specific/blanket variants
+8. **SEC-04** — Warn on regex grants in `--show-policies`
+9. **SEC-07** — Narrow `(allow system-socket)` in system-runtime
+10. **SEC-12** — Default cloud credentials to `ro`
+11. **SEC-13** — Make SSH agent access opt-in
+12. **DES-02** — Document or fix asymmetric home_replace merge
+13. **DES-03** — Canonicalize paths during merge
+14. **DES-04** — Separate `MergedProfile` type
+
+### Out of Scope (Linux, Deferred)
+
+- **DES-01** — Wire up Linux HOME bind-mount (requires user namespace + mount namespace)
+- All Landlock/namespace-related findings in `src/backends/linux.rs`
 
 ---
 
@@ -444,11 +422,11 @@ The following aspects are well-implemented and correct:
 | `toml` | 0.8 | LOW — standard |
 | `serde_yaml` | 0.9 | LOW — standard |
 | `anyhow` | 1 | LOW — standard |
-| `landlock` | 0.4 | LOW — Linux-only, maintained by the Landlock developers |
-| `nix` | 0.31 | LOW — Linux-only, widely used |
-| `enumflags2` | 0.7 | LOW — Linux-only, used with landlock |
+| `landlock` | 0.4 | OOS — Linux-only |
+| `nix` | 0.31 | OOS — Linux-only |
+| `enumflags2` | 0.7 | OOS — Linux-only |
 
-No known vulnerabilities. All dependencies are widely used and actively maintained. The dependency tree is minimal (no transitive bloat).
+No known vulnerabilities. All macOS-relevant dependencies are minimal and well maintained.
 
 ---
 
@@ -458,21 +436,18 @@ No known vulnerabilities. All dependencies are widely used and actively maintain
 |--------|-----------|-------------------|-------------|
 | `profile.rs` | 13 tests | 8 (profile_merge.rs), 1 (profile_path.rs), 12 (profile_filters.rs) | — |
 | `env.rs` | 3 tests | — | Scenario 6-7 |
-| `home.rs` | 4 tests | — | Scenario 3-5 |
+| `home.rs` | 7 tests | — | Scenario 3-5 |
 | `config.rs` | 2 tests | — | — |
 | `filter.rs` | 5 tests | — | — |
 | `backends/macos.rs` | 9 tests | — | Scenarios 1-5 |
-| `backends/linux.rs` | 4 tests | — | — |
 
-**Strengths:** Good coverage of the merge logic, filter matching, and SBPL generation. Field tests prove real OS enforcement.
+**Strengths:** Good coverage of the merge logic, filter matching, and SBPL generation. Field tests prove real OS enforcement. New tests for tilde expansion, `HomeReplace.enabled`, and scratch home uniqueness.
 
-**Gaps:**
-- No tests for `--home` tilde expansion (BUG-02)
-- No tests for `HomeReplace.enabled` (BUG-03)
-- No tests for `init_template` YAML output (BUG-01)
+**Gaps (macOS scope):**
+- No tests for `init_template` YAML output format
 - No tests for non-deterministic auto-select ordering (BUG-05)
 - No tests for error paths in sandbox-exec invocation
-- No tests for the Linux backend's `child_setup_and_exec` path
+- No tests for `sbpl_string` newline edge case
 
 ---
 
@@ -480,8 +455,8 @@ No known vulnerabilities. All dependencies are widely used and actively maintain
 
 isol8 has a strong architectural foundation. The deny-by-default model, profile-driven design, and deny-first merge are well-implemented. The macOS Seatbelt backend is production-quality for the MVP.
 
-The main risks are: (1) several correctness bugs in the HOME replacement pipeline, (2) no network confinement, (3) the Linux backend's incomplete HOME isolation, and (4) the unconstrained raw SBPL passthrough in user-supplied profiles.
+Three correctness bugs (YAML init, `--home` tilde, `HomeReplace.enabled`) and the scratch home predictability issue have been fixed since the initial review. What remains is primarily security design work: (1) no network confinement, (2) unconstrained raw SBPL passthrough in user-supplied profiles, (3) broad mach-lookup capability, and (4) a broken built-in profile (`process-control.toml`).
 
-None of these are surprising for a Phase 1 MVP. The bugs are fixable without architectural changes. The security gaps are documented (R5 roadmap). The code quality is high — clean error handling, good test coverage, no panics on user input, `serde(deny_unknown_fields)` throughout.
+None of these are surprising for a Phase 1 MVP. The security gaps are documented (R5 roadmap). The code quality is high — clean error handling, good test coverage, no panics on user input, `serde(deny_unknown_fields)` throughout.
 
-**Overall assessment: Sound architecture with known gaps. Fix the critical/high items before any release.**
+**Overall assessment: Sound architecture with known gaps. Fix the two must-fix items (BUG-04, SEC-01) before any release.**

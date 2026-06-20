@@ -102,11 +102,16 @@ fn load_from(path: &Path) -> Result<Config> {
 }
 
 /// Apply config defaults to `run` (only fills unset CLI fields).
-pub fn apply_to_run(cfg: &Config, run: &mut RunArgs) {
+///
+/// `cli_auto_profiles`: when `Some`, the user set `--auto-profiles` or
+/// `--no-auto-profiles` and that choice wins over config/env.
+pub fn apply_to_run(cfg: &Config, run: &mut RunArgs, cli_auto_profiles: Option<bool>) {
     if run.profiles().is_empty() {
         run.opts.profiles = cfg.default_profiles.clone();
     }
-    run.opts.auto_profiles = run.opts.auto_profiles || cfg.auto_profiles;
+    if cli_auto_profiles.is_none() {
+        run.opts.auto_profiles = cfg.auto_profiles;
+    }
     if run.profile_paths().is_empty() {
         run.opts.profile_paths = cfg.profile_paths.clone();
     }
@@ -125,7 +130,9 @@ pub fn apply_to_run(cfg: &Config, run: &mut RunArgs) {
 }
 
 /// Apply `ISOL8_*` env overrides (between config and CLI in precedence).
-pub fn apply_env_overrides(run: &mut RunArgs) {
+///
+/// When `cli_auto_profiles_set` is true, `ISOL8_AUTO_PROFILES` is ignored.
+pub fn apply_env_overrides(run: &mut RunArgs, cli_auto_profiles_set: bool) {
     if let Ok(v) = std::env::var("ISOL8_PROFILE") {
         if !v.is_empty() {
             run.opts.profiles = split_list(&v);
@@ -151,12 +158,23 @@ pub fn apply_env_overrides(run: &mut RunArgs) {
             run.opts.home = Some(v);
         }
     }
+    if !cli_auto_profiles_set {
+        if let Ok(v) = std::env::var("ISOL8_AUTO_PROFILES") {
+            if !v.is_empty() {
+                run.opts.auto_profiles = parse_bool(&v);
+            }
+        }
+    }
     if matches!(
         std::env::var("ISOL8_DRY_RUN").as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
     ) {
         run.opts.dry_run = true;
     }
+}
+
+fn parse_bool(s: &str) -> bool {
+    matches!(s, "1" | "true" | "yes" | "on")
 }
 
 fn split_list(s: &str) -> Vec<String> {
@@ -171,18 +189,27 @@ fn split_list(s: &str) -> Vec<String> {
 pub fn init_template(format: &str) -> Result<String> {
     let defaults = Config::builtin_defaults();
     match format {
-        "yaml" | "yml" => Ok(format!(
-            r#"# isol8 configuration
-default_profiles = {dp:?}
-auto_profiles = {auto}
-profile_paths = []
-# profile_paths = ["/path/to/extra-profiles", "/path/to/override.toml"]
-add_dirs_rw = []
-add_dirs_ro = []
+        "yaml" | "yml" => {
+            let profiles_yaml = defaults
+                .default_profiles
+                .iter()
+                .map(|p| format!("  - {p}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(format!(
+                r#"# isol8 configuration
+default_profiles:
+{profiles_yaml}
+auto_profiles: {auto}
+profile_paths: []
+# profile_paths:
+#   - /path/to/extra-profiles
+add_dirs_rw: []
+add_dirs_ro: []
 "#,
-            dp = defaults.default_profiles,
-            auto = defaults.auto_profiles,
-        )),
+                auto = defaults.auto_profiles,
+            ))
+        }
         _ => Ok(format!(
             r#"# isol8 configuration
 default_profiles = {dp:?}
@@ -233,5 +260,66 @@ mod tests {
             split_list("a,b:c"),
             vec!["a".to_string(), "b".to_string(), "c".to_string()]
         );
+    }
+
+    #[test]
+    fn init_template_yaml_is_valid_yaml() {
+        let body = init_template("yaml").unwrap();
+        let cfg: Config = serde_yaml::from_str(&body).unwrap();
+        assert!(cfg.auto_profiles);
+        assert!(!cfg.default_profiles.is_empty());
+    }
+
+    #[test]
+    fn apply_to_run_respects_config_auto_profiles_false() {
+        let cfg = Config {
+            auto_profiles: false,
+            ..Config::builtin_defaults()
+        };
+        let mut run = crate::cli::run_from(Default::default(), vec!["echo".into()]);
+        apply_to_run(&cfg, &mut run, None);
+        assert!(!run.auto_profiles());
+    }
+
+    #[test]
+    fn env_auto_profiles_overrides_config() {
+        let cfg = Config {
+            auto_profiles: false,
+            ..Config::builtin_defaults()
+        };
+        let prev = std::env::var_os("ISOL8_AUTO_PROFILES");
+        std::env::set_var("ISOL8_AUTO_PROFILES", "true");
+
+        let mut run = crate::cli::run_from(Default::default(), vec!["echo".into()]);
+        apply_to_run(&cfg, &mut run, None);
+        apply_env_overrides(&mut run, false);
+        assert!(run.auto_profiles());
+
+        match prev {
+            Some(v) => std::env::set_var("ISOL8_AUTO_PROFILES", v),
+            None => std::env::remove_var("ISOL8_AUTO_PROFILES"),
+        }
+    }
+
+    #[test]
+    fn cli_no_auto_profiles_overrides_config() {
+        let cfg = Config {
+            auto_profiles: true,
+            ..Config::builtin_defaults()
+        };
+        let mut run = crate::cli::run_from(
+            crate::cli::ProfileOpts {
+                no_auto_profiles: true,
+                ..Default::default()
+            },
+            vec!["echo".into()],
+        );
+        let cli_auto = run.opts.auto_profiles_cli_override();
+        apply_to_run(&cfg, &mut run, cli_auto);
+        apply_env_overrides(&mut run, cli_auto.is_some());
+        if let Some(v) = cli_auto {
+            run.opts.auto_profiles = v;
+        }
+        assert!(!run.auto_profiles());
     }
 }

@@ -23,6 +23,15 @@ pub struct ProfileOpts {
     #[arg(long = "auto-profiles", default_value_t = false, action = clap::ArgAction::SetTrue)]
     pub auto_profiles: bool,
 
+    /// Disable auto-selection (overrides config `auto_profiles = true`).
+    #[arg(
+        long = "no-auto-profiles",
+        default_value_t = false,
+        action = clap::ArgAction::SetTrue,
+        conflicts_with = "auto_profiles"
+    )]
+    pub no_auto_profiles: bool,
+
     /// Grant read-write access to a path (repeatable).
     #[arg(long = "add-dirs-rw")]
     pub add_dirs_rw: Vec<String>,
@@ -60,6 +69,19 @@ pub struct RunInvocation {
     /// Command and arguments to confine.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub cmd: Vec<String>,
+}
+
+impl ProfileOpts {
+    /// Explicit CLI override for auto-profile selection, if any.
+    pub fn auto_profiles_cli_override(&self) -> Option<bool> {
+        if self.auto_profiles {
+            Some(true)
+        } else if self.no_auto_profiles {
+            Some(false)
+        } else {
+            None
+        }
+    }
 }
 
 impl RunInvocation {

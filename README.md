@@ -12,10 +12,12 @@ namespaces), **WSL2**, and **Windows** (deferred). Primary targets: Linux and ma
 > sanitization, ~70 embedded Safehouse-derived profiles, conditional filters,
 > config file + auto-profile selection, and policy introspection are implemented.
 > **Enforcement works on macOS** via Seatbelt. The Linux (Landlock) backend and
-> network tiers are not fully wired yet. See [`AGENTS.md`](AGENTS.md) for detail.
+> network tiers are not fully wired yet. 
 
 > Primary inspiration: the macOS [Agent Safehouse](https://github.com/eugene1g/agent-safehouse)
 > project, whose composable profile model `isol8` generalizes cross-platform.
+
+Full usage: [`_docs/instructions.md`](_docs/instructions.md).
 
 ## What it does
 
@@ -26,11 +28,8 @@ namespaces), **WSL2**, and **Windows** (deferred). Primary targets: Linux and ma
 - **Composable profiles** — ~70 embedded TOML layers, `requires` inheritance, deny-first merge.
 - **Conditional filters** — layers and policies can match executable name, OS, and architecture.
 - **Auto-profiles** — agent layers (e.g. `claude` → `agents/claude-code`) selected automatically.
-- **Tiered network isolation** *(planned)* — N0 none → N1 proxy → N2 rootless → N3 rooted.
 
 ## Quick start
-
-There is **no `run` subcommand** — pass the command to confine directly:
 
 ```sh
 # Run confined (uses config defaults: base + OS system-runtime)
@@ -104,16 +103,7 @@ just ci          # fmt + clippy + build + test
 just field-test  # real sandbox checks (macOS)
 ```
 
-## Docs
 
-| Doc | Contents |
-|-----|----------|
-| [`_docs/instructions.md`](_docs/instructions.md) | User guide: CLI, flags, config, examples |
-| [`_docs/profile-model.md`](_docs/profile-model.md) | Profile format, filters, inheritance, merge |
-| [`_docs/project-structure.md`](_docs/project-structure.md) | Code layout and data flow |
-| [`_docs/project-description.md`](_docs/project-description.md) | Full requirements |
-| [`_docs/testing-strategies.md`](_docs/testing-strategies.md) | Unit + field tests |
-| [`AGENTS.md`](AGENTS.md) | Guide for contributors and agents |
 
 ## License
 
