@@ -85,4 +85,10 @@ pub fn render_dry_run(profile: &Profile, env: &HashMap<String, String>, cmd: &[S
         println!("\n-- generated Seatbelt policy (SBPL) --");
         print!("{}", macos::render_policy(profile));
     }
+
+    #[cfg(target_os = "linux")]
+    {
+        println!("\n-- generated Landlock rules --");
+        print!("{}", linux::render_policy(profile));
+    }
 }

@@ -120,6 +120,10 @@ const BUILTIN_PROFILES: &[(&str, &str)] = &[
         "macos-system",
         include_str!("../profiles/macos-system.toml"),
     ),
+    (
+        "linux-system",
+        include_str!("../profiles/linux-system.toml"),
+    ),
 ];
 
 /// Parse a TOML layer body, attaching the layer name for clear error messages.

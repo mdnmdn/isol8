@@ -24,5 +24,10 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 anyhow = "1"
 
-# platform backends: add `landlock` + `nix` (Linux) when implementing src/backends/linux.rs
+# platform backends
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+nix = { version = "0.31", features = ["sched", "mount", "fs", "user"] }
+enumflags2 = "0.7"
+
 # networking (Phase 3): add proxy/pasta orchestration crates then
