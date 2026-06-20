@@ -81,6 +81,14 @@ fn run_cmd(run: cli::RunInvocation) -> Result<()> {
         return Ok(());
     }
 
+    if std::env::var_os(isol8::env::SANDBOX_MARKER).is_some() {
+        bail!(
+            "isol8 is already running inside an isol8 sandbox — nested sandboxing is not \
+             supported (macOS Seatbelt cannot nest). Run the command directly instead of \
+             wrapping it in isol8 again."
+        );
+    }
+
     let args = cli::run_from(run.opts, run.cmd);
     let effective = resolve::effective_policy(&args)?;
 

@@ -1,4 +1,4 @@
-//! isol8 — deny-by-default, cross-platform sandbox for AI coding agents and CLI
+//! isol8 — lightweight, cross-platform isolation sandbox for AI coding agents and CLI
 //! tools. Library surface shared by the `isol8` binary and the test suite.
 
 pub mod backends;

@@ -7,7 +7,7 @@ pub const META_PREFIX: &str = "@";
 #[derive(Parser, Clone, Default)]
 #[command(
     name = "isol8",
-    about = "Deny-by-default sandbox for agents and CLI tools",
+    about = "Lightweight cross-platform isolation sandbox for agents and CLI tools",
     override_usage = "isol8 [OPTIONS] <COMMAND>...\n       isol8 @<meta-command> [OPTIONS] [ARGS]...\n       isol8 --help"
 )]
 pub struct ProfileOpts {
@@ -39,6 +39,10 @@ pub struct ProfileOpts {
     /// Grant read-only access to a path (repeatable).
     #[arg(long = "add-dirs-ro")]
     pub add_dirs_ro: Vec<String>,
+
+    /// Make the auto-granted current working directory read-only (default: read-write).
+    #[arg(long = "cwd-ro", default_value_t = false, action = clap::ArgAction::SetTrue)]
+    pub cwd_ro: bool,
 
     /// Replacement $HOME (defaults to an auto scratch home when a profile enables it).
     #[arg(long)]
@@ -100,6 +104,9 @@ impl RunInvocation {
     pub fn add_dirs_ro(&self) -> &[String] {
         &self.opts.add_dirs_ro
     }
+    pub fn cwd_ro(&self) -> bool {
+        self.opts.cwd_ro
+    }
     pub fn home(&self) -> &Option<String> {
         &self.opts.home
     }
@@ -139,6 +146,9 @@ impl RunArgs {
     }
     pub fn add_dirs_ro(&self) -> &[String] {
         &self.opts.add_dirs_ro
+    }
+    pub fn cwd_ro(&self) -> bool {
+        self.opts.cwd_ro
     }
     pub fn home(&self) -> &Option<String> {
         &self.opts.home

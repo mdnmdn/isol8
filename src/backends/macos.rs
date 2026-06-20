@@ -93,6 +93,12 @@ impl Backend for MacosBackend {
                 "sandbox-exec failed to execute the confined command (exit 71). The \
                  command may be missing or not executable."
             ),
+            Some(134) => bail!(
+                "the confined command aborted (exit 134 / SIGABRT). This usually means \
+                 isol8 is running inside another sandbox that forbids nesting, or the \
+                 policy denies read access to '/'. Re-run with --show-policies to inspect \
+                 the effective policy."
+            ),
             _ => {}
         }
 

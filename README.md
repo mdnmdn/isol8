@@ -1,7 +1,7 @@
 # isol8
 
-A deny-by-default, cross-platform **sandbox for AI coding agents and CLI tools**.
-`isol8` wraps an arbitrary command so it runs unprivileged with a restricted view
+A lightweight, cross-platform **isolation sandbox for AI coding agents and CLI tools**.
+`isol8` wraps an arbitrary command so it runs unprivileged with a deny-by-default, restricted view
 of the filesystem, a sanitized environment, a replaceable `$HOME`, and (planned)
 tiered network confinement.
 

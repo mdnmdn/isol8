@@ -77,7 +77,7 @@ not the sole ordering authority. Mirrors the Safehouse model (R6):
 55  integrations-opt   named extras via --enable: github, npm, keychain, …
 60  agents             per-agent layers (claude-code, codex, …)
 65  apps               desktop app bundles
---  workdir            cwd granted rw; ancestors metadata-only
+--  workdir            cwd granted rw by default (--cwd-ro for ro); ancestors metadata-only
 --  custom (CLI)       --add-dirs-rw / --add-dirs-ro / --home / --env-*
 --  appended           explicitly appended profiles
 ```

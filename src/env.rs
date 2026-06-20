@@ -7,6 +7,10 @@ use crate::profile::Profile;
 /// secrets (API keys, tokens) don't leak into the confined process.
 const ALLOWLIST: &[&str] = &["HOME", "PATH", "SHELL", "TMPDIR", "USER", "LOGNAME", "PWD"];
 
+/// Env var stamped on every confined process so a nested isol8 can detect that it is
+/// already inside a sandbox (Seatbelt cannot nest) and fail fast with a clear error.
+pub const SANDBOX_MARKER: &str = "ISOL8_SANDBOXED";
+
 /// Build the sanitized environment for the confined process.
 ///
 /// HOME is authoritative: it is set FIRST from the resolved effective home (R4), so
@@ -33,6 +37,9 @@ pub fn build_minimal(profile: &Profile, home: &Path) -> HashMap<String, String> 
     for (k, v) in &profile.env {
         env.entry(k.clone()).or_insert_with(|| v.clone());
     }
+
+    // Mark the child as sandboxed so a nested isol8 invocation can detect it.
+    env.insert(SANDBOX_MARKER.to_string(), "1".to_string());
 
     env
 }
@@ -63,6 +70,13 @@ mod tests {
         assert!(!env.contains_key("SECRET_TOKEN"));
         assert!(env.contains_key("PATH"));
         std::env::remove_var("SECRET_TOKEN");
+    }
+
+    #[test]
+    fn sandbox_marker_is_set() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let env = build_minimal(&Profile::default(), Path::new("/scratch"));
+        assert_eq!(env[SANDBOX_MARKER], "1");
     }
 
     #[test]

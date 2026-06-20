@@ -98,6 +98,7 @@ These flags apply to normal runs and to `--show-policies` / `--show-profiles`:
 | `--auto-profiles` | no | Auto-select layers whose `filter.executables` matches the command name. |
 | `--add-dirs-rw <PATH>` | yes | Grant read-write access (top override layer). |
 | `--add-dirs-ro <PATH>` | yes | Grant read-only access. |
+| `--cwd-ro` | no | Make the auto-granted current working directory read-only (default: it is granted read-write). |
 | `--home <PATH>` | no | Replacement `$HOME` (or scratch home when the profile enables it). |
 | `--show-policies` | no | Print effective policy and exit (no execution). |
 | `--show-profiles` | no | List all layers, or show layers selected for the given command. |
@@ -237,7 +238,7 @@ isol8 --profile macos-system --show-policies date
 
 - **Filesystem** — deny-by-default. Only merged profile grants are reachable;
   everything else gets `Operation not permitted`. `--add-dirs-rw` / `--add-dirs-ro`
-  win over profile layers.
+  win over profile layers. The current working directory is auto-granted **read-write** by default; pass `--cwd-ro` to make it read-only.
 - **HOME** — resolved before path grants. `~` in profiles targets the replacement
   home; the real home is not granted unless you add it explicitly.
 - **Environment** — sanitized to a small allowlist (`HOME`, `PATH`, `SHELL`, `TMPDIR`,

@@ -1,6 +1,6 @@
 # isol8 — Cross-Platform Agent Sandbox — Rust Implementation Specification
 
-> A deny-by-default sandbox toolkit for AI coding agents and CLI tools, generalizing the macOS `sandbox-exec` model (cf. *Agent Safehouse*) to Linux, WSL2, and Windows.
+> A lightweight, cross-platform isolation sandbox toolkit for AI coding agents and CLI tools — deny-by-default — generalizing the macOS `sandbox-exec` model (cf. *Agent Safehouse*) to Linux, WSL2, and Windows.
 >
 > This document specifies functional requirements, per-OS feasibility, **concrete Rust implementation references and patterns (as of June 2026)**, and an expanded roadmap including networking details and further refinements.
 

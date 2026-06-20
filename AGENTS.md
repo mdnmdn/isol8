@@ -2,9 +2,9 @@
 
 ## Project
 
-`isol8` is a single-binary Rust CLI: a **deny-by-default, cross-platform sandbox**
+`isol8` is a single-binary Rust CLI: a **lightweight, cross-platform isolation sandbox**
 for AI coding agents and CLI tools. It wraps an arbitrary command so it runs
-unprivileged with a restricted view of the filesystem, a sanitized environment, a
+unprivileged with a deny-by-default, restricted view of the filesystem, a sanitized environment, a
 replaceable `$HOME`, and (later) tiered network confinement. It generalizes the
 macOS `sandbox-exec` (Seatbelt) model to Linux (Landlock + namespaces), WSL2, and
 Windows (deferred). **Primary targets: Linux and macOS.**
@@ -80,9 +80,7 @@ enforced on macOS via Seatbelt:
 
 **Not yet:** the Linux (Landlock) backend still `bail!`s; network tiers (R5), Phase-2 env
 flags (`--env-pass`/`--env-file`), resource limits, and the Windows backend are unstarted.
-Known gaps: no auto-grant of the cwd yet (confined tools may hit `getcwd` denials unless the
-workdir is added via `--add-dirs-rw`); macOS `git`/`cargo` need extra developer-tool paths
-beyond `macos-system`.
+Known gaps: macOS `git`/`cargo` need extra developer-tool paths beyond `macos-system`.
 
 ## Roadmap
 

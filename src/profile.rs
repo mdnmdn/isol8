@@ -553,9 +553,22 @@ pub fn apply_rewrite(cmd: &[String], rewrite: &Option<Rewrite>) -> Vec<String> {
     cmd
 }
 
-/// Build the top invocation-override layer from `--add-dirs-rw` / `--add-dirs-ro`.
+/// Build the top invocation-override layer from the auto-granted cwd plus
+/// `--add-dirs-rw` / `--add-dirs-ro`.
+///
+/// The cwd grant is pushed first so an explicit `--add-dirs-*` on the same path
+/// still wins (within a layer the later grant for a `(path, match)` key overrides).
 fn overrides_layer(run: &RunArgs) -> Profile {
     let mut paths = Vec::new();
+    // cwd auto-grant: read-write by default, read-only with `--cwd-ro`. Skipped if
+    // the cwd can't be read (e.g. it was deleted) — no grant, no panic.
+    if let Ok(cwd) = std::env::current_dir() {
+        paths.push(PathGrant {
+            path: cwd.to_string_lossy().into_owned(),
+            access: if run.cwd_ro() { Access::Ro } else { Access::Rw },
+            r#match: MatchKind::Subpath,
+        });
+    }
     for dir in run.add_dirs_rw() {
         paths.push(PathGrant {
             path: dir.clone(),
@@ -772,6 +785,38 @@ mod tests {
         assert!(m.capabilities.contains(&Capability::MachLookup));
         assert!(m.capabilities.contains(&Capability::Pasteboard));
         assert_eq!(m.raw, "(allow a)\n(allow b)\n"); // layer order
+    }
+
+    fn run_args(cwd_ro: bool) -> RunArgs {
+        crate::cli::run_from(
+            crate::cli::ProfileOpts {
+                cwd_ro,
+                ..Default::default()
+            },
+            vec!["echo".into(), "hi".into()],
+        )
+    }
+
+    #[test]
+    fn overrides_layer_grants_cwd_rw_by_default() {
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let layer = overrides_layer(&run_args(false));
+        let g = find(&layer, &cwd).expect("cwd granted");
+        assert_eq!(g.access, Access::Rw);
+    }
+
+    #[test]
+    fn overrides_layer_cwd_ro_downgrades() {
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let layer = overrides_layer(&run_args(true));
+        let g = find(&layer, &cwd).expect("cwd granted");
+        assert_eq!(g.access, Access::Ro);
     }
 
     #[test]
