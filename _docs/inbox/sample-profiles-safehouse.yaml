@@ -1,0 +1,251 @@
+safehouse:
+  name: "Agent Safehouse"
+  source: "https://github.com/eugene1g/agent-safehouse"
+  dist_script: "dist/safehouse.sh"
+  embedded_profiles_last_modified: "2026-05-20T12:27:03Z"
+  generated_by: "scripts/generate-dist.sh"
+
+  composition_model:
+    description: |
+      Composable Sandbox Profile Language (SBPL) modules for macOS sandbox-exec.
+      All policies start with (deny default) from 00-base.sb.
+      A profile's effective rules = union of:
+        1. 00-base.sb (deny default + HOME_DIR macros)
+        2. All transitive 'requires' (in order)
+        3. Its own direct rules/adds
+      Later modules can only ADD allows. They cannot revoke permissions granted earlier
+      (unless you use --append-profile with explicit deny rules at the end).
+    home_dir_token: "__SAFEHOUSE_REPLACE_ME_WITH_ABSOLUTE_HOME_DIR__"
+    helper_macros:
+      - home-subpath
+      - home-literal
+      - home-prefix
+
+  # ============================================================
+  # BASE LAYER (always included)
+  # ============================================================
+  profiles:
+    00-base:
+      source: "profiles/00-base.sb"
+      requires: []
+      description: "Core definitions, HOME_DIR placeholder, helper macros, and default-deny baseline."
+      rules:
+        - define: HOME_DIR = "__SAFEHOUSE_REPLACE_ME_WITH_ABSOLUTE_HOME_DIR__"
+        - define_functions:
+            - home-subpath(rel) = subpath(HOME_DIR + rel)
+            - home-literal(rel) = literal(HOME_DIR + rel)
+            - home-prefix(rel) = prefix(HOME_DIR + rel)
+        - action: deny
+          target: default
+
+    10-system-runtime:
+      source: "profiles/10-system-runtime.sb"
+      requires: [00-base]
+      description: "System binaries, /tmp, /dev, process primitives, basic mach services, and user XDG/preferences."
+      adds:
+        - file-read* on /usr, /bin, /sbin, /opt, /System/Library, /Library/* (many subpaths)
+        - file-read-metadata on /System, /private/var/run, XDG dirs (~/.config, ~/.cache, ~/.local)
+        - file-read* on /private, /etc, /var and many /private/etc/* files
+        - process-exec, process-fork, sysctl-read, process-info* (same-sandbox), signal (same-sandbox), mach-priv-task-port (same-sandbox), pseudo-tty
+        - file-ioctl on /dev/tty, /dev/ptmx, regex ^/dev/ttys and ^/dev/pty
+        - file-read*/write* on /tmp, /private/tmp, /var/folders, /dev/fd, /dev/{stdout,stderr,null,tty,ptmx}
+        - file-read* on /dev/{zero,urandom,random,autofs_nowait,dtracehelper}
+        - mach-lookup for baseline services (notification_center, etc.)
+        - Denies launchd listener sockets in /tmp by default (defense-in-depth)
+
+    20-network:
+      source: "profiles/20-network.sb"
+      requires: [00-base, 10-system-runtime]
+      description: "Network access (intentionally broad by default for agent reliability)."
+      adds:
+        - action: allow
+          operation: network*          # Fully open network (default)
+        # Optional stricter modes exist in comments but are disabled by default:
+        # - network-outbound only
+        # - network-outbound + localhost bind/inbound
+
+    # ============================================================
+    # TOOLCHAINS (30-*) - generally depend on base + system-runtime
+    # ============================================================
+    30-toolchains:
+      description: "Language runtime and toolchain permissions (bun, deno, go, node, python, rust, etc.). Most require 10-system-runtime."
+      profiles:
+        apple-toolchain-core: { requires: [10-system-runtime] }
+        bun: { requires: [10-system-runtime] }
+        deno: { requires: [10-system-runtime] }
+        elixir: { requires: [10-system-runtime] }
+        go: { requires: [10-system-runtime] }
+        java: { requires: [10-system-runtime] }
+        node: { requires: [10-system-runtime] }
+        perl: { requires: [10-system-runtime] }
+        php: { requires: [10-system-runtime] }
+        python: { requires: [10-system-runtime] }
+        ruby: { requires: [10-system-runtime] }
+        runtime-managers: { requires: [10-system-runtime] }   # mise, asdf, etc.
+        rust: { requires: [10-system-runtime] }
+
+    # ============================================================
+    # SHARED (40-*)
+    # ============================================================
+    40-shared:
+      profiles:
+        agent-common:
+          source: "profiles/40-shared/agent-common.sb"
+          requires: [10-system-runtime]
+          adds:
+            - file-read* + file-write* on ~/.skills, ~/.agents, ~/AGENTS.md
+            - file-read* on ~/.claude/agents, ~/.claude/skills, ~/CLAUDE.md
+
+        ipc-sysv-sem:
+          source: "profiles/40-shared/ipc-sysv-sem.sb"
+          requires: [10-system-runtime]
+          adds:
+            - SysV semaphore access (for LMDB cross-process locking, etc.)
+
+    # ============================================================
+    # INTEGRATIONS CORE (50-*) - foundational integrations
+    # ============================================================
+    50-integrations-core:
+      profiles:
+        container-runtime-default-deny: { requires: [10-system-runtime] }
+        git: { requires: [10-system-runtime, 40-shared/agent-common] }
+        launch-services: { requires: [10-system-runtime] }
+        scm-clis: { requires: [10-system-runtime, git] }
+        ssh-agent-default-deny: { requires: [10-system-runtime] }
+        worktree-common-dir: { requires: [git] }
+        worktrees: { requires: [git] }
+
+    # ============================================================
+    # OPTIONAL INTEGRATIONS (55-*) - most have explicit requires
+    # ============================================================
+    55-integrations-optional:
+      profiles:
+        1password: { requires: [10-system-runtime] }
+        agent-browser: { requires: [10-system-runtime, 20-network] }
+        browser-native-messaging:
+          source: "profiles/55-integrations-optional/browser-native-messaging.sb"
+          requires: [10-system-runtime]
+          adds:
+            - file-read* on browser roots (Chrome, Brave, Edge, Firefox, etc.)
+            - file-read*/write* on NativeMessagingHosts directories for those browsers
+
+        chromium-full: { requires: [electron] }          # transitively pulls macos-gui
+        chromium-headless: { requires: [10-system-runtime, 20-network] }
+        cleanshot: { requires: [macos-gui] }
+        clipboard:
+          requires: [10-system-runtime]
+          adds: pasteboard / clipboard IPC
+        cloud-credentials: { requires: [10-system-runtime] }
+        cloud-storage: { requires: [10-system-runtime, 20-network] }
+        docker: { requires: [10-system-runtime] }
+        electron:
+          source: "profiles/55-integrations-optional/electron.sb"
+          requires: [macos-gui]
+          adds:
+            - mach-lookup for MTLCompilerService, SafariPlatformSupport.Helper
+            - iokit-open for IOSurfaceRootUserClient, AGXDeviceUserClient
+            - mach-lookup/register for org.chromium.crashpad.*
+            - Note: recommends launching Electron with --no-sandbox
+
+        keychain:
+          source: "profiles/55-integrations-optional/keychain.sb"
+          requires: [10-system-runtime]
+          adds:
+            - file-read*/write* on ~/Library/Keychains and related plists
+            - mach-lookup for SecurityServer, securityd, secd, trustd, etc.
+            - ipc-posix-shm for AppleDatabaseChanged
+
+        kubectl: { requires: [10-system-runtime] }
+        lldb: { requires: [10-system-runtime] }
+        macos-gui:
+          source: "profiles/55-integrations-optional/macos-gui.sb"
+          requires: [clipboard]
+          adds:
+            - Extensive file-read* on system + user preference plists
+            - file-read-metadata on ~/Desktop, ~/Documents, ~/Downloads, ~/Library/* etc.
+            - user-preference-read for hitoolbox
+            - Large list of mach-lookup (windowserver, dock, tccd, coreservices, accessibility, etc.)
+            - mach-register for axserver, tsm.portname, coredrag
+            - system-fsctl and iokit-open for specific classes
+
+        microphone: { requires: [10-system-runtime] }
+        playwright-chrome: { requires: [chromium-headless, macos-gui] }
+        process-control: { requires: [10-system-runtime] }
+        shell-init: { requires: [10-system-runtime] }
+        spotlight: { requires: [10-system-runtime] }
+        ssh: { requires: [10-system-runtime] }
+        vscode: { requires: [macos-gui] }
+        xcode: { requires: [apple-toolchain-core, macos-gui] }
+
+    # ============================================================
+    # AGENTS (60-*) - specific agent binaries + their dependencies
+    # ============================================================
+    60-agents:
+      profiles:
+        aider: { requires: [10-system-runtime, git, python] }
+        amp: { requires: [10-system-runtime] }
+        auggie: { requires: [10-system-runtime] }
+        claude-code:
+          source: "profiles/60-agents/claude-code.sb"
+          requires:
+            - keychain
+            - browser-native-messaging
+            - microphone
+          adds:
+            - file-read*/write* on ~/.local/bin/claude, ~/.claude, ~/.config/claude, ~/.local/share/claude, ~/.mcp.json, etc.
+            - file-read* on managed ClaudeCode policy files under /Library/Application Support/ClaudeCode
+            - file-read-metadata on VS Code app bundles (for editor handoff only)
+
+        cline: { requires: [10-system-runtime] }
+        codex: { requires: [10-system-runtime] }
+        copilot-cli: { requires: [10-system-runtime] }
+        cursor-agent: { requires: [10-system-runtime, vscode] }
+        droid: { requires: [10-system-runtime] }
+        gemini: { requires: [10-system-runtime] }
+        goose: { requires: [10-system-runtime] }
+        kilo-code: { requires: [10-system-runtime] }
+        opencode: { requires: [10-system-runtime] }
+        pi: { requires: [10-system-runtime] }
+
+    # ============================================================
+    # APPS (65-*) - desktop app bundles (Electron-based mostly)
+    # ============================================================
+    65-apps:
+      profiles:
+        claude-app:
+          source: "profiles/65-apps/claude-app.sb"
+          requires:
+            - electron          # → macos-gui (transitively)
+            - claude-code       # → keychain, browser-native-messaging, microphone (transitively)
+          adds:
+            - file-read* + file-write* on:
+                ~/Library/Application Support/Claude
+                ~/Library/Logs/Claude
+                ~/Library/HTTPStorages/com.anthropic.claudefordesktop
+                ~/Library/Caches/Claude
+                ~/Library/Saved Application State/com.anthropic.claudefordesktop.savedState
+            - file-read* on /Applications/Claude.app and its preference plist
+            - user-preference-read + user-preference-write for domain "com.anthropic.claudefordesktop"
+            - mach-lookup + mach-register for com.anthropic.claudefordesktop.MachPortRendezvousServer.*
+
+        codex-app: { requires: [electron] }
+        vscode-app: { requires: [macos-gui, vscode] }
+
+# ============================================================
+# HOW TO USE THIS YAML TO UNDERSTAND ANY PROFILE
+# ============================================================
+usage:
+  example_claude_app:
+    description: "Effective rules for 65-apps/claude-app.sb"
+    steps:
+      - Start with 00-base (deny default + HOME macros)
+      - Add 10-system-runtime
+      - Add 20-network (if needed)
+      - Add clipboard → macos-gui (from electron)
+      - Add keychain + browser-native-messaging + microphone (from claude-code)
+      - Add electron rules
+      - Add claude-code rules
+      - Finally add the specific claude-app rules listed above
+    result: "Full set of allows for Claude Desktop while still denying everything else."
+
+  note: "For the absolute latest or any missing low-level details of a specific profile, refer to its raw file in the profiles/ directory. This YAML captures the structure and inheritance completely."

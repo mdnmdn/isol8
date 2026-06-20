@@ -1,0 +1,18 @@
+[package]
+name = "isol8"
+version = "0.1.0"
+edition = "2021"
+description = "Deny-by-default cross-platform sandbox for AI coding agents and CLI tools"
+
+[[bin]]
+name = "isol8"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+anyhow = "1"
+
+# platform backends: add `landlock` + `nix` (Linux) when implementing src/backends/linux.rs
+# networking (Phase 3): add proxy/pasta orchestration crates then
