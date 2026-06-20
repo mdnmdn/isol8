@@ -18,8 +18,8 @@ enforces it.
 
 | Layer | Where | What it proves | Runs on |
 |-------|-------|----------------|---------|
-| Unit | `src/**` `#[cfg(test)]` | Pure logic: profile merge, `requires` resolution, env allowlist, HOME-first resolution, path-matcher matching, `--dry-run` rendering. | All platforms, no privileges. |
-| Integration | `tests/*.rs` | Crate wired end-to-end *without* exec: load profiles → resolve → merge → render. | All platforms. |
+| Unit | `src/**` `#[cfg(test)]` | Pure logic: profile merge, `requires` resolution, env allowlist, HOME-first resolution, filter matching, `--show-policies` rendering. | All platforms, no privileges. |
+| Integration | `tests/*.rs` | Crate wired end-to-end *without* exec: load profiles → select layers → filter → resolve → merge → render. | All platforms. |
 | Field | `src/bin/isol8-field-test.rs` | The OS actually enforces the policy: denied paths fail, granted paths work, env is sanitized, scratch HOME is in effect. | Per-OS, best-effort, prints a report. |
 
 Unit and integration tests never touch the real filesystem outside a temp dir and
@@ -33,16 +33,65 @@ never require the backend to be functional. Field tests require a working backen
 Standard `cargo test`. Keep them deterministic and platform-independent:
 
 - **Profile merge** — deny-first union, highest-layer-explicit-grant-wins, env
-  defaults, network domain union. (`tests/profile_merge.rs`)
+  defaults, network domain union. (`tests/profile_merge.rs`, `src/profile.rs`)
 - **Inheritance** — `requires`/`extends` DFS: deps-first topo order, cycle
-  detection, dedup, band-number tiebreak.
+  detection, dedup, selection-order tiebreak. (`tests/profile_merge.rs`,
+  `src/profile.rs`)
 - **Env construction** — only the allowlist survives; HOME override applied first.
+  (`src/env.rs`)
 - **Path matchers** — `subpath` / `literal` / `prefix` / `regex` accept/reject.
-- **Dry-run render** — a fixed profile stack renders to the expected effective
-  policy (snapshot-style string compare).
+- **Policy render** — a fixed profile stack renders to the expected effective
+  policy (snapshot-style string compare). (`src/backends/macos.rs`)
+- **Profile registry** — all embedded `profiles/**/*.toml` parse cleanly.
+  (`src/profile.rs::all_builtin_profiles_parse`)
+- **Profile-path overlay** — a `--profile-path` file or directory overrides
+  same-named built-in layers and adds new ones. (`tests/profile_path.rs`)
+- **Filters & auto-selection** — executable/OS/arch constraints, `[[policies]]`
+  folding, and `auto_profiles` behaviour. (`src/filter.rs`, `tests/profile_filters.rs`)
 
 These must pass on Linux, macOS, WSL2, and Windows alike — no real sandboxing
 involved, so they are the portable backbone of CI.
+
+### 2.1 Filter unit tests (`src/filter.rs`)
+
+Filter logic is pure and tested in-process:
+
+| Case | Expect |
+|------|--------|
+| `executable_basename` | `/usr/bin/claude` → `claude` (path and `.exe` stripped) |
+| `filter_matches` AND semantics | All non-empty axes (`os`, `arch`, `executables`) must match |
+| Executable match | Basename **or** full argv[0] literal (e.g. `/opt/bin/claude`) |
+| `is_auto_selectable` | Only layers with `filter.executables` are auto-candidates |
+| `apply_layer_filter` | OS/arch mismatch → empty paths/env/macos; `requires` kept |
+| `apply_policies` | Matching `[[policies]]` entries fold into unconditional fields |
+
+### 2.2 Filter integration tests (`tests/profile_filters.rs`)
+
+These wire the public API (`select_layer_names`, `resolved_layers`,
+`effective_policy`) against the embedded profile tree — no sandbox exec:
+
+| Case | Command / setup | Expect |
+|------|-----------------|--------|
+| Auto-select by basename | `claude --version`, `auto_profiles=true` | `agents/claude-code` in layer stack |
+| Auto-select by full path | `/usr/bin/claude`, `auto_profiles=true` | Same (basename extraction) |
+| No false positive | `cargo build`, `auto_profiles=true` | `agents/claude-code` **not** selected |
+| Auto off | `claude`, `auto_profiles=false` | Agent layer skipped unless `--profile` names it |
+| Explicit override | `--profile agents/claude-code` + `cargo build` | Agent layer selected anyway |
+| Grant folding | `claude` vs `cargo` with only auto-selected defaults | `~/.claude` grants present only for `claude` |
+| Policy executable filter | `--profile-path` overlay with `[[policies]]` | Policy paths fold only when executable matches |
+| OS layer filter | Explicit `linux/system-runtime` on macOS (or vice versa) | Paths cleared; `requires` deps still resolve |
+| End-to-end | `resolve::effective_policy` for `claude` | Layer stack + merged grants include agent paths |
+
+Default profile stacks in these tests use `base` plus the OS-appropriate
+`macos/system-runtime` or `linux/system-runtime` layer so behaviour matches
+normal config defaults.
+
+### 2.3 Profile-path overlay (`tests/profile_path.rs`)
+
+| Case | Expect |
+|------|--------|
+| Single TOML file via `--profile-path` | New layer name from file stem; built-ins still present |
+| Directory tree | Relative paths become layer names (`agents/foo` from `agents/foo.toml`) |
 
 ---
 
@@ -153,6 +202,10 @@ tests and the real CLI agree on what the current platform can do. A scenario tha
 just test          # unit + integration (all platforms, no privileges)
 just field-test    # real-sandbox field tests on this machine
 just ci            # fmt-check + clippy -D warnings + build + test (the gate)
+
+# targeted filter / profile coverage:
+cargo test profile_filters
+cargo test filter::
 ```
 
 Field tests are intentionally *not* part of `cargo test` by default: they need a
@@ -168,6 +221,9 @@ on Linux and macOS runners.
   logic, a field scenario for an enforcement behaviour).
 - A new profile grant type or matcher must add at least one field scenario that
   proves the OS honours it.
+- A new filter axis or auto-selection rule must add unit tests in `filter.rs` and
+  at least one integration case in `tests/profile_filters.rs` (or extend
+  `tests/profile_path.rs` when the behaviour is overlay-specific).
 - Tests leave the machine clean: temp dirs removed on exit unless `--keep`.
 - Prefer many tiny scenarios over one large one — a failing scenario name should
   point straight at the broken rule.
