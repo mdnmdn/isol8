@@ -1,7 +1,10 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "isol8", about = "Deny-by-default sandbox for agents and CLI tools")]
+#[command(
+    name = "isol8",
+    about = "Deny-by-default sandbox for agents and CLI tools"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

@@ -1,0 +1,25 @@
+# base — cross-platform minimal runtime layer (file stem = layer name "base").
+#
+# The lowest band (00): the smallest set of grants any confined command needs,
+# regardless of OS. OS-specific runtime essentials live in higher layers
+# (e.g. `macos-system`, which `requires = ["base"]`).
+#
+# Deny-by-default: this only grants ro on the standard binary/library trees,
+# rw on the world-writable temp dir, a minimal PATH, and a scratch HOME.
+
+paths = [
+  # Read-only access to the standard system binary + library trees. `subpath`
+  # (the default) covers the whole subtree.
+  { path = "/usr", access = "ro" },
+  { path = "/bin", access = "ro" },
+  # The one writable location. Most tools expect a usable temp dir.
+  { path = "/tmp", access = "rw" },
+]
+
+# Minimal PATH — folded as a default (first-writer-wins), so a host PATH on the
+# allowlist still takes precedence per env merge semantics.
+env = { PATH = "/usr/bin:/bin" }
+
+# Replace HOME with a per-session scratch dir (R4). The real home is NOT granted;
+# only the seeded entries below are copied in read-only.
+home_replace = { enabled = true, auto_scratch = true, seed = ["~/.gitconfig"] }

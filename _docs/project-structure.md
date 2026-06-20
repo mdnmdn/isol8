@@ -1,8 +1,17 @@
 # isol8 — Target Project Structure & Code Blueprint
 
 > The intended layout of the full `isol8` crate once all phases land, with
-> module responsibilities, key types, and data flow. The current tree is a Phase 1
-> skeleton (see [`AGENTS.md`](../AGENTS.md)); this document is the destination.
+> module responsibilities, key types, and data flow. This document is the
+> *destination*; the current tree (Phase 1, macOS MVP working — see
+> [`AGENTS.md`](../AGENTS.md)) deliberately consolidates some of it:
+>
+> - `profile/` is a single `src/profile.rs` (types + load + merge + `resolve_requires`),
+>   not a submodule dir, and there is no separate `profile/render.rs`.
+> - `--dry-run` rendering (`render_dry_run`) lives in `src/backends/mod.rs`, and the
+>   spawn/exec logic is inside each backend rather than a separate `src/spawn.rs`.
+> - A `src/lib.rs` exposes the modules so the binaries and `tests/` share the crate.
+> - `home.rs`, `env.rs`, `backends/macos.rs`, and the `isol8-field-test` bin are real;
+>   `net/`, `caps.rs`, the N3 helper, and `backends/linux.rs` are still stubs/future.
 >
 > Companion to the requirements in [`project-description.md`](./project-description.md).
 > Section refs (R1–R6, N0–N3, §7) point there.
@@ -48,7 +57,8 @@ isol8/
 │   │   └── helper.rs         # N3 client side: talk to isol8-net-helper
 │   └── caps.rs                # capability probing/dropping (CAP_NET_ADMIN, userns)
 ├── src/bin/
-│   └── isol8-net-helper.rs # small privileged N3 helper (setcap cap_net_admin+ep)
+│   ├── isol8-net-helper.rs # small privileged N3 helper (setcap cap_net_admin+ep)
+│   └── isol8-field-test.rs # real-sandbox field tests (see _docs/testing-strategies.md)
 └── tests/
     ├── profile_merge.rs        # unit-ish: deny-first merge semantics
     └── integration_linux.rs    # run real cmds, assert allowed/denied (Linux only)

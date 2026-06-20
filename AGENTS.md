@@ -52,11 +52,30 @@ Modules (see spec §7):
 
 ## Current status
 
-**Phase 1 skeleton.** Module layout, CLI surface, profile data model, and backend
-trait are in place and compile. All behavior is stubbed (`todo!()` / "not yet
-implemented"): profile loading + `merge`, env construction, `--dry-run` rendering,
-and both the Linux (Landlock) and macOS (Seatbelt) backends. Network tiers (R5) and
-the Windows backend are not started.
+**Phase 1 — macOS MVP working.** The full path/HOME/env pipeline is implemented and
+enforced on macOS via Seatbelt:
+
+- **profile** — TOML load (embedded `profiles/*.toml` + user config dir), `requires`
+  inheritance (transitive, cycle-detected, deps-first), and deny-first `merge` are real.
+  Types carry `Access` (none/ro/rw/metadata), `MatchKind`, and the macOS `capabilities`
+  + raw-SBPL block (`MacosExtra`). `#[serde(deny_unknown_fields)]` throughout.
+- **home / env** — effective `$HOME` resolved first (`--home` > profile > auto-scratch),
+  `~` expanded against it before merge; env sanitized to the allowlist, HOME applied first.
+- **macOS backend** — renders the merged profile to SBPL (`(deny default)` + per-grant
+  allows/denies, ancestor metadata, typed capabilities, raw passthrough) and runs it under
+  `/usr/bin/sandbox-exec -p`. Symlinked paths (`/tmp`→`/private/tmp`, `/var`→`/private/var`)
+  are emitted in both forms — Seatbelt matches the literal accessed path, not a canonical one.
+- **--dry-run** prints the effective grants, env, command, and the generated SBPL.
+- **profiles** — built-in `base` + `macos-system` layers; `isol8 run --profile macos-system`
+  confines real commands (`sh`, `env`, `date`, `cat`, …).
+- **tests** — unit + integration (`cargo test`) and a real-sandbox field-test binary
+  (`just field-test`, scenarios 1–7) prove the OS actually enforces the policy.
+
+**Not yet:** the Linux (Landlock) backend still `bail!`s; network tiers (R5), Phase-2 env
+flags (`--env-pass`/`--env-file`), resource limits, and the Windows backend are unstarted.
+Known gaps: no auto-grant of the cwd yet (confined tools may hit `getcwd` denials unless the
+workdir is added via `--add-dirs-rw`); macOS `git`/`cargo` need extra developer-tool paths
+beyond `macos-system`.
 
 ## Roadmap
 
@@ -68,6 +87,31 @@ the Windows backend are not started.
 4. **Phase 4** — Seccomp profiles, structured audit logs, integration test harness,
    hardening, hybrid isolation modes, packaging.
 5. **Phase 5** — Windows backend (AppContainer + Job Objects + WFP), best-effort HOME.
+
+## Working directives
+
+How to work in this repo. These are not suggestions.
+
+- **Don't improvise — ask.** If a requirement, an edge case, or a design choice is
+  unclear, stop and ask. A wrong guess costs more than a question.
+- **KISS — don't overcomplicate.** Simplest solution that is solid wins. No
+  speculative abstractions, no config for values that never change, deny-by-default
+  stays simple. Fewest moving parts that correctly enforce the policy.
+- **Implement *and* check tests.** Every non-trivial change ships with its test
+  (unit for logic, a field scenario for enforcement). See
+  [`_docs/testing-strategies.md`](_docs/testing-strategies.md). Run them; don't
+  assume green.
+- **Use subagents to optimize work.** Delegate mechanical or parallelizable work to
+  cheaper models (e.g. Haiku/Sonnet) — bulk edits, searches, boilerplate — and
+  reserve the strong model for design and security-sensitive code.
+- **End every task with the full gate.** Run `just ci` (or equivalently
+  `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo build`, `cargo test`).
+  A task is not done until compile + test + lint + clippy are clean.
+- **Be enterprise-ready.** Solid error handling, no panics on user input, clear
+  messages, no silent loss of confinement, reproducible builds. Security correctness
+  is never traded for brevity.
+- **Update the docs after each task.** Keep `AGENTS.md`, the `_docs/*` specs, and the
+  README in sync with what the code actually does.
 
 ## Conventions for agents
 
@@ -86,6 +130,12 @@ the Windows backend are not started.
 ```sh
 cargo build
 cargo test
-# example (once implemented):
-isol8 run --profile rust --add-dirs-rw /my/project cargo build
+just field-test          # real-sandbox field tests (macOS)
+
+# run a command confined (macOS):
+isol8 run --profile macos-system --add-dirs-rw /my/project -- /bin/sh -c 'echo hi'
+# inspect the effective policy without running:
+isol8 run --profile macos-system --dry-run -- echo hi
 ```
+
+Full usage: [`_docs/instructions.md`](_docs/instructions.md).

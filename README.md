@@ -8,9 +8,11 @@ tiered network confinement.
 It generalizes the macOS `sandbox-exec` (Seatbelt) model to **Linux** (Landlock +
 namespaces), **WSL2**, and **Windows** (deferred). Primary targets: Linux and macOS.
 
-> **Status: early Phase 1 skeleton.** The module layout, CLI surface, profile data
-> model, and backend trait compile; behavior is stubbed. Not yet usable for real
-> confinement. See [`AGENTS.md`](AGENTS.md) for current status.
+> **Status: Phase 1 — macOS MVP working.** Path access, HOME replacement, env
+> sanitization, profile load/merge/inheritance, and `--dry-run` are implemented and
+> **enforced on macOS** via Seatbelt. The Linux (Landlock) backend and the network
+> tiers are not wired yet. See [`AGENTS.md`](AGENTS.md) for the detailed status and
+> [`_docs/instructions.md`](_docs/instructions.md) for usage.
 
 > Primary inspiration: the macOS [Agent Safehouse](https://github.com/eugene1g/agent-safehouse)
 > project, whose composable profile model `isol8` generalizes cross-platform.
@@ -22,7 +24,7 @@ namespaces), **WSL2**, and **Windows** (deferred). Primary targets: Linux and ma
 - **Environment isolation** — minimal allowlist; explicit opt-in passthrough.
 - **HOME replacement** — substitute a scratch `$HOME`, resolved before anything else.
 - **Tiered network isolation** — N0 none → N1 proxy → N2 rootless → N3 rooted.
-- **Composable profiles** — layered TOML/YAML, resolved deny-first, with
+- **Composable profiles** — layered TOML, resolved deny-first, with
   **inheritance** (`requires:`).
 
 ## Profiles & inheritance
@@ -41,24 +43,32 @@ See [`_docs/profile-model.md`](_docs/profile-model.md) for the full schema and
 merge semantics, and [`_docs/project-structure.md`](_docs/project-structure.md)
 for the code blueprint.
 
-## Build
+## Build & run
 
 ```sh
 cargo build
 cargo test
 ```
 
-Example invocation (once implemented):
+Run a command confined (macOS):
 
 ```sh
-isol8 run --profile rust --add-dirs-rw /my/project cargo build
+# Inspect the effective policy (any OS):
+isol8 run --profile macos-system --dry-run -- echo hi
+
+# Confine a command, granting rw to one project directory:
+isol8 run --profile macos-system --add-dirs-rw "$PWD" -- /bin/sh -c 'echo built > out.txt'
 ```
+
+See [`_docs/instructions.md`](_docs/instructions.md) for the full usage guide.
 
 ## Docs
 
 - [`_docs/project-description.md`](_docs/project-description.md) — full requirements + Rust ecosystem notes.
 - [`_docs/project-structure.md`](_docs/project-structure.md) — target layout & code blueprint.
 - [`_docs/profile-model.md`](_docs/profile-model.md) — profile format, inheritance, merge rules.
+- [`_docs/instructions.md`](_docs/instructions.md) — usage: commands, flags, profiles, examples.
+- [`_docs/testing-strategies.md`](_docs/testing-strategies.md) — unit + cross-platform field tests.
 - [`AGENTS.md`](AGENTS.md) — guide for agents working on this repo.
 
 ## License

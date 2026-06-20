@@ -15,7 +15,12 @@ use crate::profile::Profile;
 pub struct LinuxBackend;
 
 impl Backend for LinuxBackend {
-    fn spawn(&self, _profile: &Profile, _env: &HashMap<String, String>, _cmd: &[String]) -> Result<i32> {
+    fn spawn(
+        &self,
+        _profile: &Profile,
+        _env: &HashMap<String, String>,
+        _cmd: &[String],
+    ) -> Result<i32> {
         bail!("linux backend not yet implemented")
     }
 }

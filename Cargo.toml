@@ -3,10 +3,20 @@ name = "isol8"
 version = "0.1.0"
 edition = "2021"
 description = "Deny-by-default cross-platform sandbox for AI coding agents and CLI tools"
+default-run = "isol8"
+
+[lib]
+name = "isol8"
+path = "src/lib.rs"
 
 [[bin]]
 name = "isol8"
 path = "src/main.rs"
+
+# Real-sandbox field tests (see _docs/testing-strategies.md §3). Run: `just field-test`.
+[[bin]]
+name = "isol8-field-test"
+path = "src/bin/isol8-field-test.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

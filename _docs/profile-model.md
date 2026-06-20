@@ -3,12 +3,33 @@
 > The profile is the single source of truth for what a confined process may do.
 > A run's effective policy is the **deny-first merge** of an ordered stack of
 > profile layers (expanded over their inheritance graph) plus invocation
-> overrides. This document defines the on-disk format (TOML primary, YAML
-> accepted), inheritance, every field, and the merge semantics.
+> overrides. This document defines the on-disk format, inheritance, every field,
+> and the merge semantics.
 >
 > Companion to [`project-description.md`](./project-description.md) (R2–R6) and
 > [`project-structure.md`](./project-structure.md) (`profile/` module). Mirrors the
 > upstream **Agent Safehouse** composition model (see §9), generalized cross-platform.
+
+---
+
+## 0. Implementation status (Phase 1)
+
+This document describes the **full target model**. The loader implemented today
+(`src/profile.rs`, `#[serde(deny_unknown_fields)]`) is a subset — anything below
+that isn't yet parsed will **error on load**, not be ignored:
+
+| Area | Status |
+|------|--------|
+| File format | **One layer per file** only (`<stem>.toml` = layer name). The `[profile.<name>]` multi-layer form (§4) is **not** parsed yet. |
+| Language | **TOML only.** YAML (§1/§4) is not accepted yet. |
+| Fields parsed | `requires`/`extends`, `paths` (`path`/`access`/`match`), `env`, `home_replace` (incl. `path`), `macos` (`capabilities`/`raw`). |
+| `access` | `none` / `ro` / `rw` / `metadata` — all parsed; all enforced by the macOS backend. |
+| `match` | `subpath` / `literal` / `prefix` / `regex` — parsed; macOS-enforced (`prefix` as an anchored regex). |
+| `network` block | **Not parsed yet** (Phase 3). Including `network`/`sockets`/`deny_domains`/`inspect` in a layer currently fails to load. |
+| Enforcement | **macOS only.** The Linux backend is stubbed. |
+
+The examples below that include a `network` block illustrate the *target* schema;
+omit it to author a layer that loads today.
 
 ---
 
@@ -92,11 +113,11 @@ it adds no new merge rule.
 
 TOML is primary (built-in `profiles/*.toml`, embedded at build time). User layers
 live in the config dir (`$XDG_CONFIG_HOME/isol8/profiles/`, or the platform
-equivalent). YAML is accepted for user layers and parses into the same model.
+equivalent). YAML is a *target* format and not accepted yet (see §0).
 
-A file may define one or many layers. Two equivalent forms:
+A file may define one or many layers. Two forms (only the first is parsed today — §0):
 
-**One layer per file** (file stem = layer name):
+**One layer per file** (file stem = layer name) — **the supported form**:
 
 ```toml
 # profiles/rust.toml  → layer "rust"
@@ -105,7 +126,7 @@ paths = [ { path = "~/.cargo", access = "rw" }, { path = "~/.rustup", access = "
 env   = { CARGO_TERM_COLOR = "always" }
 ```
 
-**Multiple layers in one file** (explicit `[profile.<name>]`):
+**Multiple layers in one file** (explicit `[profile.<name>]`) — *target only, not parsed yet (§0)*:
 
 ```toml
 [profile.base]
@@ -122,7 +143,7 @@ requires = ["base"]
 paths = [ { path = "~/.cargo", access = "rw" } ]
 ```
 
-YAML equivalent of the `base` layer:
+YAML equivalent of the `base` layer — *target only, not parsed yet (§0)*:
 
 ```yaml
 # profiles/base.yaml  → layer "base"
@@ -190,7 +211,7 @@ explicit `paths` grant if needed. Resolution precedence: `--home` > layer
 `home_replace.path` > `auto_scratch` temp dir. The home token (`~` / `$HOME`) is
 isol8's equivalent of the Safehouse `HOME_DIR` placeholder.
 
-### NetworkPolicy
+### NetworkPolicy — *Phase 3, not parsed yet (§0)*
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|

@@ -1,0 +1,28 @@
+# macos-system — macOS runtime essentials layer (file stem = layer name).
+#
+# Builds on `base` (which already grants ro /usr and /bin). Adds the macOS-specific
+# grants verified on real `sandbox-exec` (macOS 26) that any command needs to even
+# start under `(deny default)`. See src/backends/macos.rs for the validated facts.
+
+requires = ["base"]
+
+paths = [
+  # The whole /System subtree — it holds the dyld shared cache under
+  # /System/Volumes/Preboot/Cryptexes. Without it the dynamic linker can't
+  # resolve libs and the process aborts.
+  { path = "/System", access = "ro" },
+
+  # MANDATORY: every process inherits cwd "/" from launchd and stats/reads it on
+  # start. `literal` (the root node only, not the subtree) is enough; without it
+  # the runtime aborts with SIGABRT (exit 134).
+  { path = "/", access = "ro", match = "literal" },
+
+  # The shell selector (/var/select/sh -> the chosen /bin/sh) lives here.
+  # /usr/bin/* binaries and the shell selector need this readable.
+  { path = "/private/var/select", access = "ro" },
+]
+
+[macos]
+# The two process primitives every exec needs: exec the target binary and let it
+# fork children. (file-read on /usr,/bin,/System,/ is granted via `paths` above.)
+capabilities = ["process-exec", "process-fork"]
