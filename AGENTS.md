@@ -88,7 +88,7 @@ enforced on macOS via Seatbelt:
 - **tests** — unit + integration (`cargo test`) and a real-sandbox field-test binary
   (`just field-test`, scenarios 1–7) prove the OS actually enforces the policy.
 
-**Not yet:** the Linux (Landlock) backend still `bail!`s; network tiers (R5), `--env-file`,
+**Not yet:** the Linux (Landlock) backend still `bail!`s; `--env-file`,
 resource limits, and the Windows backend are unstarted.
 Known gaps: macOS `git`/`cargo` need extra developer-tool paths beyond `macos-system`.
 

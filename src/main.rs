@@ -47,11 +47,6 @@ fn prepare_run(run: &mut cli::RunInvocation) -> Result<()> {
     if let Some(v) = cli_auto {
         args.opts.auto_profiles = v;
     }
-    if !args.profile_paths().is_empty() {
-        eprintln!(
-            "warning: --profile-path may load raw Seatbelt rules; only use profiles from trusted sources"
-        );
-    }
     run.opts = args.opts;
     run.cmd = args.cmd;
     Ok(())

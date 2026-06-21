@@ -146,6 +146,16 @@
 
 ### R5 — Tiered Network Isolation
 
+> **Current status — network is OPEN by default (not yet confined).** The tiers
+> below are unimplemented. Because Seatbelt's `(deny default)` would otherwise block
+> all sockets and break every tool/agent that calls an external API (curl, git,
+> package managers), `profiles/macos/system-runtime.toml` deliberately leaves
+> outbound/inbound network and DNS **open** (`(allow network*)` + mDNSResponder) so
+> the sandbox is usable out of the box. Consequence: isol8 today confines the
+> **filesystem and environment but not the network** — a confined process can reach
+> any host. When these tiers land, that allowance moves behind the selected tier
+> (N0 removes it entirely); mirror the equivalent for `linux/system-runtime`.
+
 **Requirement.** Multiple selectable tiers of network confinement, from none to kernel-enforced domain filtering, so the user can match the threat model (accidental vs. cooperative vs. adversarial) and the available privilege.
 
 **Tiers.**

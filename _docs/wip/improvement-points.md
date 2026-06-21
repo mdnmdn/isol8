@@ -59,7 +59,9 @@ Forgetting it yields a confusing "can't read my own project" situation.
 **Suggestion:** an opt-in `--grant-cwd` (or `--workdir`) flag, or auto-grant the
 cwd RW when no `--add-dirs*` is given.
 
-## 6. `--profile-path` warning every run
+## 6. `--profile-path` warning every run — ✅ done
+*Removed: the per-run warning is gone (it printed on every launch and was just noise).*
+
 `warning: --profile-path may load raw Seatbelt rules; only use profiles from
 trusted sources` prints on every launch. Reasonable once, noisy forever.
 **Suggestion:** a trust mechanism (config entry / `--trust-profile-path`) or

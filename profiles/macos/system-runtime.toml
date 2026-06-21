@@ -119,6 +119,23 @@ raw = '''
 )
 (allow system-socket)
 (allow ipc-posix-shm-read-data
-    (ipc-posix-name "apple.shm.notification_center")                  
+    (ipc-posix-name "apple.shm.notification_center")
 )
+;; ---------------------------------------------------------------------------
+;; NETWORK + DNS: OPEN BY DEFAULT (deliberate stop-gap)
+;;
+;; The tiered network isolation (R5: N0 none / N1 proxy / N2 pasta / N3 netns)
+;; is NOT implemented yet. Seatbelt's `(deny default)` would otherwise block ALL
+;; sockets, breaking every agent/tool that calls an external API (curl, git,
+;; package managers, the agents themselves). Until the N-tiers land we leave
+;; outbound/inbound network and DNS resolution OPEN so the sandbox is usable out
+;; of the box.
+;;
+;; ⚠️  This means isol8 currently confines the FILESYSTEM and ENVIRONMENT but
+;;     NOT the network — a confined process can reach any host. When R5 lands,
+;;     this block moves behind the selected tier (N0 = remove it entirely).
+;;     Mirror the equivalent for linux/system-runtime when that backend exists.
+;; ---------------------------------------------------------------------------
+(allow network*)
+(allow mach-lookup (global-name "com.apple.mDNSResponder"))
 '''

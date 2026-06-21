@@ -1,5 +1,8 @@
 # network
-# Network Network policy; intentionally fully open for reliable agent operation.
+# Kept as a no-op alias for back-compat. Network + DNS are currently OPEN BY
+# DEFAULT for every run (see the "NETWORK + DNS: OPEN BY DEFAULT" block in
+# profiles/macos/system-runtime.toml), so this layer adds nothing today. When the
+# R5 network tiers land, tier selection moves here.
 # filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
 
 requires = ["base", "macos/system-runtime"]

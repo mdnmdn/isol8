@@ -11,8 +11,8 @@ namespaces), **WSL2**, and **Windows** (deferred). Primary targets: Linux and ma
 > **Status: Phase 1 — macOS MVP working.** Path access, HOME replacement, env
 > sanitization, ~70 embedded Safehouse-derived profiles, conditional filters,
 > config file + auto-profile selection, and policy introspection are implemented.
-> **Enforcement works on macOS** via Seatbelt. The Linux (Landlock) backend and
-> network tiers are not fully wired yet. 
+> **Enforcement works on macOS** via Seatbelt. The Linux (Landlock) backend is
+> not fully wired yet. 
 
 > Primary inspiration: the macOS [Agent Safehouse](https://github.com/eugene1g/agent-safehouse)
 > project, whose composable profile model `isol8` generalizes cross-platform.
