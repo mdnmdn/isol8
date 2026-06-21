@@ -11,6 +11,10 @@ use anyhow::{Context, Result};
 use crate::cli::RunArgs;
 use crate::profile::Profile;
 
+/// Token usable in profile/CLI path grants that expands to the *real* home, so a
+/// grant survives an active `--home` replacement (which `~` would retarget). §9.
+pub const REAL_HOME_TOKEN: &str = "#HOME";
+
 /// The resolved effective home for a run.
 pub struct EffectiveHome {
     pub path: PathBuf,
@@ -56,6 +60,10 @@ pub fn resolve(run: &RunArgs, layers: &[Profile]) -> Result<EffectiveHome> {
         // No replacement requested: fall back to the real home.
         real
     };
+
+    if run.no_seed() {
+        seed.clear();
+    }
 
     Ok(EffectiveHome { path, seed })
 }
@@ -113,6 +121,18 @@ pub fn expand_tilde(path: &str, home: &Path) -> String {
     path.to_string()
 }
 
+/// Expand a path grant: first substitute the `#HOME` real-home token (§9), then
+/// expand a leading `~` against the *effective* home. With no replacement home the
+/// two coincide, so `#HOME` and `~` agree.
+pub fn expand_grant(path: &str, effective_home: &Path) -> String {
+    let substituted = if path.contains(REAL_HOME_TOKEN) {
+        path.replace(REAL_HOME_TOKEN, &real_home().to_string_lossy())
+    } else {
+        path.to_string()
+    };
+    expand_tilde(&substituted, effective_home)
+}
+
 /// Copy allowlisted real-home entries read-only into the (scratch) home (R4.4).
 ///
 /// Keeps it simple: std fs copy of files, recursive copy of directories. Missing
@@ -147,6 +167,11 @@ fn copy_readonly(src: &Path, dst: &Path) -> Result<()> {
             copy_readonly(&entry.path(), &dst.join(entry.file_name()))?;
         }
     } else {
+        if dst.exists() {
+            // ponytail: seed once. A persistent home keeps its first snapshot, and a
+            // re-run can't fail trying to overwrite the read-only seed from last time.
+            return Ok(());
+        }
         std::fs::copy(src, dst)?;
         let mut perms = std::fs::metadata(dst)?.permissions();
         perms.set_readonly(true);
@@ -170,6 +195,53 @@ mod tests {
             expand_tilde("~/.cargo", Path::new("/scratch")),
             "/scratch/.cargo"
         );
+    }
+
+    #[test]
+    fn expand_grant_real_home_token() {
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", "/real");
+        // `#HOME` targets the real home; `~` targets the effective (replacement) home.
+        assert_eq!(
+            expand_grant("#HOME/.ssh", Path::new("/scratch")),
+            "/real/.ssh"
+        );
+        assert_eq!(
+            expand_grant("~/.cargo", Path::new("/scratch")),
+            "/scratch/.cargo"
+        );
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn no_seed_clears_seed_list() {
+        let run = crate::cli::run_from(
+            crate::cli::ProfileOpts {
+                no_seed: true,
+                ..Default::default()
+            },
+            vec!["echo".into()],
+        );
+        let layers = vec![crate::profile::Profile {
+            home_replace: Some(crate::profile::HomeReplace {
+                enabled: true,
+                auto_scratch: false,
+                path: Some("~/h".into()),
+                seed: vec!["~/.gitconfig".into()],
+            }),
+            ..Default::default()
+        }];
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", "/real/home");
+        let home = resolve(&run, &layers).unwrap();
+        assert!(home.seed.is_empty());
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     #[test]
@@ -309,6 +381,39 @@ mod tests {
         let copied = scratch.join(".gitconfig");
         assert!(copied.exists());
         assert!(std::fs::metadata(&copied).unwrap().permissions().readonly());
+
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn seed_is_first_creation_only() {
+        // Reproduces the persistent-home bug: re-seeding over an existing read-only
+        // copy must NOT error, and must leave the first snapshot untouched.
+        let tmp = std::env::temp_dir().join(format!("isol8-test-seed-once-{}", std::process::id()));
+        let real = tmp.join("real");
+        let scratch = tmp.join("scratch");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join(".gitconfig"), b"first").unwrap();
+
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", &real);
+
+        let home = EffectiveHome {
+            path: scratch.clone(),
+            seed: vec!["~/.gitconfig".into()],
+        };
+        seed(&home).unwrap(); // first run: copies read-only
+
+        // Source changes; a second seed must succeed and keep the first snapshot.
+        std::fs::write(real.join(".gitconfig"), b"second").unwrap();
+        seed(&home).unwrap(); // must not fail overwriting the read-only copy
+
+        let copied = scratch.join(".gitconfig");
+        assert_eq!(std::fs::read(&copied).unwrap(), b"first");
 
         match prev {
             Some(v) => std::env::set_var("HOME", v),

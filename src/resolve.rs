@@ -10,9 +10,31 @@ use crate::filter::RunContext;
 use crate::home::{self, EffectiveHome};
 use crate::profile::{self, Access, LayerRegistry, MatchKind, PathGrant, Profile};
 
+/// How a layer entered the resolved stack (for `--show-policies` provenance).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerOrigin {
+    /// Named via `--profile` (or config `default_profiles`).
+    Explicit,
+    /// Pulled in by `--auto-profiles` executable matching.
+    Auto,
+    /// Dragged in transitively via another layer's `requires`.
+    Required,
+}
+
+impl LayerOrigin {
+    pub fn label(self) -> &'static str {
+        match self {
+            LayerOrigin::Explicit => "explicit",
+            LayerOrigin::Auto => "auto",
+            LayerOrigin::Required => "required",
+        }
+    }
+}
+
 /// Fully resolved policy for a confined command.
 pub struct EffectivePolicy {
-    pub layer_names: Vec<String>,
+    /// Resolved layer stack in merge order (deps-first), tagged with provenance.
+    pub layer_names: Vec<(String, LayerOrigin)>,
     pub profile: Profile,
     pub env: std::collections::HashMap<String, String>,
     pub home: EffectiveHome,
@@ -24,12 +46,34 @@ pub struct EffectivePolicy {
 pub fn effective_policy(run: &RunArgs) -> Result<EffectivePolicy> {
     let registry = LayerRegistry::load(run.profile_paths())?;
     let ctx = RunContext::from_cmd(&run.cmd);
-    let layer_names = profile::select_layer_names(run, &registry, &ctx)?;
+    let selected = profile::select_layer_names(run, &registry, &ctx)?;
     let all = registry.profiles();
-    let layers = profile::resolve_requires(&layer_names, &all)?;
+    let resolved = profile::resolve_requires(&selected, &all)?;
+
+    // Classify provenance: explicit (named) > auto (selected but not named) > required.
+    let explicit: std::collections::HashSet<&str> =
+        run.profiles().iter().map(String::as_str).collect();
+    let selected_set: std::collections::HashSet<&str> =
+        selected.iter().map(String::as_str).collect();
+    let layer_names: Vec<(String, LayerOrigin)> = resolved
+        .iter()
+        .map(|(name, _)| {
+            let origin = if explicit.contains(name.as_str()) {
+                LayerOrigin::Explicit
+            } else if selected_set.contains(name.as_str()) {
+                LayerOrigin::Auto
+            } else {
+                LayerOrigin::Required
+            };
+            (name.clone(), origin)
+        })
+        .collect();
+
+    let layers: Vec<Profile> = resolved.into_iter().map(|(_, p)| p).collect();
     let effective_home = home::resolve(run, &layers)?;
     let merged = profile::load_merged(run, &layers, &effective_home, &ctx)?;
-    let env_map = env::build_minimal(&merged, &effective_home.path);
+    let set_env = parse_set_env(run.set_env())?;
+    let env_map = env::build_minimal(&merged, &effective_home.path, run.env_pass(), &set_env);
     let cmd = profile::apply_rewrite(&run.cmd, &merged.rewrite);
     Ok(EffectivePolicy {
         layer_names,
@@ -38,6 +82,17 @@ pub fn effective_policy(run: &RunArgs) -> Result<EffectivePolicy> {
         home: effective_home,
         cmd,
     })
+}
+
+/// Parse `--set-env K=V` entries into pairs. Errors (no silent loss) on a missing
+/// `=` or an empty key.
+fn parse_set_env(raw: &[String]) -> Result<Vec<(String, String)>> {
+    raw.iter()
+        .map(|e| match e.split_once('=') {
+            Some((k, v)) if !k.is_empty() => Ok((k.to_string(), v.to_string())),
+            _ => bail!("invalid --set-env {e:?} (expected NAME=VALUE)"),
+        })
+        .collect()
 }
 
 /// Prepare a resolved policy for actual execution (run / `@diag`): resolve `cmd[0]`
@@ -119,6 +174,21 @@ mod tests {
             resolve_executable("/bin/sh").unwrap(),
             PathBuf::from("/bin/sh")
         );
+    }
+
+    #[test]
+    fn parse_set_env_pairs_and_errors() {
+        let ok = parse_set_env(&["FOO=bar".into(), "EMPTY=".into()]).unwrap();
+        assert_eq!(
+            ok,
+            vec![("FOO".into(), "bar".into()), ("EMPTY".into(), "".into())]
+        );
+        // a `=` in the value is fine (split on the first only).
+        let v = parse_set_env(&["URL=a=b".into()]).unwrap();
+        assert_eq!(v, vec![("URL".to_string(), "a=b".to_string())]);
+        // no `=` or empty key → error, not silent drop.
+        assert!(parse_set_env(&["NOEQ".into()]).is_err());
+        assert!(parse_set_env(&["=val".into()]).is_err());
     }
 
     #[test]

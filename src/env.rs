@@ -15,9 +15,16 @@ pub const SANDBOX_MARKER: &str = "ISOL8_SANDBOXED";
 ///
 /// HOME is authoritative: it is set FIRST from the resolved effective home (R4), so
 /// every downstream $HOME-derived grant targets the replacement. Then the host env
-/// is filtered down to the allowlist, and finally profile env is folded WITHOUT
-/// override (R3.5) — profile values are defaults, not clobbers.
-pub fn build_minimal(profile: &Profile, home: &Path) -> HashMap<String, String> {
+/// is filtered down to the allowlist, and profile env is folded WITHOUT override
+/// (R3.5) — profile values are defaults, not clobbers. Finally the CLI env controls
+/// apply, overriding everything below: `--env-pass NAME` pulls a named host var
+/// through, `--set-env K=V` sets one explicitly.
+pub fn build_minimal(
+    profile: &Profile,
+    home: &Path,
+    env_pass: &[String],
+    set_env: &[(String, String)],
+) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = HashMap::new();
 
     // HOME first, authoritative.
@@ -38,7 +45,20 @@ pub fn build_minimal(profile: &Profile, home: &Path) -> HashMap<String, String> 
         env.entry(k.clone()).or_insert_with(|| v.clone());
     }
 
+    // CLI --env-pass: pull named host vars through, overriding allowlist/profile.
+    for name in env_pass {
+        if let Some(v) = std::env::var_os(name) {
+            env.insert(name.clone(), v.to_string_lossy().into_owned());
+        }
+    }
+
+    // CLI --set-env: explicit, highest precedence.
+    for (k, v) in set_env {
+        env.insert(k.clone(), v.clone());
+    }
+
     // Mark the child as sandboxed so a nested isol8 invocation can detect it.
+    // Last, so --set-env can't clear the nesting guard.
     env.insert(SANDBOX_MARKER.to_string(), "1".to_string());
 
     env
@@ -57,7 +77,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         std::env::set_var("HOME", "/real/home");
         let profile = Profile::default();
-        let env = build_minimal(&profile, Path::new("/scratch"));
+        let env = build_minimal(&profile, Path::new("/scratch"), &[], &[]);
         assert_eq!(env["HOME"], "/scratch"); // effective home wins over host HOME
     }
 
@@ -66,7 +86,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         std::env::set_var("SECRET_TOKEN", "shh");
         std::env::set_var("PATH", "/usr/bin");
-        let env = build_minimal(&Profile::default(), Path::new("/scratch"));
+        let env = build_minimal(&Profile::default(), Path::new("/scratch"), &[], &[]);
         assert!(!env.contains_key("SECRET_TOKEN"));
         assert!(env.contains_key("PATH"));
         std::env::remove_var("SECRET_TOKEN");
@@ -75,7 +95,7 @@ mod tests {
     #[test]
     fn sandbox_marker_is_set() {
         let _g = ENV_LOCK.lock().unwrap();
-        let env = build_minimal(&Profile::default(), Path::new("/scratch"));
+        let env = build_minimal(&Profile::default(), Path::new("/scratch"), &[], &[]);
         assert_eq!(env[SANDBOX_MARKER], "1");
     }
 
@@ -90,10 +110,30 @@ mod tests {
             ]),
             ..Default::default()
         };
-        let env = build_minimal(&profile, Path::new("/scratch"));
+        let env = build_minimal(&profile, Path::new("/scratch"), &[], &[]);
         // host PATH is allowlisted and set first → profile must not override.
         assert_eq!(env["PATH"], "/host/path");
         // a profile-only var is folded in.
         assert_eq!(env["CARGO_TERM_COLOR"], "always");
+    }
+
+    #[test]
+    fn cli_env_pass_and_set_override_profile() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FROM_HOST", "host-val");
+        let profile = Profile {
+            env: HashMap::from([("CARGO_TERM_COLOR".into(), "always".into())]),
+            ..Default::default()
+        };
+        let set_env = vec![("CARGO_TERM_COLOR".to_string(), "never".to_string())];
+        let env_pass = vec!["FROM_HOST".to_string()];
+        let env = build_minimal(&profile, Path::new("/scratch"), &env_pass, &set_env);
+        // --env-pass pulls a non-allowlisted host var through.
+        assert_eq!(env["FROM_HOST"], "host-val");
+        // --set-env overrides the profile default.
+        assert_eq!(env["CARGO_TERM_COLOR"], "never");
+        // --set-env cannot clear the nesting guard.
+        assert_eq!(env[SANDBOX_MARKER], "1");
+        std::env::remove_var("FROM_HOST");
     }
 }

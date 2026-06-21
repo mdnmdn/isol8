@@ -88,8 +88,8 @@ fn run_cmd(run: cli::RunInvocation) -> Result<()> {
         let args = cli::run_from(run.opts, run.cmd);
         let effective = resolve::effective_policy(&args)?;
         println!("== selected layers ==");
-        for name in &effective.layer_names {
-            println!("  {name}");
+        for (name, origin) in &effective.layer_names {
+            println!("  {name} ({})", origin.label());
         }
         return Ok(());
     }
@@ -124,8 +124,8 @@ fn registry_from_run(run: &cli::RunInvocation) -> Result<profile::LayerRegistry>
 
 fn render_effective(effective: &resolve::EffectivePolicy, cmd: &[String]) {
     println!("== layer stack ==");
-    for name in &effective.layer_names {
-        println!("  {name}");
+    for (name, origin) in &effective.layer_names {
+        println!("  {name} ({})", origin.label());
     }
     backends::render_dry_run(&effective.profile, &effective.env, cmd);
 }

@@ -88,10 +88,11 @@
 
 **Sub-requirements.**
 - R3.1 — Start from minimal env: `HOME`, `PATH`, `SHELL`, `TMPDIR`, `USER`, `LOGNAME`, `PWD`.
-- R3.2 — `--env-pass NAMES` to pass named host vars through.
+- R3.2 — `--env-pass NAMES` to pass named host vars through. *(implemented)*
 - R3.3 — `--env=FILE` to source overrides from a file.
 - R3.4 — `--env` to inherit the full host env (escape hatch).
-- R3.5 — Profile-supplied env defaults (no-override merge).
+- R3.5 — Profile-supplied env defaults (no-override merge). *(implemented)*
+- R3.6 — `--set-env K=V` to set a var explicitly (highest precedence; cannot clear the `ISOL8_SANDBOXED` guard). *(implemented)*
 
 | OS | Feasibility | Mechanism | Limitations |
 |---|---|---|---|
@@ -119,9 +120,10 @@
 - R4.1 — Resolve an alternate home directory (provided, or auto-created per session/scratch).
 - R4.2 — Apply the replacement **first**, before profile rendering / path-grant computation, so all downstream `$HOME`-derived grants target the replacement.
 - R4.3 — Set `HOME` (and OS equivalents) in the sanitized env to the replacement.
-- R4.4 — Optionally seed the replacement home with selected entries from the real home (allowlisted ro copies or binds: e.g., `~/.gitconfig`, a scoped `~/.ssh` subset).
+- R4.4 — Optionally seed the replacement home with selected entries from the real home (allowlisted ro copies or binds: e.g., `~/.gitconfig`, a scoped `~/.ssh` subset). Seeding is **first-creation-only** (a persistent home keeps its first snapshot; a re-run never fails overwriting the read-only copy), and `--no-seed` skips it entirely. *(implemented)*
 - R4.5 — Ensure the real home is *not* granted by default once a replacement is active (deny real `$HOME` unless explicitly re-added).
 - R4.6 — Keep `$HOME`-derived ancestor metadata access consistent with the replacement, not the real home.
+- R4.7 — Provide a `#HOME` token usable in profile/CLI path grants that expands to the **real** home (before `~` expansion), so a grant can target the real home even while a replacement is active, without hardcoding machine-specific absolute paths. *(implemented)*
 
 | OS | Feasibility | Mechanism | Limitations |
 |---|---|---|---|

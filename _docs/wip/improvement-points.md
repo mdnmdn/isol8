@@ -5,7 +5,10 @@ Overall: the layered profile model + `--home` replacement + builtin toolchain
 profiles are excellent and made most of a hand-rolled setup unnecessary. The
 friction below is mostly about persistent homes, observability, and ergonomics.
 
-## 1. Seeding collides with a persistent `--home`
+## 1. Seeding collides with a persistent `--home` — ✅ done
+*Implemented: seeding is now first-creation-only (skip-if-exists), so a persistent
+home keeps its first snapshot and a re-run never fails overwriting the read-only seed.*
+
 The `base` profile seeds `~/.gitconfig` into the home **read-only (444)** at
 launch. With `auto_scratch` that's fine (fresh home each run), but with a fixed
 persistent `--home` the second launch fails:
@@ -21,21 +24,30 @@ The seeded file from the previous run can't be overwritten. Worked around by
 before re-copy, or only seed on first creation of a persistent home. Also: don't
 force `0444`, or make the perms configurable.
 
-## 2. `home_replace` / `seed` can't be overridden by a child profile
+## 2. `home_replace` / `seed` can't be overridden by a child profile — ✅ done (flag)
+*Implemented: `--no-seed` clears all seed entries for the run. Array merge semantics
+unchanged (kept simple); the flag is the escape hatch.*
+
 Setting `[home_replace] seed = []` in a profile that `requires = ["base"]` did
 **not** suppress base's seed (arrays appear to merge additively / base wins).
 There's no obvious way to opt a persistent home out of seeding.
 **Suggestion:** a CLI flag (`--no-seed`) and/or last-layer-wins override for
 `home_replace`.
 
-## 3. `--show-policies` layer stack hides required/auto layers
+## 3. `--show-policies` layer stack hides required/auto layers — ✅ done
+*Implemented: the layer stack now prints the fully resolved (deps-first) layers, each
+tagged `(explicit)` / `(auto)` / `(required)`.*
+
 `== layer stack ==` prints only the explicitly named profile (e.g. `dev-home`),
 even though `requires` and `--auto-profiles` layers are merged into the grants.
 This made it look like nothing loaded until I inspected the full grant list.
 **Suggestion:** print the *fully resolved* layer stack (with provenance:
 explicit / required-by / auto), matching what actually contributes grants.
 
-## 4. No CLI env passthrough/override
+## 4. No CLI env passthrough/override — ✅ done
+*Implemented: `--env-pass NAME` (pull a host var through) and `--set-env K=V` (explicit,
+highest precedence). Both compose over profile `[env]`.*
+
 Env can only be set via a profile `[env]` block. There's no
 `--env-pass NAME` / `--set-env K=V` like some sandboxes have, so adapting env per
 run means editing a TOML.
@@ -66,7 +78,10 @@ env. That's fine, but…
 **Suggestion:** allow toolchain profiles to read root locations from env
 (`CARGO_HOME`, `GOROOT`, …) so they cover non-standard installs automatically.
 
-## 9. Profiles can't reference the real home
+## 9. Profiles can't reference the real home — ✅ done
+*Implemented: the `#HOME` token expands to the real home (before `~` expansion), so a
+grant like `#HOME/.ssh` survives an active `--home`. Works in grants and `--add-dirs-*`.*
+
 Profile `~` resolves to the *replacement* home, so there's no portable way to
 grant something in the real home — you must hardcode absolute `/Users/<you>/…`
 paths, which makes profiles machine-specific and non-shareable.

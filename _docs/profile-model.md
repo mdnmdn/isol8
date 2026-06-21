@@ -276,7 +276,7 @@ filter — only each layer's own `filter` / `policies` apply.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `path` | string | — | Absolute, or `~`-prefixed (expands to **effective** home, §7). |
+| `path` | string | — | Absolute, `~`-prefixed (expands to **effective** home, §7), or containing `#HOME` (expands to the **real** home — survives an active `--home`/`home_replace`, §7). |
 | `access` | enum `none` \| `ro` \| `rw` \| `metadata` | — | Deny / read-only / read-write / stat-only (R2.2, R2.3). |
 | `match` | enum `subpath` \| `literal` \| `prefix` \| `regex` | `subpath` | How `path` matches: whole subtree / exact node / string prefix / regex. |
 
@@ -297,7 +297,12 @@ filter — only each layer's own `filter` / `policies` apply.
 | `enabled` | bool | `false` | Turn on HOME replacement. |
 | `auto_scratch` | bool | `false` | If no `--home`/path given, create a per-session scratch home (temp dir). |
 | `path` | string | unset | Explicit replacement home (overridden by `--home`). |
-| `seed` | array of string | `[]` | Real-home entries copied/bound **read-only** into the replacement (R4.4), e.g. `~/.gitconfig`, a scoped `~/.ssh` subset. |
+| `seed` | array of string | `[]` | Real-home entries copied **read-only** into the replacement (R4.4), e.g. `~/.gitconfig`, a scoped `~/.ssh` subset. |
+
+Seeding is **first-creation only**: an entry already present in the (persistent)
+home is left untouched, so a re-run never fails trying to overwrite last run's
+read-only copy. Pass `--no-seed` to skip seeding entirely (overrides every layer's
+`seed`, since `seed` lists otherwise union additively across layers — §6).
 
 HOME replacement is **opt-in**: with no `--home` and no layer enabling
 `home_replace`, the effective home is the **real** home (so a command's own
@@ -384,6 +389,12 @@ home, so a layer written as `~/.cargo` targets the real `~/.cargo`. When a
 replacement home is active (`--home`/`home_replace`), the same layer instead targets
 the replacement — collapsing a large class of grants into one decision and keeping
 the real dotfiles untouched (R4.5/R4.6).
+
+To grant a **real-home** path even while a replacement home is active, use the
+`#HOME` token: `#HOME` is substituted with the real home *before* `~` expansion, so
+`{ path = "#HOME/.ssh", access = "ro" }` reaches the real `~/.ssh` regardless of
+`--home`. With no replacement home, `#HOME` and `~` coincide. Works in profile
+grants and in `--add-dirs-*` overrides.
 
 Order guarantee:
 

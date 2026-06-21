@@ -155,7 +155,8 @@ fn resolve_requires_deps_first_and_diamond_dedup() {
     let order = resolve_requires(&["d".into()], &all).unwrap();
     assert_eq!(order.len(), 4); // diamond: a appears once
                                 // first resolved layer must be the dependency-free one
-    assert!(order[0].requires.is_empty());
+    assert_eq!(order[0].0, "a");
+    assert!(order[0].1.requires.is_empty());
 }
 
 #[test]

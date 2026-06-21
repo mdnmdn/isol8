@@ -23,8 +23,8 @@ Full usage: [`_docs/instructions.md`](_docs/instructions.md).
 
 - **Process isolation** — unprivileged wrapper around any command and its children.
 - **Path access control** — per-path `none` / `ro` / `rw` / `metadata`, deny-by-default.
-- **Environment isolation** — minimal allowlist; secrets in the host env do not pass through.
-- **HOME replacement (opt-in)** — keeps the real `$HOME` by default; substitute a scratch/alternate `$HOME` with `--home` or a profile, resolved before any path grant is computed.
+- **Environment isolation** — minimal allowlist; secrets in the host env do not pass through. Opt in per-var with `--env-pass NAME`, or set explicitly with `--set-env K=V`.
+- **HOME replacement (opt-in)** — keeps the real `$HOME` by default; substitute a scratch/alternate `$HOME` with `--home` or a profile, resolved before any path grant is computed. Seed real-home files read-only (first-creation-only; `--no-seed` to skip), and reach the real home from a profile via the `#HOME` token even under replacement.
 - **Composable profiles** — ~70 embedded TOML layers, `requires` inheritance, deny-first merge.
 - **Conditional filters** — layers and policies can match executable name, OS, and architecture.
 - **Auto-profiles** — agent layers (e.g. `claude` → `agents/claude-code`) selected automatically.

@@ -230,7 +230,8 @@ fn effective_policy_auto_selects_claude_agent_layer() {
     assert!(
         effective
             .layer_names
-            .contains(&"agents/claude-code".to_string()),
+            .iter()
+            .any(|(n, o)| n == "agents/claude-code" && *o == resolve::LayerOrigin::Auto),
         "effective_policy layer stack: {:?}",
         effective.layer_names
     );
@@ -241,6 +242,49 @@ fn effective_policy_auto_selects_claude_agent_layer() {
             .iter()
             .any(|g| g.path.contains(".claude")),
         "merged profile should include claude agent paths"
+    );
+}
+
+#[test]
+fn layer_stack_tags_provenance_explicit_auto_required() {
+    // Name only the OS alias (e.g. `macos-system`); `base` is dragged in via
+    // `requires`, and `agents/claude-code` is auto-matched by the `claude` command.
+    let alias = match std::env::consts::OS {
+        "macos" => "macos-system",
+        "linux" => "linux-system",
+        _ => return, // only the two real backends ship these aliases
+    };
+    let run = cli::run_from(
+        ProfileOpts {
+            profiles: vec![alias.into()],
+            auto_profiles: true,
+            ..Default::default()
+        },
+        vec!["claude".into()],
+    );
+    let stack = resolve::effective_policy(&run).unwrap().layer_names;
+
+    let origin = |name: &str| stack.iter().find(|(n, _)| n == name).map(|(_, o)| *o);
+    assert_eq!(
+        origin(alias),
+        Some(resolve::LayerOrigin::Explicit),
+        "named layer is explicit; stack: {stack:?}"
+    );
+    assert_eq!(
+        origin("base"),
+        Some(resolve::LayerOrigin::Required),
+        "base is pulled in transitively; stack: {stack:?}"
+    );
+    assert_eq!(
+        origin("agents/claude-code"),
+        Some(resolve::LayerOrigin::Auto),
+        "agent layer is auto-matched; stack: {stack:?}"
+    );
+    // Deps-first: a required dependency precedes the layer that names it.
+    let pos = |name: &str| stack.iter().position(|(n, _)| n == name).unwrap();
+    assert!(
+        pos("base") < pos(alias),
+        "deps-first order; stack: {stack:?}"
     );
 }
 

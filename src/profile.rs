@@ -370,7 +370,7 @@ pub fn select_layer_names(
 pub fn resolve_requires(
     selected: &[String],
     all: &HashMap<String, Profile>,
-) -> Result<Vec<Profile>> {
+) -> Result<Vec<(String, Profile)>> {
     // States: not visited, on the current DFS stack (gray), or done (black).
     #[derive(Clone, Copy, PartialEq)]
     enum State {
@@ -420,7 +420,13 @@ pub fn resolve_requires(
         visit(name, all, &mut state, &mut order, &mut stack)?;
     }
 
-    Ok(order.into_iter().map(|n| all[&n].clone()).collect())
+    Ok(order
+        .into_iter()
+        .map(|n| {
+            let p = all[&n].clone();
+            (n, p)
+        })
+        .collect())
 }
 
 /// Merge layers deny-first into one effective profile (additive, §6).
@@ -597,7 +603,7 @@ pub fn resolved_layers(run: &RunArgs) -> Result<Vec<Profile>> {
     let layers = resolve_requires(&names, &registry.profiles())?;
     Ok(layers
         .into_iter()
-        .map(|l| filter::apply_layer_filter(l, &ctx))
+        .map(|(_, l)| filter::apply_layer_filter(l, &ctx))
         .collect())
 }
 
@@ -613,7 +619,7 @@ pub fn load_merged(
         .cloned()
         .map(|mut layer| {
             for grant in &mut layer.paths {
-                grant.path = home::expand_tilde(&grant.path, &home.path);
+                grant.path = home::expand_grant(&grant.path, &home.path);
             }
             layer
         })
@@ -621,7 +627,7 @@ pub fn load_merged(
 
     let mut over = overrides_layer(run);
     for grant in &mut over.paths {
-        grant.path = home::expand_tilde(&grant.path, &home.path);
+        grant.path = home::expand_grant(&grant.path, &home.path);
     }
     expanded.push(over);
     Ok(merge(&expanded))
@@ -888,7 +894,8 @@ mod tests {
         let order = resolve_requires(&["rust".into()], &all).unwrap();
         // base must precede rust; both present.
         assert_eq!(order.len(), 2);
-        assert!(order[0].requires.is_empty()); // base first
+        assert_eq!(order[0].0, "base"); // base first
+        assert!(order[0].1.requires.is_empty());
     }
 
     #[test]
@@ -980,9 +987,12 @@ paths = []
         let all = registry.profiles();
         let order = resolve_requires(&["linux-system".into()], &all).unwrap();
         assert_eq!(order.len(), 3); // base → linux/system-runtime → linux-system
-        assert!(order[0].requires.is_empty()); // base
-        assert_eq!(order[1].requires, vec!["base".to_string()]); // linux/system-runtime
-        assert_eq!(order[2].requires, vec!["linux/system-runtime".to_string()]);
+        assert!(order[0].1.requires.is_empty()); // base
+        assert_eq!(order[1].1.requires, vec!["base".to_string()]); // linux/system-runtime
+        assert_eq!(
+            order[2].1.requires,
+            vec!["linux/system-runtime".to_string()]
+        );
     }
 
     #[test]

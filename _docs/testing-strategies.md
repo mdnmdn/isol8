@@ -37,13 +37,27 @@ Standard `cargo test`. Keep them deterministic and platform-independent:
 - **Inheritance** — `requires`/`extends` DFS: deps-first topo order, cycle
   detection, dedup, selection-order tiebreak. (`tests/profile_merge.rs`,
   `src/profile.rs`)
-- **Env construction** — only the allowlist survives; HOME override applied first.
-  (`src/env.rs`)
+- **Env construction** — only the allowlist survives; HOME override applied first;
+  `--env-pass NAME` pulls a host var through and `--set-env K=V` overrides profile
+  defaults, neither able to clear the `ISOL8_SANDBOXED` guard; malformed `--set-env`
+  errors instead of being silently dropped.
+  (`src/env.rs::cli_env_pass_and_set_override_profile`,
+  `src/resolve.rs::parse_set_env_pairs_and_errors`)
 - **HOME resolution** — replacement is **opt-in**: no `--home`/`home_replace` → the
   real home; a layer's `home_replace` (path or `auto_scratch`) or `--home` overrides
   it, with `~` expanded against the real home. (`src/home.rs`,
   `tests/profile_filters.rs::default_run_keeps_real_home`,
   `profile_home_replace_overrides_home`)
+- **Seeding & `--no-seed`** — seeding is **first-creation-only**: re-seeding over an
+  existing read-only copy doesn't error and keeps the first snapshot; `--no-seed`
+  clears every layer's seed list for the run. (`src/home.rs::seed_is_first_creation_only`,
+  `no_seed_clears_seed_list`)
+- **`#HOME` token** — expands to the **real** home before `~` expansion, so a grant
+  survives an active `--home`/`home_replace`; with no replacement it coincides with
+  `~`. (`src/home.rs::expand_grant_real_home_token`)
+- **Layer-stack provenance** — the resolved (deps-first) stack tags each layer
+  `explicit` / `auto` / `required`, matching what actually contributes grants.
+  (`tests/profile_filters.rs::layer_stack_tags_provenance_explicit_auto_required`)
 - **Executable resolution** — `cmd[0]` resolved execvp-style against the host `PATH`
   to an absolute path; missing → clean `command "x" not found`; the resolved binary
   is auto-granted `ro`. Applied on the run/`@diag` exec paths only, so introspection
@@ -93,6 +107,7 @@ These wire the public API (`select_layer_names`, `resolved_layers`,
 | End-to-end | `resolve::effective_policy` for `claude` | Layer stack + merged grants include agent paths |
 | Default HOME | `effective_policy` for default stack | `home.path` is the real `$HOME` (no replacement) |
 | Profile HOME change | overlay layer with `home_replace` | `home.path` follows the profile, not the real home |
+| Layer-stack provenance | name the OS alias + `auto_profiles` + `claude` cmd | stack tags `base` `required`, alias `explicit`, `agents/claude-code` `auto`; deps-first order |
 | Executable confinement | `confine_executable` on `/bin/sh` | `cmd[0]` absolutized; resolved binary auto-granted `ro` |
 
 Default profile stacks in these tests use `base` plus the OS-appropriate
@@ -149,6 +164,14 @@ argument actually reached the executed program under the real sandbox.
 Scenarios 1–7 only need the path/env/HOME backend (Phase 1). Network scenarios
 are gated behind the net tiers (Phase 3) and skipped with a clear `SKIP` until
 then.
+
+**Why some features add no new scenario.** `--env-pass` / `--set-env`, the `#HOME`
+token, `--no-seed`, and layer-stack provenance are all *resolution-time* logic: they
+shape the env map or the absolute path grants that scenarios 2/4 (absolute-path grant
+enforcement) and 6/7 (env actually delivered to the child) already prove the OS
+honours. The new logic is therefore covered by unit/integration tests (§2), and a
+fresh field scenario would only re-exercise the already-proven substrate. A field
+scenario is still mandatory for any **new grant type or matcher** (§6).
 
 ### 3.3 Output
 

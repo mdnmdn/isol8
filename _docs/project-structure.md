@@ -100,16 +100,17 @@ resolve::effective_policy(&run)
    ├─ profile::resolve_requires()           ── transitive requires, cycle detect, dedup
    ├─ filter::apply_layer_filter() per layer   ── skip grants when os/arch/executable mismatch;
    │     fold matching [[policies]] into layer
-   ├─ home::resolve(&run, &layers)         ── R4: effective $HOME FIRST (default: real home; replacement opt-in)
-   ├─ profile::load_merged()               ── ~ expansion, --add-dirs-* override layer, merge
-   └─ env::build_minimal()                 ── R3.1 allowlist, HOME applied first
-   │  EffectivePolicy { layer_names, profile, env, home }
+   ├─ home::resolve(&run, &layers)         ── R4: effective $HOME FIRST (default: real home; replacement opt-in);
+   │                                          --no-seed clears the seed list
+   ├─ profile::load_merged()               ── ~ + #HOME expansion, --add-dirs-* override layer, merge
+   └─ env::build_minimal()                 ── R3.1 allowlist, HOME first, then --env-pass / --set-env
+   │  EffectivePolicy { layer_names: Vec<(name, LayerOrigin)>, profile, env, home }
    ▼
 backends::select()
    │
    ├── run.dry_run / policies show ? render layer stack + render_dry_run() ; return
    ▼
-home::seed(&effective.home)              ── R4.4 read-only seed into scratch home
+home::seed(&effective.home)              ── R4.4 read-only seed into scratch home (first-creation-only)
    ▼
 resolve::confine_executable(&mut profile, &mut cmd)
                                          ── exec path only: resolve cmd[0] on host PATH
@@ -152,6 +153,9 @@ pub struct ProfileOpts {
     pub auto_profiles: bool,          // --auto-profiles
     pub add_dirs_rw/ro: Vec<String>,
     pub home: Option<String>,
+    pub no_seed: bool,                // --no-seed (skip home seeding)
+    pub env_pass: Vec<String>,        // --env-pass NAME
+    pub set_env: Vec<String>,         // --set-env K=V
     pub show_policies: bool,          // --show-policies (alias: --dry-run)
     pub show_profiles: bool,         // --show-profiles (list or resolve)
     pub verbose: bool,
@@ -198,7 +202,7 @@ pub enum LayerSource { Builtin, UserConfig, ProfilePath(String) }
 pub struct LayerRegistry { /* HashMap<name, LayerEntry> */ }
 
 pub fn select_layer_names(run, registry, ctx) -> Result<Vec<String>>;
-pub fn resolve_requires(selected, all) -> Result<Vec<Profile>>;
+pub fn resolve_requires(selected, all) -> Result<Vec<(String, Profile)>>;  // names kept for provenance
 pub fn merge(layers) -> Profile;
 pub fn load_merged(run, layers, home, ctx) -> Result<Profile>;
 ```
@@ -242,7 +246,11 @@ Discovery: `ISOL8_CONFIG_PATH` (file or dir) → `./isol8.toml|yaml` →
 ### `resolve.rs`
 
 `effective_policy(&RunArgs) -> EffectivePolicy` — shared pipeline for `run`,
-`policies show`, and `--dry-run`. `confine_executable(&mut Profile, &mut [String])`
+`policies show`, and `--dry-run`. `EffectivePolicy.layer_names` is the resolved
+(deps-first) stack tagged with `LayerOrigin` (`Explicit` / `Auto` / `Required`) so
+`--show-policies` shows *why* each layer contributes. `parse_set_env(&[String])`
+parses `--set-env K=V` pairs (errors on a missing `=`, no silent drop) before
+`env::build_minimal`. `confine_executable(&mut Profile, &mut [String])`
 — called only on the exec paths (`run`, `@diag`): resolves `cmd[0]` execvp-style
 against the host `PATH` to an absolute path (clean `command "x" not found` on miss)
 and auto-grants the resolved binary `ro` so deny-by-default never hides the
@@ -258,17 +266,27 @@ pub struct EffectiveHome { pub path: PathBuf, pub seed: Vec<SeedEntry> }
 /// Resolved before profile merge.
 pub fn resolve(run: &RunArgs, layers: &[ProfileLayer]) -> Result<EffectiveHome>;
 
-/// Copy/bind allowlisted real-home entries read-only into the (scratch) home (R4.4).
+/// Copy allowlisted real-home entries read-only into the home (R4.4).
+/// First-creation-only: an existing entry is left untouched (no re-copy, no error).
 pub fn seed(home: &EffectiveHome) -> Result<()>;
+
+/// Expand a grant path: substitute the `#HOME` real-home token, then expand a
+/// leading `~` against the effective home. Used for profile + --add-dirs-* paths.
+pub fn expand_grant(path: &str, effective_home: &Path) -> String;
 ```
+
+`--no-seed` (a `RunArgs` flag) clears `EffectiveHome.seed` in `resolve`, so the run
+seeds nothing regardless of profile seed lists.
 
 ### `env.rs` — R3
 
-`build_minimal(&Profile, &EffectiveHome) -> HashMap<String,String>`. Filters
-`std::env` to the allowlist (`HOME, PATH, SHELL, TMPDIR, USER, LOGNAME, PWD`),
-applies the resolved HOME first, then folds profile env (no override), then
-`--env-pass`/`--env-file`/`--env` per the flags. On WSL2, strips `WSLENV` and
-Windows `PATH` segments.
+`build_minimal(&Profile, &Path, env_pass: &[String], set_env: &[(String,String)])
+-> HashMap<String,String>`. Filters `std::env` to the allowlist
+(`HOME, PATH, SHELL, TMPDIR, USER, LOGNAME, PWD`), applies the resolved HOME first,
+folds profile env (no override), then applies CLI controls highest-precedence:
+`--env-pass NAME` pulls a named host var through, `--set-env K=V` sets one
+explicitly. The `ISOL8_SANDBOXED` marker is stamped last so `--set-env` can't clear
+it. (`--env-file` is still future.)
 
 ### `backends/mod.rs`
 

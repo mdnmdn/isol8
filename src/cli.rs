@@ -53,6 +53,18 @@ pub struct ProfileOpts {
     #[arg(long)]
     pub home: Option<String>,
 
+    /// Skip seeding real-home files into the (replacement) home (overrides profile seed lists).
+    #[arg(long = "no-seed", default_value_t = false, action = clap::ArgAction::SetTrue)]
+    pub no_seed: bool,
+
+    /// Pass a named variable through from the host env (repeatable; overrides profile env).
+    #[arg(long = "env-pass", value_name = "NAME")]
+    pub env_pass: Vec<String>,
+
+    /// Set an env var explicitly (repeatable; `K=V`; highest precedence).
+    #[arg(long = "set-env", value_name = "K=V")]
+    pub set_env: Vec<String>,
+
     /// Print the effective merged policy (layer stack, grants, env, SBPL) and exit.
     #[arg(long = "show-policies")]
     pub show_policies: bool,
@@ -157,6 +169,15 @@ impl RunArgs {
     }
     pub fn home(&self) -> &Option<String> {
         &self.opts.home
+    }
+    pub fn no_seed(&self) -> bool {
+        self.opts.no_seed
+    }
+    pub fn env_pass(&self) -> &[String] {
+        &self.opts.env_pass
+    }
+    pub fn set_env(&self) -> &[String] {
+        &self.opts.set_env
     }
     pub fn dry_run(&self) -> bool {
         self.opts.show_policies || self.opts.dry_run

@@ -63,7 +63,9 @@ enforced on macOS via Seatbelt:
   `#[serde(deny_unknown_fields)]` throughout. ~70 Safehouse-derived layers embedded.
 - **home / env** — effective `$HOME` resolved first (`--home` > profile `home_replace` >
   the **real** home; HOME is *not* replaced unless explicitly requested), `~` expanded
-  against it before merge; env sanitized to the allowlist, HOME applied first.
+  against it before merge; the `#HOME` token expands to the **real** home (survives an
+  active replacement); seeding is first-creation-only and `--no-seed` skips it; env
+  sanitized to the allowlist, HOME applied first, then `--env-pass`/`--set-env` overrides.
 - **executable resolution** — `cmd[0]` is resolved against the host `PATH` (execvp-style)
   to an absolute path before spawning, so a missing command fails with a clean
   `command "x" not found` and the lookup doesn't depend on the in-sandbox PATH; the
@@ -76,7 +78,8 @@ enforced on macOS via Seatbelt:
 - **config** — `isol8.toml`/`isol8.yaml` (cwd, `ISOL8_CONFIG_PATH`, or `~/.config/isol8/`),
   `ISOL8_*` env overrides, `isol8 init`. Defaults: `base` + OS system-runtime; `auto_profiles`
   selects agent layers by executable name (e.g. `claude` → `agents/claude-code`).
-- **CLI** — direct `isol8 CMD` (no `run`); `--show-policies` / `--show-profiles`;
+- **CLI** — direct `isol8 CMD` (no `run`); `--show-policies` (layer stack tagged
+  explicit/auto/required) / `--show-profiles`; `--no-seed`, `--env-pass`, `--set-env`;
   meta commands `@init`, `@profiles-list`, `@profiles-show`, `@diag`; `--profile-path`.
 - **@diag** — `isol8 @diag <cmd>` (macOS) diagnoses launch aborts (SIGABRT/exit 134) by
   delta-debugging the effective Seatbelt policy down to the missing path grant (`src/diag.rs`).
@@ -85,8 +88,8 @@ enforced on macOS via Seatbelt:
 - **tests** — unit + integration (`cargo test`) and a real-sandbox field-test binary
   (`just field-test`, scenarios 1–7) prove the OS actually enforces the policy.
 
-**Not yet:** the Linux (Landlock) backend still `bail!`s; network tiers (R5), Phase-2 env
-flags (`--env-pass`/`--env-file`), resource limits, and the Windows backend are unstarted.
+**Not yet:** the Linux (Landlock) backend still `bail!`s; network tiers (R5), `--env-file`,
+resource limits, and the Windows backend are unstarted.
 Known gaps: macOS `git`/`cargo` need extra developer-tool paths beyond `macos-system`.
 
 ## Roadmap

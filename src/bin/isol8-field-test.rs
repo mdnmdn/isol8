@@ -62,7 +62,7 @@ fn profile_with(extra: Vec<PathGrant>) -> Profile {
 
 /// Run a probe through the real sandbox; return its exit code.
 fn run(profile: &Profile, home: &Path, cmd: &[&str]) -> i32 {
-    let env = build_minimal(profile, home);
+    let env = build_minimal(profile, home, &[], &[]);
     let cmd: Vec<String> = cmd.iter().map(|s| s.to_string()).collect();
     match backends::select().spawn(profile, &env, &cmd) {
         Ok(code) => code,

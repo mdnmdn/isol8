@@ -100,6 +100,9 @@ These flags apply to normal runs and to `--show-policies` / `--show-profiles`:
 | `--add-dirs-ro <PATH>` | yes | Grant read-only access. |
 | `--cwd-ro` | no | Make the auto-granted current working directory read-only (default: it is granted read-write). |
 | `--home <PATH>` | no | Replace `$HOME` with `<PATH>` (HOME is otherwise **not** replaced; a profile may also enable a scratch home). |
+| `--no-seed` | no | Skip seeding real-home files into the home (overrides profile `home_replace.seed`). |
+| `--env-pass <NAME>` | yes | Pass a named variable through from the host env (overrides profile `[env]`). |
+| `--set-env <K=V>` | yes | Set an env var explicitly (highest precedence; cannot clear `ISOL8_SANDBOXED`). |
 | `--show-policies` | no | Print effective policy and exit (no execution). |
 | `--show-profiles` | no | List all layers, or show layers selected for the given command. |
 | `--dry-run` | no | Alias for `--show-policies`. |
