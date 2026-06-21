@@ -7,7 +7,7 @@ use crate::profile::Profile;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
-mod macos;
+pub(crate) mod macos;
 
 /// A platform sandbox implementation. Renders the merged `Profile` into the
 /// OS-native policy (Landlock ruleset, Seatbelt text, …) and execs the command.

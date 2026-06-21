@@ -61,8 +61,13 @@ enforced on macOS via Seatbelt:
   `MatchKind`, `Policy`, `ProfileFilter`, command `rewrite` (`ensure_args`, gated by
   the layer filter and applied to the confined command), and macOS `capabilities` + raw SBPL.
   `#[serde(deny_unknown_fields)]` throughout. ~70 Safehouse-derived layers embedded.
-- **home / env** — effective `$HOME` resolved first (`--home` > profile > auto-scratch),
-  `~` expanded against it before merge; env sanitized to the allowlist, HOME applied first.
+- **home / env** — effective `$HOME` resolved first (`--home` > profile `home_replace` >
+  the **real** home; HOME is *not* replaced unless explicitly requested), `~` expanded
+  against it before merge; env sanitized to the allowlist, HOME applied first.
+- **executable resolution** — `cmd[0]` is resolved against the host `PATH` (execvp-style)
+  to an absolute path before spawning, so a missing command fails with a clean
+  `command "x" not found` and the lookup doesn't depend on the in-sandbox PATH; the
+  resolved binary is auto-granted `ro` so deny-by-default never hides the command itself.
 - **macOS backend** — renders the merged profile to SBPL (`(deny default)` + per-grant
   allows/denies, ancestor metadata, typed capabilities, raw passthrough) and runs it under
   `/usr/bin/sandbox-exec -p`. Symlinked paths (`/tmp`→`/private/tmp`, `/var`→`/private/var`)
@@ -72,7 +77,9 @@ enforced on macOS via Seatbelt:
   `ISOL8_*` env overrides, `isol8 init`. Defaults: `base` + OS system-runtime; `auto_profiles`
   selects agent layers by executable name (e.g. `claude` → `agents/claude-code`).
 - **CLI** — direct `isol8 CMD` (no `run`); `--show-policies` / `--show-profiles`;
-  meta commands `@init`, `@profiles-list`, `@profiles-show`; `--profile-path`.
+  meta commands `@init`, `@profiles-list`, `@profiles-show`, `@diag`; `--profile-path`.
+- **@diag** — `isol8 @diag <cmd>` (macOS) diagnoses launch aborts (SIGABRT/exit 134) by
+  delta-debugging the effective Seatbelt policy down to the missing path grant (`src/diag.rs`).
 - **profiles** — Safehouse port embedded; `macos-system` / `linux-system` are backward-compat
   aliases. `isol8 echo hi` works without `--profile` when config defaults apply.
 - **tests** — unit + integration (`cargo test`) and a real-sandbox field-test binary
@@ -85,7 +92,7 @@ Known gaps: macOS `git`/`cargo` need extra developer-tool paths beyond `macos-sy
 ## Roadmap
 
 1. **Phase 1** — Core path + HOME MVP (Linux Landlock + macOS Seatbelt); profile
-   parser/merger; minimal env sanitization; auto scratch home.
+   parser/merger; minimal env sanitization; opt-in scratch home.
 2. **Phase 2** — Full R3 env features, resource limits, `--dry-run` policy dump,
    WSL2 testing, docs.
 3. **Phase 3** — Network tiers N1→N2 (pasta)→N3 (helper + nftables); DNS/IPv6/MITM.

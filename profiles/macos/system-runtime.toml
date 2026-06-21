@@ -5,6 +5,11 @@ filter = { os = ["macos"] }
 requires = ["base"]
 
 paths = [
+  # The root directory itself, read-only and LITERAL (not the whole tree). Every
+  # dynamically-linked binary stat()s/reads `/` at launch (inherited cwd from
+  # launchd); without this they abort with SIGABRT / exit 134. Mirrors
+  # linux/system-runtime. Diagnose such aborts with `isol8 @diag <cmd>`.
+  { path = "/", access = "ro", match = "literal" },
   { path = "/usr", access = "ro" },
   { path = "/bin", access = "ro" },
   { path = "/sbin", access = "ro" },

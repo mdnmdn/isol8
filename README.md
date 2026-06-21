@@ -2,7 +2,7 @@
 
 A lightweight, cross-platform **isolation sandbox for AI coding agents and CLI tools**.
 `isol8` wraps an arbitrary command so it runs unprivileged with a deny-by-default, restricted view
-of the filesystem, a sanitized environment, a replaceable `$HOME`, and (planned)
+of the filesystem, a sanitized environment, an optional replaceable `$HOME`, and (planned)
 tiered network confinement.
 
 It generalizes the macOS `sandbox-exec` (Seatbelt) model to **Linux** (Landlock +
@@ -24,7 +24,7 @@ Full usage: [`_docs/instructions.md`](_docs/instructions.md).
 - **Process isolation** — unprivileged wrapper around any command and its children.
 - **Path access control** — per-path `none` / `ro` / `rw` / `metadata`, deny-by-default.
 - **Environment isolation** — minimal allowlist; secrets in the host env do not pass through.
-- **HOME replacement** — scratch `$HOME`, resolved before any path grant is computed.
+- **HOME replacement (opt-in)** — keeps the real `$HOME` by default; substitute a scratch/alternate `$HOME` with `--home` or a profile, resolved before any path grant is computed.
 - **Composable profiles** — ~70 embedded TOML layers, `requires` inheritance, deny-first merge.
 - **Conditional filters** — layers and policies can match executable name, OS, and architecture.
 - **Auto-profiles** — agent layers (e.g. `claude` → `agents/claude-code`) selected automatically.

@@ -10,6 +10,10 @@ fn main() -> Result<()> {
             cli::print_help();
             Ok(())
         }
+        cli::ParsedCli::Version => {
+            println!("isol8 {}", cli::version_string());
+            Ok(())
+        }
         cli::ParsedCli::Run(mut run) => {
             prepare_run(&mut run)?;
             run_cmd(run)
@@ -17,7 +21,21 @@ fn main() -> Result<()> {
         cli::ParsedCli::Init(init) => init_cmd(init),
         cli::ParsedCli::ProfilesList(list) => profiles_list_cmd(list),
         cli::ParsedCli::ProfilesShow(show) => profiles_show_cmd(show),
+        cli::ParsedCli::Diag(diag) => diag_cmd(diag),
     }
+}
+
+fn diag_cmd(diag: cli::DiagArgs) -> Result<()> {
+    let mut run = cli::RunInvocation {
+        opts: diag.opts,
+        cmd: diag.cmd,
+    };
+    prepare_run(&mut run)?;
+    if run.cmd.is_empty() {
+        bail!("@diag needs a command (e.g. isol8 @diag node --version)");
+    }
+    let args = cli::run_from(run.opts, run.cmd);
+    isol8::diag::run(&args)
 }
 
 fn prepare_run(run: &mut cli::RunInvocation) -> Result<()> {
@@ -90,9 +108,10 @@ fn run_cmd(run: cli::RunInvocation) -> Result<()> {
     }
 
     let args = cli::run_from(run.opts, run.cmd);
-    let effective = resolve::effective_policy(&args)?;
+    let mut effective = resolve::effective_policy(&args)?;
 
     isol8::home::seed(&effective.home)?;
+    resolve::confine_executable(&mut effective.profile, &mut effective.cmd)?;
 
     let backend = backends::select();
     let code = backend.spawn(&effective.profile, &effective.env, &effective.cmd)?;

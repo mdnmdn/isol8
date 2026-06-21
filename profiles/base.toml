@@ -20,6 +20,7 @@ paths = [
 # allowlist still takes precedence per env merge semantics.
 env = { PATH = "/usr/bin:/bin" }
 
-# Replace HOME with a per-session scratch dir (R4). The real home is NOT granted;
-# only the seeded entries below are copied in read-only.
-home_replace = { enabled = true, auto_scratch = true, seed = ["~/.gitconfig"] }
+# HOME is NOT replaced by default — `~`-relative grants target the real home so a
+# command's own binary/config (e.g. ~/.local/bin/<agent>) stays reachable. Opt in
+# to a per-session scratch HOME with `--home <dir>` or by enabling this in a layer:
+#   home_replace = { enabled = true, auto_scratch = true, seed = ["~/.gitconfig"] }

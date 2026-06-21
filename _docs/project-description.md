@@ -115,6 +115,7 @@
 **Rationale.** Many toolchains derive dozens of paths from `$HOME`. Replacing `$HOME` at the outset collapses a large class of grants into one decision and prevents accidental reads/writes to the user's real dotfiles. It also enables disposable, reproducible, per-session home directories.
 
 **Sub-requirements.**
+- R4.0 — Replacement is **opt-in**: with no `--home` and no profile enabling `home_replace`, the effective home is the user's real home (so a command's own binary/config under `~` stay reachable). R4.2–R4.6 govern behaviour *when a replacement is active*.
 - R4.1 — Resolve an alternate home directory (provided, or auto-created per session/scratch).
 - R4.2 — Apply the replacement **first**, before profile rendering / path-grant computation, so all downstream `$HOME`-derived grants target the replacement.
 - R4.3 — Set `HOME` (and OS equivalents) in the sanitized env to the replacement.

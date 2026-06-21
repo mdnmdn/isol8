@@ -90,8 +90,9 @@ impl Backend for MacosBackend {
                  Re-run with --show-policies to inspect the effective policy."
             ),
             Some(71) => bail!(
-                "sandbox-exec failed to execute the confined command (exit 71). The \
-                 command may be missing or not executable."
+                "could not run \"{}\": the command is missing or not executable inside \
+                 the sandbox.",
+                cmd[0]
             ),
             Some(134) => bail!(
                 "the confined command aborted (exit 134 / SIGABRT). This usually means \

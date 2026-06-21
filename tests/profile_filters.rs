@@ -277,3 +277,58 @@ fn is_auto_selectable_requires_executable_constraint() {
         ..Default::default()
     })));
 }
+
+#[test]
+fn default_run_keeps_real_home() {
+    // With the default stack (base + system-runtime) and no replacement requested,
+    // the effective HOME is the real one — HOME replacement is opt-in.
+    let run = run_with(&["echo", "hi"], false, &[]);
+    let effective = resolve::effective_policy(&run).unwrap();
+    let real = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME set in test env"));
+    assert_eq!(
+        effective.home.path, real,
+        "default run must not replace HOME; got {:?}",
+        effective.home.path
+    );
+}
+
+#[test]
+fn profile_home_replace_overrides_home() {
+    // A profile (loaded from TOML) that opts into HOME replacement drives the
+    // effective home through the normal resolve pipeline.
+    let replacement = std::env::temp_dir().join("isol8-it-home");
+    let overlay = TempOverlay::new(
+        "home-replace",
+        &format!(
+            "home_replace = {{ enabled = true, auto_scratch = false, path = {:?} }}\n",
+            replacement.to_string_lossy()
+        ),
+    );
+    let run = cli::run_from(
+        ProfileOpts {
+            profiles: vec!["base".into(), os_system_profile().into(), "overlay".into()],
+            profile_paths: vec![overlay.path()],
+            ..Default::default()
+        },
+        vec!["echo".into(), "hi".into()],
+    );
+    let effective = resolve::effective_policy(&run).unwrap();
+    assert_eq!(
+        effective.home.path, replacement,
+        "profile home_replace must override the real home"
+    );
+}
+
+#[test]
+fn confine_executable_absolutizes_and_grants_binary() {
+    // /bin/sh exists on macOS and Linux; the path branch avoids PATH dependence.
+    let run = run_with(&["/bin/sh"], false, &[]);
+    let mut effective = resolve::effective_policy(&run).unwrap();
+    resolve::confine_executable(&mut effective.profile, &mut effective.cmd).unwrap();
+    assert_eq!(effective.cmd[0], "/bin/sh");
+    assert!(
+        effective.profile.paths.iter().any(|g| g.path == "/bin/sh"),
+        "resolved binary must be auto-granted; got {:?}",
+        effective.profile.paths
+    );
+}

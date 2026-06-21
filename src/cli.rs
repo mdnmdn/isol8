@@ -4,9 +4,14 @@ use std::ffi::OsString;
 /// Prefix for meta subcommands (not passed to the confined process).
 pub const META_PREFIX: &str = "@";
 
+pub fn version_string() -> &'static str {
+    option_env!("ISOL8_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
 #[derive(Parser, Clone, Default)]
 #[command(
     name = "isol8",
+    version = version_string(),
     about = "Lightweight cross-platform isolation sandbox for agents and CLI tools",
     override_usage = "isol8 [OPTIONS] <COMMAND>...\n       isol8 @<meta-command> [OPTIONS] [ARGS]...\n       isol8 --help"
 )]
@@ -180,6 +185,16 @@ pub enum ConfigFormat {
 }
 
 #[derive(Parser)]
+pub struct DiagArgs {
+    #[command(flatten)]
+    pub opts: ProfileOpts,
+
+    /// Command to diagnose under the sandbox.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub cmd: Vec<String>,
+}
+
+#[derive(Parser)]
 pub struct ProfilesListArgs {
     #[command(flatten)]
     pub opts: ProfileOpts,
@@ -202,6 +217,9 @@ pub enum ParsedCli {
     Init(InitArgs),
     ProfilesList(ProfilesListArgs),
     ProfilesShow(ProfilesShowArgs),
+    Diag(DiagArgs),
+    /// Print version and exit.
+    Version,
 }
 
 pub fn parse() -> ParsedCli {
@@ -244,6 +262,11 @@ fn parse_meta(name: &str, rest: &[OsString]) -> ParsedCli {
             Ok(a) => ParsedCli::Init(a),
             Err(e) => e.exit(),
         },
+        "version" => ParsedCli::Version,
+        "diag" => match DiagArgs::try_parse_from(&argv) {
+            Ok(a) => ParsedCli::Diag(a),
+            Err(e) => e.exit(),
+        },
         "profiles-list" => match ProfilesListArgs::try_parse_from(&argv) {
             Ok(a) => ParsedCli::ProfilesList(a),
             Err(e) => e.exit(),
@@ -269,6 +292,8 @@ fn parse_meta(name: &str, rest: &[OsString]) -> ParsedCli {
             eprintln!("  @init              write a default config file");
             eprintln!("  @profiles-list     list all known profile layers");
             eprintln!("  @profiles-show     dump one layer as TOML");
+            eprintln!("  @diag              find the grant a confined command needs to launch");
+            eprintln!("  @version           print version and exit");
             eprintln!();
             eprintln!("Run 'isol8 --help' for confinement usage.");
             std::process::exit(2);
@@ -278,6 +303,8 @@ fn parse_meta(name: &str, rest: &[OsString]) -> ParsedCli {
 
 pub fn print_help() {
     let _ = ProfileOpts::command().print_help();
+    println!();
+    println!("Version: {}", version_string());
     println!();
     println!("Run a command confined (no subcommand needed):");
     println!("  isol8 [OPTIONS] <COMMAND> [ARGS]...");
@@ -291,4 +318,6 @@ pub fn print_help() {
     println!("  isol8 @init [--path DIR] [--format toml|yaml]");
     println!("  isol8 @profiles-list [--verbose] [OPTIONS]");
     println!("  isol8 @profiles-show <NAME> [OPTIONS]");
+    println!("  isol8 @diag [OPTIONS] <COMMAND> [ARGS]...   # why does it abort at launch?");
+    println!("  isol8 @version                              # print version and exit");
 }

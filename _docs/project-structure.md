@@ -100,7 +100,7 @@ resolve::effective_policy(&run)
    ├─ profile::resolve_requires()           ── transitive requires, cycle detect, dedup
    ├─ filter::apply_layer_filter() per layer   ── skip grants when os/arch/executable mismatch;
    │     fold matching [[policies]] into layer
-   ├─ home::resolve(&run, &layers)         ── R4: effective $HOME FIRST (on filtered layers)
+   ├─ home::resolve(&run, &layers)         ── R4: effective $HOME FIRST (default: real home; replacement opt-in)
    ├─ profile::load_merged()               ── ~ expansion, --add-dirs-* override layer, merge
    └─ env::build_minimal()                 ── R3.1 allowlist, HOME applied first
    │  EffectivePolicy { layer_names, profile, env, home }
@@ -111,6 +111,11 @@ backends::select()
    ▼
 home::seed(&effective.home)              ── R4.4 read-only seed into scratch home
    ▼
+resolve::confine_executable(&mut profile, &mut cmd)
+                                         ── exec path only: resolve cmd[0] on host PATH
+                                            (clean "command not found"), auto-grant the
+                                            resolved binary ro so deny-by-default can't hide it
+   ▼
 backend.spawn(&profile, &env, &cmd)      ── apply OS policy, exec, wait
    │  i32 exit code
    ▼
@@ -119,11 +124,14 @@ std::process::exit(code)
 
 Introspection (`--show-policies`, `--show-profiles`, `@profiles-list`, `@profiles-show`)
 reuses `LayerRegistry`, `select_layer_names`, and `resolve::effective_policy` without
-spawning.
+spawning — and *without* `confine_executable`, so policy can be inspected for a command
+that is not installed (no "command not found", no auto exe-grant).
 
 **Ordering invariant:** `home::resolve` runs *before* `profile::merge`, so every
-`$HOME`-relative grant in every layer is computed against the replacement home, not
-the real one (R4.2/R4.6).
+`$HOME`-relative grant in every layer is computed against the effective home. By
+default the effective home *is* the real home (HOME replacement is opt-in via `--home`
+or a layer's `home_replace`); when replacement is on, no layer can compute a grant
+against the real home (R4.2/R4.6).
 
 ---
 
@@ -234,18 +242,23 @@ Discovery: `ISOL8_CONFIG_PATH` (file or dir) → `./isol8.toml|yaml` →
 ### `resolve.rs`
 
 `effective_policy(&RunArgs) -> EffectivePolicy` — shared pipeline for `run`,
-`policies show`, and `--dry-run`.
+`policies show`, and `--dry-run`. `confine_executable(&mut Profile, &mut [String])`
+— called only on the exec paths (`run`, `@diag`): resolves `cmd[0]` execvp-style
+against the host `PATH` to an absolute path (clean `command "x" not found` on miss)
+and auto-grants the resolved binary `ro` so deny-by-default never hides the
+command's own executable (e.g. an agent under `~/.local/bin`).
 
 ### `home.rs` — R4, first-class
 
 ```rust
 pub struct EffectiveHome { pub path: PathBuf, pub seed: Vec<SeedEntry> }
 
-/// CLI --home > profile home_replace > auto scratch (tempfile under
-/// /tmp or XDG_RUNTIME_DIR). Resolved before profile merge.
+/// CLI --home > profile home_replace (path | auto_scratch) > the REAL home.
+/// HOME replacement is opt-in: with nothing requesting it, the real home is used.
+/// Resolved before profile merge.
 pub fn resolve(run: &RunArgs, layers: &[ProfileLayer]) -> Result<EffectiveHome>;
 
-/// Copy/bind allowlisted real-home entries read-only into the scratch home (R4.4).
+/// Copy/bind allowlisted real-home entries read-only into the (scratch) home (R4.4).
 pub fn seed(home: &EffectiveHome) -> Result<()>;
 ```
 
@@ -314,7 +327,12 @@ main sandboxed process into the prepared namespace.
 ## 4. Invariants enforced structurally
 
 - **HOME before grants.** `home::resolve` is called before `profile::merge`; merge
-  takes `EffectiveHome` so no layer can compute a grant against the real home.
+  takes `EffectiveHome` so grants resolve against the effective home. HOME replacement
+  is opt-in (`--home`/`home_replace`); when on, no layer can compute a grant against
+  the real home.
+- **The command's own binary is reachable.** On the exec path, `confine_executable`
+  resolves `cmd[0]` and auto-grants it `ro`, so deny-by-default never makes a command
+  unrunnable just because its binary sits outside the granted trees.
 - **Deny-by-default.** `Access::None` is the implicit default; backends start from a
   closed policy and only open what the merged `Profile` lists.
 - **Unprivileged main.** Only `isol8-net-helper` holds a file capability; the

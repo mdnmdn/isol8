@@ -4,6 +4,7 @@
 pub mod backends;
 pub mod cli;
 pub mod config;
+pub mod diag;
 pub mod env;
 pub mod filter;
 pub mod home;

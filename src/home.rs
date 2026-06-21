@@ -225,6 +225,51 @@ mod tests {
     }
 
     #[test]
+    fn resolve_defaults_to_real_home_without_replacement() {
+        // No `--home`, no layer requesting replacement → the real home is used.
+        // This is the default (HOME replacement is opt-in).
+        let run = crate::cli::run_from(Default::default(), vec!["echo".into()]);
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", "/real/home");
+
+        let home = resolve(&run, &[]).unwrap();
+        assert_eq!(home.path, PathBuf::from("/real/home"));
+        assert!(home.seed.is_empty());
+
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn resolve_uses_layer_home_replace_path() {
+        // A profile that opts into HOME replacement with an explicit (tilde) path
+        // wins over the real home, and `~` in that path expands against the real home.
+        let run = crate::cli::run_from(Default::default(), vec!["echo".into()]);
+        let layers = vec![crate::profile::Profile {
+            home_replace: Some(crate::profile::HomeReplace {
+                enabled: true,
+                auto_scratch: false,
+                path: Some("~/sandbox-home".into()),
+                seed: vec!["~/.gitconfig".into()],
+            }),
+            ..Default::default()
+        }];
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", "/real/home");
+
+        let home = resolve(&run, &layers).unwrap();
+        assert_eq!(home.path, PathBuf::from("/real/home/sandbox-home"));
+        assert_eq!(home.seed, vec!["~/.gitconfig".to_string()]);
+
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
     fn scratch_home_paths_are_unique() {
         let run = crate::cli::run_from(Default::default(), vec!["echo".into()]);
         let layers = vec![crate::profile::Profile {

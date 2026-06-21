@@ -18,9 +18,9 @@ enforces it.
 
 | Layer | Where | What it proves | Runs on |
 |-------|-------|----------------|---------|
-| Unit | `src/**` `#[cfg(test)]` | Pure logic: profile merge, `requires` resolution, env allowlist, HOME-first resolution, filter matching, `--show-policies` rendering. | All platforms, no privileges. |
+| Unit | `src/**` `#[cfg(test)]` | Pure logic: profile merge, `requires` resolution, env allowlist, HOME-first resolution (default real home; replacement opt-in), executable resolution + clean "command not found", filter matching, `--show-policies` rendering. | All platforms, no privileges. |
 | Integration | `tests/*.rs` | Crate wired end-to-end *without* exec: load profiles → select layers → filter → resolve → merge → render. | All platforms. |
-| Field | `src/bin/isol8-field-test.rs` | The OS actually enforces the policy: denied paths fail, granted paths work, env is sanitized, scratch HOME is in effect. | Per-OS, best-effort, prints a report. |
+| Field | `src/bin/isol8-field-test.rs` | The OS actually enforces the policy: denied paths fail, granted paths work, env is sanitized, and a profile-requested scratch HOME hides the real home. | Per-OS, best-effort, prints a report. |
 
 Unit and integration tests never touch the real filesystem outside a temp dir and
 never require the backend to be functional. Field tests require a working backend
@@ -39,6 +39,16 @@ Standard `cargo test`. Keep them deterministic and platform-independent:
   `src/profile.rs`)
 - **Env construction** — only the allowlist survives; HOME override applied first.
   (`src/env.rs`)
+- **HOME resolution** — replacement is **opt-in**: no `--home`/`home_replace` → the
+  real home; a layer's `home_replace` (path or `auto_scratch`) or `--home` overrides
+  it, with `~` expanded against the real home. (`src/home.rs`,
+  `tests/profile_filters.rs::default_run_keeps_real_home`,
+  `profile_home_replace_overrides_home`)
+- **Executable resolution** — `cmd[0]` resolved execvp-style against the host `PATH`
+  to an absolute path; missing → clean `command "x" not found`; the resolved binary
+  is auto-granted `ro`. Applied on the run/`@diag` exec paths only, so introspection
+  (`--show-policies`) stays pure for not-yet-installed commands. (`src/resolve.rs`,
+  `tests/profile_filters.rs::confine_executable_absolutizes_and_grants_binary`)
 - **Path matchers** — `subpath` / `literal` / `prefix` / `regex` accept/reject.
 - **Policy render** — a fixed profile stack renders to the expected effective
   policy (snapshot-style string compare). (`src/backends/macos.rs`)
@@ -81,6 +91,9 @@ These wire the public API (`select_layer_names`, `resolved_layers`,
 | Policy executable filter | `--profile-path` overlay with `[[policies]]` | Policy paths fold only when executable matches |
 | OS layer filter | Explicit `linux/system-runtime` on macOS (or vice versa) | Paths cleared; `requires` deps still resolve |
 | End-to-end | `resolve::effective_policy` for `claude` | Layer stack + merged grants include agent paths |
+| Default HOME | `effective_policy` for default stack | `home.path` is the real `$HOME` (no replacement) |
+| Profile HOME change | overlay layer with `home_replace` | `home.path` follows the profile, not the real home |
+| Executable confinement | `confine_executable` on `/bin/sh` | `cmd[0]` absolutized; resolved binary auto-granted `ro` |
 
 Default profile stacks in these tests use `base` plus the OS-appropriate
 `macos/system-runtime` or `linux/system-runtime` layer so behaviour matches
@@ -123,7 +136,7 @@ leave nothing behind (cleaned on exit; `--keep` to inspect failures).
 | 2 | `rw` on workspace | write a file in workspace | **Allowed** |
 | 3 | `ro` on a seed dir | write into the seed dir | **Denied** |
 | 4 | `ro` on a seed dir | read from the seed dir | **Allowed** |
-| 5 | scratch HOME | `$HOME` points at scratch, real home unreadable | **Denied** on real home |
+| 5 | profile-requested scratch HOME | `$HOME` points at scratch, real home unreadable | **Denied** on real home |
 | 6 | env allowlist | a non-allowlisted var (e.g. `SECRET_TOKEN`) | **EnvAbsent** |
 | 7 | env allowlist | `PATH` / `HOME` present | **EnvPresent** |
 | 8 | (N0, future) | TCP connect to a public host | **Denied** |

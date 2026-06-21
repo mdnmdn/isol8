@@ -99,7 +99,7 @@ These flags apply to normal runs and to `--show-policies` / `--show-profiles`:
 | `--add-dirs-rw <PATH>` | yes | Grant read-write access (top override layer). |
 | `--add-dirs-ro <PATH>` | yes | Grant read-only access. |
 | `--cwd-ro` | no | Make the auto-granted current working directory read-only (default: it is granted read-write). |
-| `--home <PATH>` | no | Replacement `$HOME` (or scratch home when the profile enables it). |
+| `--home <PATH>` | no | Replace `$HOME` with `<PATH>` (HOME is otherwise **not** replaced; a profile may also enable a scratch home). |
 | `--show-policies` | no | Print effective policy and exit (no execution). |
 | `--show-profiles` | no | List all layers, or show layers selected for the given command. |
 | `--dry-run` | no | Alias for `--show-policies`. |
@@ -116,8 +116,32 @@ When a flag accepts a path or profile name, you can repeat it.
 | `isol8 @init` | Create a default config file. |
 | `isol8 @profiles-list` | List all profile layers and their source (builtin, user config, profile-path). |
 | `isol8 @profiles-show <NAME>` | Dump one layer as TOML (e.g. `base`, `agents/claude-code`). |
+| `isol8 @diag <CMD>...` | Diagnose why a confined command aborts at launch (SIGABRT / exit 134) and report the missing path grant. macOS only. |
 
 Unknown `@` commands print a short hint and exit with an error.
+
+### `@diag` — find the grant a confined command needs to launch
+
+A deny-by-default sandbox aborts a process (SIGABRT, exit 134, no diagnostic) when it
+denies a path the runtime needs just to *start* — the root directory `/`, the dyld
+shared cache, a dylib dir. `@diag` finds the culprit automatically: it renders the
+command's real effective policy, confirms the command launches once read access to
+every top-level directory is added, then **dichotomically minimizes** (delta-debug)
+that set — re-running the command under each trial policy — until only the grant(s)
+whose absence causes the abort remain.
+
+```sh
+isol8 @diag node --version
+# == isol8 @diag: node --version ==
+# 'node --version' is aborted at launch by the current sandbox policy. Searching…
+# Found it in 5 trials. 'node --version' launches once the sandbox grants read access to:
+#   /
+# or add to a profile layer:
+#   { path = "/", access = "ro", match = "literal" }
+```
+
+Use a fast-exiting probe (e.g. `--version`); a long-running command is killed per
+trial and counted as "launched".
 
 ---
 
@@ -159,7 +183,7 @@ Roughly 70 layers are embedded (Safehouse-derived), including:
 
 | Layer | Role |
 |-------|------|
-| `base` | Minimal runtime: ro `/usr`+`/bin`, rw `/tmp`, scratch `$HOME`. |
+| `base` | Minimal runtime: ro `/usr`+`/bin`, rw `/tmp`, real `$HOME` (replacement is opt-in). |
 | `macos/system-runtime` / `linux/system-runtime` | OS essentials (in default stack). |
 | `macos-system` / `linux-system` | Backward-compatible aliases. |
 | `agents/claude-code` | Auto-selected when the command is `claude`. |
@@ -239,17 +263,30 @@ isol8 --profile macos-system --show-policies date
 - **Filesystem** — deny-by-default. Only merged profile grants are reachable;
   everything else gets `Operation not permitted`. `--add-dirs-rw` / `--add-dirs-ro`
   win over profile layers. The current working directory is auto-granted **read-write** by default; pass `--cwd-ro` to make it read-only.
-- **HOME** — resolved before path grants. `~` in profiles targets the replacement
-  home; the real home is not granted unless you add it explicitly.
+- **HOME** — resolved before path grants. By default HOME is **not** replaced, so `~`
+  in profiles targets your real home (the command's own binary/config stay reachable).
+  Pass `--home <dir>` or enable `home_replace` in a layer to substitute a (scratch)
+  home; with replacement on, the real home is not granted unless you add it explicitly.
 - **Environment** — sanitized to a small allowlist (`HOME`, `PATH`, `SHELL`, `TMPDIR`,
   `USER`, `LOGNAME`, `PWD`). Secrets in the host environment do not pass through.
+- **Command** — `isol8` resolves the command against your host `PATH` (like the shell)
+  to an absolute path before confining it, and auto-grants read+exec on that binary so
+  deny-by-default never hides the command's own executable. A command that isn't on
+  `PATH` fails fast with `command "x" not found`.
 
 ---
 
 ## Troubleshooting
 
+- **`command "x" not found`** — the command isn't on your `PATH`. Use its full path
+  (e.g. `isol8 /opt/tool/bin/x …`) or fix `PATH`. isol8 resolves the executable the
+  same way the shell does, *before* applying the sandbox.
 - **`getcwd: Operation not permitted`** — the working directory is not granted by default.
   Add `--add-dirs-rw "$PWD"` or run from a granted path.
+- **Command aborts at launch / exit 134 (SIGABRT), no output** — the sandbox denied a
+  path the runtime needs to start. Run `isol8 @diag <command>` to find the missing grant
+  (it reports e.g. `{ path = "/", access = "ro", match = "literal" }`), then add it to a
+  profile or with `--add-dirs-ro`.
 - **`git` / `cargo` fail on macOS** — system shims need extra developer paths. Add
   `--profile toolchains/rust` or grant paths with `--add-dirs-ro`.
 - **Policy rejected by sandbox** — use `--show-policies` to print the generated policy

@@ -299,10 +299,13 @@ filter — only each layer's own `filter` / `policies` apply.
 | `path` | string | unset | Explicit replacement home (overridden by `--home`). |
 | `seed` | array of string | `[]` | Real-home entries copied/bound **read-only** into the replacement (R4.4), e.g. `~/.gitconfig`, a scoped `~/.ssh` subset. |
 
-When active, the real home is **not** granted by default (R4.5); re-add via an
-explicit `paths` grant if needed. Resolution precedence: `--home` > layer
-`home_replace.path` > `auto_scratch` temp dir. The home token (`~` / `$HOME`) is
-isol8's equivalent of the Safehouse `HOME_DIR` placeholder.
+HOME replacement is **opt-in**: with no `--home` and no layer enabling
+`home_replace`, the effective home is the **real** home (so a command's own
+binary/config under `~` stay reachable). Resolution precedence: `--home` > layer
+`home_replace.path` > `auto_scratch` temp dir > the real home. When a replacement
+*is* active, the real home is **not** granted by default (R4.5); re-add via an
+explicit `paths` grant if needed. The home token (`~` / `$HOME`) is isol8's
+equivalent of the Safehouse `HOME_DIR` placeholder.
 
 ### Rewrite
 
@@ -376,9 +379,11 @@ Invocation overrides enter as the top layer, so they win under these same rules.
 ## 7. Path expansion & the HOME-first rule
 
 `~` and `$HOME`-relative paths expand against the **effective** home, which is
-resolved **before** any merge (R4.2). So a layer written as `~/.cargo` targets the
-scratch/replacement home when one is active — collapsing a large class of grants
-into one decision and keeping the real dotfiles untouched (R4.5/R4.6).
+resolved **before** any merge (R4.2). By default the effective home is the **real**
+home, so a layer written as `~/.cargo` targets the real `~/.cargo`. When a
+replacement home is active (`--home`/`home_replace`), the same layer instead targets
+the replacement — collapsing a large class of grants into one decision and keeping
+the real dotfiles untouched (R4.5/R4.6).
 
 Order guarantee:
 
@@ -453,7 +458,7 @@ composition bands (generalized cross-platform):
 
 | Band | Path prefix | Examples |
 |------|-------------|----------|
-| 00 base | `base` | deny-by-default baseline, scratch HOME |
+| 00 base | `base` | deny-by-default baseline, real HOME (replacement opt-in) |
 | 10 system-runtime | `macos/system-runtime`, `linux/system-runtime` | OS essentials; aliases `macos-system`, `linux-system` |
 | 20 network | `network` | requires-only stub until Phase 3 |
 | 30 toolchains | `toolchains/*` | `rust`, `node`, `python`, … |
