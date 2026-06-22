@@ -1,6 +1,6 @@
 [package]
 name = "isol8"
-version = "0.2.0"
+version = "0.2.3"
 edition = "2021"
 description = "Lightweight cross-platform isolation sandbox for AI coding agents and CLI tools (deny-by-default)"
 default-run = "isol8"
