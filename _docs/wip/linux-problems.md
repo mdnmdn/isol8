@@ -69,3 +69,10 @@ The following functions exist but are NOT called from `child_setup_and_exec()`:
 2. **Network tiers (R5)** — N0/N1/N2/N3 still unimplemented.
 3. **Resource limits (R1.3)** — CPU/mem/PID limits not yet wired.
 4. **`--env-file`** — Not yet implemented.
+
+## Fixes landed (post-review)
+
+- ABI probe: replaced `restrict_self` side-effect + wrong `status.ruleset as u8` cast with a direct `landlock_create_ruleset(..., VERSION)` query. Reports real `vN (enforced)`.
+- `metadata` reporting: `--dry-run` / `render_policy` now emits `META→ro` (and `ro` grants include `Execute`).
+- Comprehensive `handle_access` for *all* rights we care about so that `ro` grants actually deny writes/makes (previously only requested rights were handled; unhandled rights bypassed enforcement).
+- `build_landlock_rules` dedups targets and unions rights; unit tests + field tests (1–16) green.

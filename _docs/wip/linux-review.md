@@ -73,3 +73,7 @@ output is misleading exactly where confinement reporting matters.
 
 Approve direction. Block on #1 and #2 (one small edit: replace the probe body with
 `ABI::new_current()`). #3 is a reporting-honesty fix, do it in the same pass.
+
+**Post-review fixes applied (2026-06-22):** All three issues addressed plus
+enforcement completeness (comprehensive handled rights so ro actually denies
+writes). Field tests 1–16 and units green on WSL2. See `_docs/wip/linux-problems.md`.

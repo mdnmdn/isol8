@@ -24,8 +24,8 @@ with Landlock compiled in.
 | Feature | Status | Mechanism |
 |---------|--------|-----------|
 | Filesystem deny-by-default | Working | Landlock `PathBeneath` per-path rules |
-| Per-path `ro` / `rw` / `none` | Working | `AccessFs::{ReadFile, ReadDir, WriteFile, Make*}` |
-| `metadata` access | Working | Maps to `ReadFile \| ReadDir` (see limitations) |
+| Per-path `ro` / `rw` / `none` | Working | `AccessFs::{ReadFile, ReadDir, Execute, WriteFile, Make*}` |
+| `metadata` access | Working | Maps to `ReadFile \| ReadDir \| Execute` (ro + exec; see limitations) |
 | `PR_SET_NO_NEW_PRIVS` | Working | `prctl()` before Landlock + exec |
 | Environment sanitization | Working | Allowlist + `--env-pass` + `--set-env` (shared with macOS) |
 | HOME replacement (env-level) | Working | `HOME` set in env; `~` expanded against replacement |
@@ -34,7 +34,7 @@ with Landlock compiled in.
 | Auto-profile selection | Working | Executable filter matching (shared with macOS) |
 | `--add-dirs-rw` / `--add-dirs-ro` | Working | CLI grants folded into profile before merge |
 | `confine_executable` | Working | Resolves `cmd[0]` to absolute path, auto-grants `ro` |
-| Landlock ABI probe | Working | Reports kernel ABI version on `--dry-run` |
+| Landlock ABI probe | Working | Direct VERSION syscall probe (no side-effect `restrict_self`); reports real ABI on `--dry-run` |
 | Field tests | Working | Scenarios 1–9 (cross-platform) + 10–16 (Linux-specific) |
 
 ---
@@ -80,9 +80,11 @@ restricts which directory FDs can be opened.
 faithfully represented. Only `MatchKind::Subpath` grants are emitted;
 other match kinds are silently skipped.
 
-**ABI probing.** `probe_landlock_abi()` creates a zero-access ruleset and calls
-`restrict_self()` to detect the kernel's Landlock ABI version. The result is
-reported in `--dry-run` output (e.g., `v1 (enforced)` or `unavailable`).
+**ABI probing.** `probe_landlock_abi()` issues a `landlock_create_ruleset` with
+the `LANDLOCK_CREATE_RULESET_VERSION` flag (no ruleset is installed and
+`restrict_self()` is never called). This reports the true kernel ABI in
+`--dry-run` output (e.g. `v1 (enforced)`) with no side effects on the calling
+process and no stacking against the 16-layer limit.
 
 ---
 
@@ -107,9 +109,10 @@ Default stack: `base` + `linux/system-runtime` (loaded via config
 ### 1. No stat-only (metadata) enforcement
 
 Landlock has no `AccessFs::Metadata` right. The `metadata` access level in
-profiles maps to `ReadFile | ReadDir` — the same rights as `ro`. True
-stat-only access (R2.3) is not expressible in Landlock. This means a
-`metadata` grant allows reading file contents, not just stat(2) metadata.
+profiles maps to `ReadFile | ReadDir | Execute` (same rights as `ro`, plus
+execute for binaries under the subtree). True stat-only access (R2.3) is not
+expressible in Landlock. `--dry-run` therefore labels such grants `META→ro` so
+the effective policy is reported honestly.
 
 ### 2. No `literal` / `prefix` / `regex` matchers
 

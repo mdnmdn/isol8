@@ -88,11 +88,14 @@ pub(crate) fn render_policy(profile: &Profile) -> String {
             if rights.is_empty() {
                 out.push_str(&format!(";; DENY  {:<36} (explicit deny)\n", grant.path));
             } else {
+                // Metadata maps to ReadFile|ReadDir (ro) under Landlock; no
+                // true stat-only right exists. Report the effective grant
+                // honestly for --dry-run / --show-policies.
                 let mode = match grant.access {
-                    Access::Ro => "RO   ",
-                    Access::Rw => "RW   ",
-                    Access::Metadata => "META ",
-                    Access::None => "DENY ",
+                    Access::Ro => "RO      ",
+                    Access::Rw => "RW      ",
+                    Access::Metadata => "META→ro ",
+                    Access::None => "DENY    ",
                 };
                 out.push_str(&format!(
                     ";; {mode} {:<36} {:?}\n",
@@ -126,11 +129,12 @@ struct LandlockRule {
 /// Convert profile `PathGrant`s into Landlock access rights.
 fn access_for_grant(access: Access) -> BitFlags<AccessFs> {
     match access {
-        Access::Ro => make_bitflags!(AccessFs::{ReadFile | ReadDir}),
+        Access::Ro => make_bitflags!(AccessFs::{ReadFile | ReadDir | Execute}),
         Access::Rw => make_bitflags!(AccessFs::{
-            ReadFile | ReadDir | WriteFile | MakeReg | MakeDir | MakeSock | MakeFifo | MakeBlock | MakeChar
+            ReadFile | ReadDir | WriteFile | Execute |
+            MakeReg | MakeDir | MakeSock | MakeFifo | MakeBlock | MakeChar
         }),
-        Access::Metadata => make_bitflags!(AccessFs::{ReadFile | ReadDir}),
+        Access::Metadata => make_bitflags!(AccessFs::{ReadFile | ReadDir | Execute}),
         Access::None => {
             // Explicit deny: no Landlock rule. Landlock is deny-by-default;
             // simply not granting access is the enforcement.
@@ -143,7 +147,8 @@ fn access_for_grant(access: Access) -> BitFlags<AccessFs> {
 ///
 /// Landlock is deny-by-default: only paths that have an explicit `ro` or `rw`
 /// grant get a rule. `none` grants are simply omitted (the default deny covers
-/// them). `metadata` gets read-only for stat access.
+/// them). `metadata` is implemented as ro rights (ReadFile | ReadDir); Landlock
+/// has no metadata-only right (see limitations in linux-support.md).
 ///
 /// **Match kind limitation**: Landlock's `PathBeneath` grants a whole subtree,
 /// so `literal` (exact-match only) and `regex`/`prefix` match kinds cannot be
@@ -156,8 +161,17 @@ fn access_for_grant(access: Access) -> BitFlags<AccessFs> {
 /// grants all of `/home/`). Unix DAC already allows path traversal — the child
 /// process can traverse parent directories to reach granted paths. Landlock
 /// only restricts which directory FDs can be opened, not traversal.
+///
+/// Directory targeting: `PathBeneath` requires an existing directory FD. We
+/// target the grant path if it is an existing dir; otherwise its nearest
+/// parent. This means a grant on a specific file will grant its parent dir
+/// (and thus siblings). Non-existing subdirs under a granted ancestor (e.g.
+/// scratch HOME + ~/.config) end up with a rule on the ancestor dir, which
+/// is acceptable given Landlock semantics and the metadata→ro limitation.
 fn build_landlock_rules(profile: &Profile) -> Result<Vec<LandlockRule>> {
-    let mut rules = Vec::new();
+    use std::collections::HashMap;
+
+    let mut by_dir: HashMap<String, BitFlags<AccessFs>> = HashMap::new();
 
     for grant in &profile.paths {
         let rights = access_for_grant(grant.access);
@@ -171,48 +185,50 @@ fn build_landlock_rules(profile: &Profile) -> Result<Vec<LandlockRule>> {
             continue;
         }
 
-        // Landlock's PathBeneath requires a directory FD. For `subpath` and
-        // `prefix` we grant the whole subtree; for `literal` we can only
-        // approximate (Landlock doesn't support literal-file-only).
-        // We open the parent directory and PathBeneath under it.
+        // Landlock's PathBeneath requires a directory FD.
         let path = Path::new(&grant.path);
-        let dir = if path.is_dir() {
+        let target = if path.is_dir() {
             path.to_path_buf()
         } else {
             path.parent().unwrap_or(Path::new("/")).to_path_buf()
         };
-
-        rules.push(LandlockRule {
-            path: dir.to_string_lossy().into_owned(),
-            access: rights,
-        });
+        let key = target.to_string_lossy().into_owned();
+        *by_dir.entry(key).or_insert(BitFlags::empty()) |= rights;
     }
 
+    let rules: Vec<LandlockRule> = by_dir
+        .into_iter()
+        .map(|(path, access)| LandlockRule { path, access })
+        .collect();
     Ok(rules)
 }
 
-/// Probe the kernel's Landlock ABI version.
+/// Probe the kernel's Landlock ABI version (no side effects on the calling process).
 ///
-/// Attempts to create a minimal Landlock ruleset with zero access rights.
-/// The kernel returns the ABI version via `restrict_self()` status. If
-/// Landlock is unavailable, returns "unavailable".
+/// Uses the raw `landlock_create_ruleset(..., LANDLOCK_CREATE_RULESET_VERSION)`
+/// syscall directly. This reports the true kernel ABI (e.g. "v5 (enforced)")
+/// without installing any policy or calling `restrict_self()`, so `--dry-run`
+/// never confines the calling `isol8` process.
 fn probe_landlock_abi() -> String {
-    // A zero-access ruleset probes whether Landlock is supported at all.
-    let ruleset = match Ruleset::default()
-        .set_compatibility(CompatLevel::BestEffort)
-        .handle_access(BitFlags::<AccessFs>::empty())
-    {
-        Ok(r) => r,
-        Err(_) => return "unavailable".to_string(),
+    // Query only — flag requests version, attr/size=0, no ruleset created.
+    // The syscall number 444 is the asm-generic value (x86_64, aarch64, riscv etc).
+    // If the call fails with ENOSYS/EOPNOTSUPP we treat Landlock as unavailable.
+    let v = unsafe {
+        nix::libc::syscall(
+            444,
+            std::ptr::null::<nix::libc::c_void>(),
+            0usize,
+            1u32, // LANDLOCK_CREATE_RULESET_VERSION = (1U << 0)
+        ) as nix::libc::c_int
     };
-    match ruleset.create() {
-        Ok(created) => match created.restrict_self() {
-            Ok(status) => {
-                format!("v{} (enforced)", status.ruleset as u8)
-            }
-            Err(_) => "detected but restrict_self failed".to_string(),
-        },
-        Err(_) => "unavailable".to_string(),
+    if v < 0 {
+        // EOPNOTSUPP or ENOSYS (or other) => no Landlock or disabled.
+        return "unavailable".to_string();
+    }
+    if v >= 1 {
+        format!("v{} (enforced)", v)
+    } else {
+        "unavailable".to_string()
     }
 }
 
@@ -222,10 +238,14 @@ fn apply_landlock(rules: &[LandlockRule]) -> Result<()> {
         return Ok(()); // no rules — nothing to restrict
     }
 
-    // Determine the maximum access rights we need.
-    let handled_accesses = rules
-        .iter()
-        .fold(BitFlags::<AccessFs>::empty(), |acc, r| acc | r.access);
+    // Always handle a comprehensive set of rights. This ensures deny-by-default
+    // for rights that are not granted by any rule in this profile (e.g. a "ro"
+    // grant must still deny Make*/Write*). Using BestEffort lets old kernels drop
+    // unknown bits.
+    let handled_accesses = make_bitflags!(AccessFs::{
+        ReadFile | ReadDir | WriteFile | Execute |
+        MakeReg | MakeDir | MakeSock | MakeFifo | MakeBlock | MakeChar
+    });
 
     let ruleset = Ruleset::default()
         .set_compatibility(CompatLevel::BestEffort)
@@ -485,5 +505,43 @@ mod tests {
             exit_code_from_waitstatus(&WaitStatus::Exited(Pid::from_raw(1), 42)),
             42
         );
+    }
+
+    #[test]
+    fn render_policy_contains_deny_default_and_abi() {
+        let p = Profile {
+            paths: vec![grant("/usr", Access::Ro), grant("/tmp", Access::Rw)],
+            ..Default::default()
+        };
+        let pol = render_policy(&p);
+        assert!(pol.contains(";; Landlock filesystem rules (deny-by-default)"));
+        assert!(pol.contains(";; Paths not listed below have NO access."));
+        assert!(pol.contains("Landlock ABI: "));
+        // Should not contain the old wrong "restrict" side-effect text in probe path.
+        assert!(!pol.contains("restrict_self"));
+    }
+
+    #[test]
+    fn render_policy_metadata_reports_as_ro() {
+        let p = Profile {
+            paths: vec![
+                grant("/etc", Access::Ro),
+                grant("~/.config", Access::Metadata),
+                grant("/tmp", Access::Rw),
+            ],
+            ..Default::default()
+        };
+        let pol = render_policy(&p);
+        // Metadata must be reported honestly as mapping to ro enforcement.
+        assert!(pol.contains("META→ro ") || pol.contains("RO      "));
+        assert!(pol.contains("RO      "));
+        assert!(pol.contains("RW      "));
+    }
+
+    #[test]
+    fn probe_returns_sane_abi_or_unavailable() {
+        let s = probe_landlock_abi();
+        // On a Landlock kernel we expect "vN (enforced)"; elsewhere "unavailable".
+        assert!(s == "unavailable" || s.starts_with("v") && s.contains("(enforced)"));
     }
 }

@@ -4,7 +4,9 @@
 
 use std::collections::HashMap;
 
-use crate::error::{Error, Result, ResultExt};
+use crate::error::{Error, Result};
+#[cfg(target_os = "macos")]
+use crate::error::ResultExt;
 use crate::profile::Profile;
 
 /// A clap-free description of a confinement request.
@@ -58,6 +60,7 @@ pub struct SandboxChild {
 
 enum Handle {
     /// macOS: the launched `sandbox-exec` child.
+    #[cfg(target_os = "macos")]
     Process(std::process::Child),
     /// Linux: a forked child set up + exec'd in the fork; reaped via `waitpid`.
     #[cfg(target_os = "linux")]
@@ -69,6 +72,7 @@ enum Handle {
 
 impl SandboxChild {
     /// macOS: wrap a launched child plus its exit-code interpreter.
+    #[cfg(target_os = "macos")]
     pub(crate) fn process(
         child: std::process::Child,
         on_exit: Box<dyn Fn(i32) -> Result<i32>>,
@@ -100,6 +104,7 @@ impl SandboxChild {
     /// The child's process id (`0` for an already-finished handle).
     pub fn id(&self) -> u32 {
         match &self.handle {
+            #[cfg(target_os = "macos")]
             Handle::Process(c) => c.id(),
             #[cfg(target_os = "linux")]
             Handle::Forked(p) => p.as_raw() as u32,
@@ -112,6 +117,7 @@ impl SandboxChild {
     /// surfaces those as a rich [`Error`] here.
     pub fn wait(&mut self) -> Result<i32> {
         let code = match &mut self.handle {
+            #[cfg(target_os = "macos")]
             Handle::Process(c) => {
                 let status = c.wait().ctx(|| "waiting for the sandboxed child")?;
                 exit_code(&status)
@@ -130,6 +136,7 @@ impl SandboxChild {
     /// Forcibly terminate the child. A no-op for an already-finished handle.
     pub fn kill(&mut self) -> Result<()> {
         match &mut self.handle {
+            #[cfg(target_os = "macos")]
             Handle::Process(c) => c.kill().map_err(Error::from),
             #[cfg(target_os = "linux")]
             Handle::Forked(pid) => nix::sys::signal::kill(*pid, nix::sys::signal::Signal::SIGKILL)
@@ -141,6 +148,7 @@ impl SandboxChild {
 
 /// Map a child `ExitStatus` to a shell-style exit code: the real code, or 128+signo
 /// if signal-terminated (unix), else 1.
+#[cfg(target_os = "macos")]
 pub(crate) fn exit_code(status: &std::process::ExitStatus) -> i32 {
     if let Some(code) = status.code() {
         return code;
