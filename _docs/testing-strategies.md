@@ -6,11 +6,11 @@ sandbox against an ad-hoc home + profile and reports what was actually allowed o
 denied). Field tests are the ground truth — a profile is only correct if the OS
 enforces it.
 
-> Status: implemented (macOS). Unit + integration tests (`cargo test`) and the
+> Status: implemented. Unit + integration tests (`cargo test`) and the
 > field-test binary `src/bin/isol8-field-test.rs` (`just field-test`) are in place
-> and green on macOS; scenarios 1–7 enforce, the network scenario (8) is `SKIP`
-> until the net tiers land. The Linux path scenarios `SKIP` until that backend
-> exists. See [`AGENTS.md`](../AGENTS.md).
+> and green on macOS and Linux (WSL2); scenarios 1–7 enforce cross-platform,
+> scenarios 10–16 are Linux-specific, the network scenario (8) is `SKIP`
+> until the net tiers land. See [`AGENTS.md`](../AGENTS.md).
 
 ---
 
