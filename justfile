@@ -28,6 +28,12 @@ test:
 field-test *args:
     cargo run --bin isol8-field-test -- {{args}}
 
+
+local-publish:
+    cargo build
+    cp ./target/debug/isol8 ~/.local/bin/isol8
+    echo published to ~/.local/bin/isol8
+
 # Format sources.
 fmt:
     cargo fmt --all
