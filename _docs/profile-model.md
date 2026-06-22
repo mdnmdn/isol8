@@ -30,7 +30,7 @@ portable profile core plus conditional filters. Anything not listed as parsed wi
 | `match` | `subpath` / `literal` / `prefix` / `regex` — parsed; macOS-enforced. Linux: `subpath` only today. |
 | Auto-selection | **`auto_profiles`** (config/CLI): layers with non-empty `filter.executables` matching `cmd[0]` basename are added to the stack. |
 | `network` block | **Not parsed yet** (Phase 3). Including `network` in a layer fails to load. |
-| Enforcement | **macOS** via Seatbelt. Linux Landlock backend exists but is stubbed/broken in some environments. |
+| Enforcement | **macOS** via Seatbelt. **Linux** via Landlock (deny-by-default, per-path ro/rw). |
 | Introspection | `isol8 profiles list|show|resolve`, `isol8 policies show`, `--dry-run` (layer stack + effective policy). |
 
 Examples below that include a `network` block illustrate the *target* schema; omit

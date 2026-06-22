@@ -3,11 +3,13 @@
 //! temp dir, runs a probe command through the real backend, and asserts the
 //! observed effect (see _docs/testing-strategies.md §3).
 //!
-//! macOS enforces all scenarios. Windows runs env/rewrite scenarios; path
-//! scenarios SKIP (ACL-level enforcement deferred to Phase 5). Linux SKIP all
-//! (no Landlock backend yet).
+//! macOS (Seatbelt) and Linux (Landlock) enforce all path scenarios. Windows runs
+//! the env scenarios; path scenarios SKIP (ACL-level enforcement deferred — see
+//! _docs/wip/windows-review.md). Linux-specific scenarios (10–16) compile in only
+//! on Linux.
 //!
 //! Exit 0 if every scenario passes (skips allowed), 1 on any failure.
+//! Temp dirs removed on exit unless `--keep`.
 
 use std::collections::HashMap;
 use std::fs;
@@ -29,7 +31,12 @@ fn grant(path: &str, access: Access, m: MatchKind) -> PathGrant {
     }
 }
 
-/// Minimal system-base grants needed for the process to start.
+/// Minimal system-base grants needed for the process to start, per platform.
+///
+/// macOS: verified on real `sandbox-exec` (see profiles/macos-system.toml).
+/// Linux: the paths a child needs under Landlock deny-by-default. NOTE: /tmp is
+/// deliberately NOT granted — test dirs live under /tmp and must be outside any
+/// base grant so deny-by-default blocks them.
 fn system_base() -> Vec<PathGrant> {
     match std::env::consts::OS {
         "macos" => {
@@ -43,10 +50,24 @@ fn system_base() -> Vec<PathGrant> {
                 grant("/private/var/select", Ro, Subpath),
             ]
         }
+        "linux" => {
+            use Access::Ro;
+            use MatchKind::Subpath;
+            vec![
+                grant("/usr", Ro, Subpath),
+                grant("/bin", Ro, Subpath),
+                grant("/lib", Ro, Subpath),
+                grant("/lib64", Ro, Subpath),
+                grant("/etc", Ro, Subpath),
+                grant("/dev", Ro, Subpath),
+                grant("/proc", Ro, Subpath),
+            ]
+        }
         _ => vec![],
     }
 }
 
+/// A profile with the platform system base + scenario-specific grants.
 fn profile_with(extra: Vec<PathGrant>) -> Profile {
     let mut paths = system_base();
     paths.extend(extra);
@@ -93,7 +114,7 @@ fn run(profile: &Profile, home: &Path, cmd: &[&str]) -> i32 {
 
 struct Outcome {
     name: &'static str,
-    pass: Option<bool>,
+    pass: Option<bool>, // None = skip
     note: &'static str,
 }
 
@@ -101,14 +122,23 @@ fn main() {
     let keep = std::env::args().any(|a| a == "--keep");
     let platform = std::env::consts::OS;
 
+    // One temp workspace for the whole run.
     let root = std::env::temp_dir().join(format!("isol8-ft-{}", process::id()));
     let home = root.join("home");
     let workspace = root.join("workspace");
     let seed = root.join("seed");
-    let outside = root.join("outside");
-    for d in [&home, &workspace, &seed, &outside] {
+    // outside/ must be OUTSIDE any granted path. On Linux, /tmp is granted rw
+    // by the system base, so place outside/ as a sibling of root (still under
+    // /tmp but NOT under root). The sandbox cannot reach it because no
+    // PathBeneath rule covers it — Landlock deny-by-default blocks access.
+    let outside = root.parent().unwrap_or(&root).join(format!(
+        "outside-{}",
+        root.file_name().unwrap().to_string_lossy()
+    ));
+    for d in [&home, &workspace, &seed] {
         fs::create_dir_all(d).expect("create temp dirs");
     }
+    fs::create_dir_all(&outside).expect("create outside dir");
     fs::write(seed.join("data.txt"), "seeded\n").unwrap();
     fs::write(outside.join("secret.txt"), "secret\n").unwrap();
 
@@ -128,15 +158,17 @@ fn main() {
         });
 
     println!(
-        "isol8 field tests — platform: {platform}   home: {}",
+        "isol8 field tests — platform: {platform}   home: {}\n",
         home.display()
     );
 
     let mut results = Vec::new();
 
-    // Path scenarios need ACL-level enforcement. macOS (Seatbelt) does it;
-    // Windows AppContainer needs ACL modification (Phase 5).
-    let path_enforced = platform == "macos";
+    // Path scenarios need ACL-level enforcement. macOS (Seatbelt) and Linux
+    // (Landlock) do it; Windows AppContainer would need ACL modification (deferred).
+    let path_enforced = matches!(platform, "macos" | "linux");
+
+    // ===== Cross-platform scenarios (1–9) =====
 
     // 1. no grant on outside/ → read is Denied.
     {
@@ -306,11 +338,11 @@ fn main() {
         note: "network tier not implemented",
     });
     // 9. command rewrite → an injected arg reaches the executed program.
-    // macOS only: /usr/bin/touch works cleanly with apply_rewrite; Windows
+    // Unix only: /usr/bin/touch works cleanly with apply_rewrite; Windows
     // cmd.exe /c is incompatible with the arg-rewrite model, and path
-    // enforcement isn't available anyway.
+    // enforcement isn't available there anyway.
     {
-        let (code, injected_made, note) = if platform == "macos" {
+        let (code, injected_made, note) = if path_enforced {
             let mut p = profile_with(vec![grant(ws, Access::Rw, MatchKind::Subpath)]);
             let injected = format!("{ws}/injected.txt");
             p.rewrite = Some(Rewrite {
@@ -322,11 +354,11 @@ fn main() {
             let c = run(&p, &home, &argv);
             (c, workspace.join("injected.txt").exists(), "")
         } else {
-            (-1, false, "rewrite field test only on macOS")
+            (-1, false, "rewrite field test only on Unix backends")
         };
         results.push(Outcome {
             name: "09 rewrite-injects-arg",
-            pass: if platform == "macos" {
+            pass: if path_enforced {
                 Some(code == 0 && injected_made)
             } else {
                 None
@@ -334,6 +366,131 @@ fn main() {
             note,
         });
     }
+
+    // ===== Linux-specific scenarios (10–16) =====
+
+    // 10. no grant on outside/ → read is Denied (Landlock enforcement check).
+    //     Same as scenario 1 but exercises Landlock deny-by-default on a
+    //     path that Unix DAC would allow (world-readable temp dir).
+    #[cfg(target_os = "linux")]
+    {
+        let p = profile_with(vec![]);
+        let code = run(
+            &p,
+            &home,
+            &["/bin/sh", "-c", &format!("/bin/cat {out}/secret.txt")],
+        );
+        results.push(Outcome {
+            name: "10 linux-deny-ungranted-path",
+            pass: Some(code != 0),
+            note: "",
+        });
+    }
+
+    // 11. rw on workspace → write succeeds (Landlock rw enforcement).
+    #[cfg(target_os = "linux")]
+    {
+        let p = profile_with(vec![grant(ws, Access::Rw, MatchKind::Subpath)]);
+        let code = run(
+            &p,
+            &home,
+            &["/bin/sh", "-c", &format!("echo test > {ws}/linux-test.txt")],
+        );
+        let wrote = workspace.join("linux-test.txt").exists();
+        results.push(Outcome {
+            name: "11 linux-rw-write-allowed",
+            pass: Some(code == 0 && wrote),
+            note: "",
+        });
+    }
+
+    // 12. ro on seed → write is Denied (Landlock ro enforcement).
+    #[cfg(target_os = "linux")]
+    {
+        let p = profile_with(vec![grant(sd, Access::Ro, MatchKind::Subpath)]);
+        let code = run(
+            &p,
+            &home,
+            &["/bin/sh", "-c", &format!("echo hack > {sd}/linux-x.txt")],
+        );
+        let blocked = !seed.join("linux-x.txt").exists();
+        results.push(Outcome {
+            name: "12 linux-ro-write-denied",
+            pass: Some(code != 0 && blocked),
+            note: "",
+        });
+    }
+
+    // 13. ro on seed → read is Allowed.
+    #[cfg(target_os = "linux")]
+    {
+        let p = profile_with(vec![grant(sd, Access::Ro, MatchKind::Subpath)]);
+        let code = run(
+            &p,
+            &home,
+            &["/bin/sh", "-c", &format!("/bin/cat {sd}/data.txt")],
+        );
+        results.push(Outcome {
+            name: "13 linux-ro-read-allowed",
+            pass: Some(code == 0),
+            note: "",
+        });
+    }
+
+    // 14. no grant on real home → ls is Denied (no ancestor over-granting).
+    //     Before the fix, metadata ancestor rules would expose the real home.
+    #[cfg(target_os = "linux")]
+    {
+        let p = profile_with(vec![]); // no home grant
+        let code = run(
+            &p,
+            &home,
+            &["/bin/sh", "-c", &format!("/bin/ls {real_home}")],
+        );
+        results.push(Outcome {
+            name: "14 linux-real-home-denied",
+            pass: Some(code != 0),
+            note: "",
+        });
+    }
+
+    // 15. env allowlist → SECRET_TOKEN is absent.
+    #[cfg(target_os = "linux")]
+    {
+        let p = profile_with(vec![]);
+        let code = run(
+            &p,
+            &home,
+            &["/bin/sh", "-c", "/usr/bin/printenv SECRET_TOKEN"],
+        );
+        results.push(Outcome {
+            name: "15 linux-env-secret-absent",
+            pass: Some(code != 0),
+            note: "",
+        });
+    }
+
+    // 16. env allowlist → PATH and HOME are present.
+    #[cfg(target_os = "linux")]
+    {
+        let p = profile_with(vec![]);
+        let code = run(
+            &p,
+            &home,
+            &[
+                "/bin/sh",
+                "-c",
+                "/usr/bin/printenv HOME && /usr/bin/printenv PATH",
+            ],
+        );
+        results.push(Outcome {
+            name: "16 linux-env-path-home-present",
+            pass: Some(code == 0),
+            note: "",
+        });
+    }
+
+    // ===== Report =====
 
     let (mut passed, mut failed, mut skipped) = (0, 0, 0);
     for r in &results {
@@ -351,12 +508,10 @@ fn main() {
                 "SKIP"
             }
         };
-        let note = if r.note.is_empty() && r.pass.is_none() {
-            "   (network tier not implemented)"
-        } else if !r.note.is_empty() {
-            &format!("   ({})", r.note)
+        let note = if r.note.is_empty() {
+            String::new()
         } else {
-            ""
+            format!("   ({})", r.note)
         };
         println!("  {tag}  {}{note}", r.name);
     }

@@ -52,8 +52,8 @@ Modules (see spec §7):
 
 ## Current status
 
-**Phase 1 — macOS MVP working.** The full path/HOME/env pipeline is implemented and
-enforced on macOS via Seatbelt:
+**Phase 1 — macOS + Linux MVP working.** The full path/HOME/env pipeline is implemented and
+enforced on macOS via Seatbelt and on Linux via Landlock:
 
 - **profile** — TOML load (`build.rs` embeds all `profiles/**/*.toml` + user config dir +
   `--profile-path` overlays), `requires` inheritance, deny-first `merge`, layer/policy
@@ -74,7 +74,13 @@ enforced on macOS via Seatbelt:
   allows/denies, ancestor metadata, typed capabilities, raw passthrough) and runs it under
   `/usr/bin/sandbox-exec -p`. Symlinked paths (`/tmp`→`/private/tmp`, `/var`→`/private/var`)
   are emitted in both forms — Seatbelt matches the literal accessed path, not a canonical one.
-- **--dry-run** / `isol8 policies show` print layer stack + effective grants, env, command, SBPL.
+- **Linux backend** — renders the merged profile to Landlock rules (deny-by-default,
+  per-path ro/rw) and runs it under `PR_SET_NO_NEW_PRIVS` + Landlock `restrict_self()`.
+  No ancestor rules (Landlock's `PathBeneath` grants subtrees, so ancestors would over-grant;
+  Unix DAC handles path traversal). ABI version probed at runtime. WSL2 (kernel 5.15)
+  verified enforced. Namespace helpers (user/mount) exist but are disabled pending
+  `uid_map` write availability.
+- **--dry-run** / `isol8 policies show` print layer stack + effective grants, env, command, SBPL/Landlock rules.
 - **config** — `isol8.toml`/`isol8.yaml` (cwd, `ISOL8_CONFIG_PATH`, or `~/.config/isol8/`),
   `ISOL8_*` env overrides, `isol8 init`. Defaults: `base` + OS system-runtime; `auto_profiles`
   selects agent layers by executable name (e.g. `claude` → `agents/claude-code`).
@@ -91,10 +97,12 @@ enforced on macOS via Seatbelt:
 - **profiles** — Safehouse port embedded; `macos-system` / `linux-system` are backward-compat
   aliases. `isol8 echo hi` works without `--profile` when config defaults apply.
 - **tests** — unit + integration (`cargo test`) and a real-sandbox field-test binary
-  (`just field-test`, scenarios 1–7) prove the OS actually enforces the policy.
+  (`just field-test`, scenarios 1–9 cross-platform, 10–16 Linux-specific) prove the OS
+  actually enforces the policy.
 
-**Not yet:** the Linux (Landlock) backend still `bail!`s; `--env-file`,
-resource limits.
+**Not yet:** `--env-file`, resource limits, and network tiers are unstarted. The
+Windows (AppContainer) backend is an early draft — it compiles and wires through
+the pipeline but does not yet enforce (see `_docs/wip/windows-review.md`).
 Known gaps: macOS `git`/`cargo` need extra developer-tool paths beyond `macos-system`.
 
 ## Roadmap

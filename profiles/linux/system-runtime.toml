@@ -33,9 +33,6 @@ paths = [
   # Per-user runtime dir (XDG_RUNTIME_DIR parent).
   { path = "/run/user", access = "rw" },
 
-  # Root inode for path resolution (Landlock ancestor walk).
-  { path = "/", access = "ro", match = "literal" },
-
   # XDG base dirs — metadata for path resolution; higher layers grant specifics.
   { path = "~/.config", access = "metadata" },
   { path = "~/.cache", access = "metadata" },

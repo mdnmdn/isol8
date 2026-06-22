@@ -6,15 +6,15 @@ sandbox against an ad-hoc home + profile and reports what was actually allowed o
 denied). Field tests are the ground truth — a profile is only correct if the OS
 enforces it.
 
-> Status: implemented (macOS + Windows Phase 1). Unit + integration tests
-> (`cargo test`) and the field-test binary `src/bin/isol8-field-test.rs`
-> (`just field-test`) are in place and green on macOS; scenarios 1–7 enforce,
-> the network scenario (8) is `SKIP` until the net tiers land. The Linux path
-> scenarios `SKIP` until that backend exists. On Windows the field-test binary
-> compiles and runs env scenarios (6–7) through the AppContainer backend; path
-> scenarios (1–5) skip because ACL-level enforcement is deferred to Phase 5.
-> Building+linking the binary requires a host with the Windows SDK or mingw
-> toolchain. See [`AGENTS.md`](../AGENTS.md).
+> Status: implemented. Unit + integration tests (`cargo test`) and the
+> field-test binary `src/bin/isol8-field-test.rs` (`just field-test`) are in place
+> and green on macOS and Linux (WSL2); scenarios 1–9 enforce cross-platform,
+> scenarios 10–16 are Linux-specific, the network scenario (8) is `SKIP`
+> until the net tiers land. On Windows the binary compiles and runs env scenarios
+> through the AppContainer backend; path scenarios skip because ACL-level
+> enforcement is deferred (see [`_docs/wip/windows-review.md`](wip/windows-review.md)).
+> Building+linking on Windows requires the Windows SDK or mingw toolchain.
+> See [`AGENTS.md`](../AGENTS.md).
 
 ---
 

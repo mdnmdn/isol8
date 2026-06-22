@@ -100,12 +100,13 @@ pub(crate) fn render_policy(profile: &Profile) -> String {
         }
     }
 
-    out.push_str(
+    let abi = probe_landlock_abi();
+    out.push_str(&format!(
         "\n;; user namespace: no (uid_map write blocked in this env)\n\
          ;; mount namespace: no (depends on user ns)\n\
          ;; PR_SET_NO_NEW_PRIVS: yes\n\
-         ;; Landlock ABI: best-effort\n",
-    );
+         ;; Landlock ABI: {abi}\n",
+    ));
 
     out
 }
@@ -145,6 +146,14 @@ fn access_for_grant(access: Access) -> BitFlags<AccessFs> {
 /// **Match kind limitation**: Landlock's `PathBeneath` grants a whole subtree,
 /// so `literal` (exact-match only) and `regex`/`prefix` match kinds cannot be
 /// faithfully represented. We only emit rules for `subpath` match kind.
+///
+/// **No ancestor rules**: Unlike macOS Seatbelt, Landlock's `PathBeneath`
+/// grants access to the entire subtree beneath a directory. Adding ancestor
+/// rules for path resolution (R2.3) would inadvertently grant access to
+/// sibling directories (e.g., adding `/home` as ancestor of `/home/user/.config`
+/// grants all of `/home/`). Unix DAC already allows path traversal — the child
+/// process can traverse parent directories to reach granted paths. Landlock
+/// only restricts which directory FDs can be opened, not traversal.
 fn build_landlock_rules(profile: &Profile) -> Result<Vec<LandlockRule>> {
     let mut rules = Vec::new();
 
@@ -177,38 +186,32 @@ fn build_landlock_rules(profile: &Profile) -> Result<Vec<LandlockRule>> {
         });
     }
 
-    // Ancestor metadata (R2.3): for each granted path, every ancestor must be
-    // stat-able. Landlock's PathBeneath on a parent implicitly grants this,
-    // but for paths whose ancestors aren't already covered, we add explicit
-    // read-only rules on the ancestors.
-    // NOTE: We skip "/" as an ancestor — it's always stat-able, and adding it
-    // as a PathBeneath rule would grant the entire filesystem.
-    let mut ancestors_needed: Vec<String> = Vec::new();
-    for grant in &profile.paths {
-        if grant.access == Access::None {
-            continue;
-        }
-        let mut cur = Path::new(&grant.path).parent();
-        while let Some(dir) = cur {
-            let s = dir.to_string_lossy().into_owned();
-            if s.is_empty() || s == "/" {
-                break;
-            }
-            // Check if any existing rule already covers this ancestor.
-            if !rules.iter().any(|r| r.path == s) && !ancestors_needed.contains(&s) {
-                ancestors_needed.push(s);
-            }
-            cur = dir.parent();
-        }
-    }
-    for anc in ancestors_needed {
-        rules.push(LandlockRule {
-            path: anc,
-            access: make_bitflags!(AccessFs::{ReadFile | ReadDir}),
-        });
-    }
-
     Ok(rules)
+}
+
+/// Probe the kernel's Landlock ABI version.
+///
+/// Attempts to create a minimal Landlock ruleset with zero access rights.
+/// The kernel returns the ABI version via `restrict_self()` status. If
+/// Landlock is unavailable, returns "unavailable".
+fn probe_landlock_abi() -> String {
+    // A zero-access ruleset probes whether Landlock is supported at all.
+    let ruleset = match Ruleset::default()
+        .set_compatibility(CompatLevel::BestEffort)
+        .handle_access(BitFlags::<AccessFs>::empty())
+    {
+        Ok(r) => r,
+        Err(_) => return "unavailable".to_string(),
+    };
+    match ruleset.create() {
+        Ok(created) => match created.restrict_self() {
+            Ok(status) => {
+                format!("v{} (enforced)", status.ruleset as u8)
+            }
+            Err(_) => "detected but restrict_self failed".to_string(),
+        },
+        Err(_) => "unavailable".to_string(),
+    }
 }
 
 /// Apply Landlock rules to the current process.
@@ -427,13 +430,12 @@ mod tests {
             ..Default::default()
         };
         let rules = build_landlock_rules(&p).unwrap();
-        // /usr and /tmp each produce a rule; / is an ancestor for both.
-        assert!(rules.len() >= 2);
-        // Check that /usr has read rights.
+        // Only /usr and /tmp — no ancestor rules (Landlock PathBeneath grants
+        // subtrees, so ancestor rules would over-grant).
+        assert_eq!(rules.len(), 2);
         let usr_rule = rules.iter().find(|r| r.path == "/usr").unwrap();
         assert!(usr_rule.access.contains(AccessFs::ReadFile));
         assert!(!usr_rule.access.contains(AccessFs::WriteFile));
-        // Check that /tmp has write rights.
         let tmp_rule = rules.iter().find(|r| r.path == "/tmp").unwrap();
         assert!(tmp_rule.access.contains(AccessFs::WriteFile));
     }
@@ -446,6 +448,27 @@ mod tests {
         };
         let rules = build_landlock_rules(&p).unwrap();
         assert!(rules.is_empty());
+    }
+
+    #[test]
+    fn build_rules_no_ancestor_over_granting() {
+        // Metadata grants should NOT cause ancestor rules that expose sibling dirs.
+        // /var/tmp is a real directory; /home/user/.config may not exist, so the
+        // builder uses its parent (/home/user) as the Landlock FD target — that's
+        // fine, the key assertion is that NO extra ancestor rules appear.
+        let p = Profile {
+            paths: vec![
+                grant("/var/tmp", Access::Rw),
+                grant("/var/cache", Access::Rw),
+            ],
+            ..Default::default()
+        };
+        let rules = build_landlock_rules(&p).unwrap();
+        // Only /var/tmp and /var/cache — no /var ancestor rule.
+        assert_eq!(rules.len(), 2);
+        assert!(rules
+            .iter()
+            .all(|r| r.path == "/var/tmp" || r.path == "/var/cache"));
     }
 
     #[test]

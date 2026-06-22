@@ -1,8 +1,0 @@
-************************************* Invoked: Mon Jun 22 13:17:47 2026
-[0] Arguments: C:\Users\mdn\AppData\Local\Temp\WinGet\MSYS2.MSYS2.20260611\msys2-x86_64-20260611.exe, install, --confirm-command, --root, C:\msys64
-[42] Operations sanity check succeeded.
-[85] Discarding existing items from cache with version: "1.1.0" . New version: "1.2.0"
-[89] Using metadata cache from "C:/Users/mdn/AppData/Local/cache\\qt-installer-framework\\d75f1c19-3379-3717-ae8d-1404b51494a9"
-[89] Found 0 cached items.
-[96] Loaded control script ":/metadata/installer-config/control_js"
-[104] TargetDirectoryInUse : Error : The directory you selected already exists and contains an installation. Choose a different target for installation.
