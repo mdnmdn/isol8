@@ -74,7 +74,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: build
+    needs: [validate, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -94,7 +94,7 @@ jobs:
 
   publish-crates:
     name: Publish to crates.io
-    needs: release
+    needs: [validate, release]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -104,9 +104,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Verify tag matches Cargo.toml
-        run: bash _devops/scripts/version.sh verify "${{ github.ref_name }}"
 
       - name: Publish
         run: cargo publish
