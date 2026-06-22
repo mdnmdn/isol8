@@ -9,6 +9,10 @@ compiles or runs on the macOS review host. Every Windows-specific claim below is
 from reading, not execution, and **needs verification on a real Windows box**. The
 cross-platform refactors do build and `cargo test` is green on macOS (24 tests).
 
+> **Update (post-review):** blockers #1–#4 below were fixed in later commits on
+> `features/windows-support`. See `_docs/windows-support.md` §4 for current status.
+> R2 path confinement remains documentary-only.
+
 ## Verdict
 
 Direction is reasonable, but this is **not yet enforcing**. The implementation

@@ -4,6 +4,13 @@
 
 use std::collections::HashMap;
 
+#[cfg(windows)]
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
+use windows::Win32::System::Threading::{
+    GetExitCodeProcess, TerminateProcess, WaitForSingleObject,
+};
+
 use crate::error::{Error, Result, ResultExt};
 use crate::profile::Profile;
 
@@ -46,8 +53,8 @@ pub struct Spec {
 /// [`kill`](SandboxChild::kill) it, or block on [`wait`](SandboxChild::wait).
 ///
 /// The backends are heterogeneous: macOS launches a `sandbox-exec`
-/// `std::process::Child`; Linux forks and keeps the raw `Pid`; the Windows draft
-/// is blocking-internally and stores its already-known exit code. The `on_exit`
+/// `std::process::Child`; Linux forks and keeps the raw `Pid`; Windows uses a
+/// raw `HANDLE` from `CreateProcessW` under an AppContainer. The `on_exit`
 /// closure maps a raw exit code into a rich error where the OS overloads exit codes
 /// for its own failures (macOS `sandbox-exec` 64/65/71/134); elsewhere it is the
 /// identity.
@@ -58,17 +65,28 @@ pub struct SandboxChild {
 
 enum Handle {
     /// macOS: the launched `sandbox-exec` child.
+    #[allow(dead_code)]
     Process(std::process::Child),
     /// Linux: a forked child set up + exec'd in the fork; reaped via `waitpid`.
     #[cfg(target_os = "linux")]
     Forked(nix::unistd::Pid),
-    /// A process whose exit code is already known (Windows blocking-internally).
-    #[allow(dead_code)] // constructed only by the Windows backend
+    /// Windows: live handle from CreateProcessW under AppContainer.
+    #[cfg(windows)]
+    Windows {
+        pid: u32,
+        h_process: HANDLE,
+        /// AppContainer name (if created via CreateAppContainerProfile) for best-effort
+        /// DeleteAppContainerProfile on wait.
+        container_name: Option<String>,
+    },
+    /// A process whose exit code is already known (legacy or immediate-fail path).
+    #[allow(dead_code)]
     Exited(i32),
 }
 
 impl SandboxChild {
     /// macOS: wrap a launched child plus its exit-code interpreter.
+    #[allow(dead_code)]
     pub(crate) fn process(
         child: std::process::Child,
         on_exit: Box<dyn Fn(i32) -> Result<i32>>,
@@ -89,10 +107,23 @@ impl SandboxChild {
     }
 
     /// A process that already finished with `code` (identity exit mapping).
-    #[allow(dead_code)] // used only by the Windows backend
+    #[allow(dead_code)]
     pub(crate) fn exited(code: i32) -> Self {
         Self {
             handle: Handle::Exited(code),
+            on_exit: Box::new(Ok),
+        }
+    }
+
+    /// Windows: wrap a live AppContainer-launched process + optional container name for cleanup.
+    #[cfg(windows)]
+    pub(crate) fn windows(pid: u32, h_process: HANDLE, container_name: Option<String>) -> Self {
+        Self {
+            handle: Handle::Windows {
+                pid,
+                h_process,
+                container_name,
+            },
             on_exit: Box::new(Ok),
         }
     }
@@ -103,6 +134,8 @@ impl SandboxChild {
             Handle::Process(c) => c.id(),
             #[cfg(target_os = "linux")]
             Handle::Forked(p) => p.as_raw() as u32,
+            #[cfg(windows)]
+            Handle::Windows { pid, .. } => *pid,
             Handle::Exited(_) => 0,
         }
     }
@@ -122,6 +155,29 @@ impl SandboxChild {
                     .map_err(|e| Error::Message(format!("waitpid failed: {e}")))?;
                 wait_status_code(&status)
             }
+            #[cfg(windows)]
+            Handle::Windows {
+                h_process,
+                container_name,
+                ..
+            } => {
+                let mut code: i32 = 0;
+                unsafe {
+                    if !h_process.0.is_null() {
+                        WaitForSingleObject(*h_process, 0xFFFFFFFF);
+                        let mut exit_code: u32 = 0;
+                        let _ = GetExitCodeProcess(*h_process, &mut exit_code as *mut u32);
+                        code = exit_code as i32;
+                        let _ = CloseHandle(*h_process);
+                        h_process.0 = std::ptr::null_mut();
+                        // best-effort cleanup of named AppContainer profile
+                        if let Some(name) = container_name.take() {
+                            let _ = delete_app_container_profile_by_name(&name);
+                        }
+                    }
+                }
+                code
+            }
             Handle::Exited(code) => *code,
         };
         (self.on_exit)(code)
@@ -134,6 +190,24 @@ impl SandboxChild {
             #[cfg(target_os = "linux")]
             Handle::Forked(pid) => nix::sys::signal::kill(*pid, nix::sys::signal::Signal::SIGKILL)
                 .map_err(|e| Error::Message(format!("kill failed: {e}"))),
+            #[cfg(windows)]
+            Handle::Windows {
+                h_process,
+                container_name,
+                ..
+            } => {
+                unsafe {
+                    if !h_process.0.is_null() {
+                        let _ = TerminateProcess(*h_process, 1);
+                        let _ = CloseHandle(*h_process);
+                        h_process.0 = std::ptr::null_mut();
+                        if let Some(name) = container_name.take() {
+                            let _ = delete_app_container_profile_by_name(&name);
+                        }
+                    }
+                }
+                Ok(())
+            }
             Handle::Exited(_) => Ok(()),
         }
     }
@@ -163,6 +237,21 @@ fn wait_status_code(status: &nix::sys::wait::WaitStatus) -> i32 {
         nix::sys::wait::WaitStatus::Signaled(_, sig, _) => 128 + (*sig as i32),
         _ => 1,
     }
+}
+
+/// Best-effort delete of a named AppContainer profile. Defined here so SandboxChild
+/// wait/kill can call it under cfg(windows) without leaking backend internals.
+/// The actual call is forwarded; on non-windows this is a no-op stub.
+#[cfg(windows)]
+fn delete_app_container_profile_by_name(name: &str) -> crate::error::Result<()> {
+    // Delegate to backend helper (defined in backends/windows.rs)
+    crate::backends::windows::delete_app_container_profile(name)
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+fn delete_app_container_profile_by_name(_name: &str) -> crate::error::Result<()> {
+    Ok(())
 }
 
 /// A structured, side-effect-free dry run: the resolved layer stack (with

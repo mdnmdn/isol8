@@ -1,10 +1,11 @@
 # isol8 — Windows AppContainer Backend
 
-> **Status: EARLY DRAFT — NOT ENFORCING.**
-> The Windows backend compiles on `x86_64-pc-windows-msvc` and wires through the
-> profile/env/home/resolve pipeline, but it does **not** produce a real AppContainer
-> and does **not** enforce path confinement. No enforcement has been verified on a
-> real Windows host. Do not use this backend in a security-sensitive context.
+> **Status: Tier 1 implemented (review feedback addressed).**
+> The backend now uses the documented `CreateAppContainerProfile` + `Derive...` +
+> `SECURITY_CAPABILITIES` + `CreateProcessW(EXTENDED_STARTUPINFO_PRESENT | ...)` path.
+> Env block, command quoting, and attr list alignment fixed. Path grants remain
+> documentary (inherent to AppContainer model). Full enforcement verified on a
+> real Windows host is still recommended before production use.
 
 ---
 
@@ -83,29 +84,22 @@ Windows uses to scope named objects, ACLs, and capability checks.
 
 ## 3. Current implementation
 
-### 3.1 What `src/backends/windows.rs` actually does
+### 3.1 What `src/backends/windows.rs` does
 
-The current code does **not** follow the documented flow above. It takes a different
-path that is unlikely to produce real AppContainer isolation:
+The backend follows the documented Tier 1 flow:
 
-1. `OpenProcessToken` — obtains the current process token.
-2. `DuplicateTokenEx` — duplicates it to a new primary token.
-3. `AllocateAndInitializeSid` — allocates a transient package SID
-   (`S-1-15-2-<pid>-<nanos>-<counter>`), but does **not** call
-   `CreateAppContainerProfile` or `DeriveAppContainerSidFromAppContainerName`.
-4. `SetTokenInformation(TokenAppContainerSid, …)` — attempts to attach the package
-   SID to the duplicated token. `TokenAppContainerSid` is a *queryable* property,
-   not a *settable* one; the lowbox SID is established at token-creation time
-   (`NtCreateLowBoxToken`, or implicitly via `SECURITY_CAPABILITIES`). On an
-   ordinary primary token this call is expected to return
-   `ERROR_INVALID_PARAMETER` or silently produce a non-lowbox token.
-5. `CreateProcessAsUserW` — launches the command with a plain `STARTUPINFOW`
-   (no extended attribute list, no `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`).
+1. `CreateAppContainerProfile` — registers a unique `Isol8.<hex>` container (no admin).
+2. On `ERROR_ALREADY_EXISTS`, `DeriveAppContainerSidFromAppContainerName` reuses the SID.
+3. `SECURITY_CAPABILITIES` + `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` on a
+   `STARTUPINFOEXW` attribute list.
+4. `CreateProcessW` with `EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT`,
+   an explicit UTF-16 env block, MSDN-compatible command-line quoting, and
+   `lpApplicationName` when `argv[0]` is absolute.
+5. Non-blocking `SandboxChild::windows` handle; `wait`/`kill` delete the profile.
 
-The result is a process that runs under a duplicated ordinary token, **not** under
-a real AppContainer lowbox. The `Win32_Security_Isolation` feature is declared in
-`Cargo.toml` but none of its APIs (`CreateAppContainerProfile`,
-`DeriveAppContainerSidFromAppContainerName`) are called.
+Review blockers #1–#4 from `_docs/wip/windows-review.md` are addressed in the
+current tree. **Full enforcement on a real Windows host is still recommended**
+before production use (run `cargo run --bin isol8-field-test`).
 
 ### 3.2 Capability SIDs (12 supported)
 
@@ -129,8 +123,8 @@ well-known capability SIDs. These will be usable once the launch path is rewritt
 
 ### 3.3 `%VAR%` path expansion
 
-`expand_windows_vars(path: &str) -> String` expands twelve well-known `%VAR%`
-tokens against the host environment at runtime:
+`home::expand_windows_vars()` (called from `expand_grant` during merge) expands
+twelve well-known `%VAR%` tokens against the host environment at runtime:
 
 ```
 %SYSTEMROOT%    %USERPROFILE%   %LOCALAPPDATA%  %APPDATA%
@@ -156,71 +150,26 @@ Like all path grants on Windows today, these are **documentary only** (see secti
 explicitly labelling the grants as "documentary". This text is what `--show-policies`
 and `--dry-run` display on Windows. The label is intentional and must remain.
 
-### 3.6 `SandboxChild` and blocking behavior
+### 3.6 `SandboxChild` (non-blocking)
 
-The Windows backend runs the child synchronously: `launch_appcontainer` calls
-`WaitForSingleObject` before returning, then wraps the exit code in
-`SandboxChild::exited(code)`. This means `Backend::spawn` does not return a
-non-blocking handle on Windows — it blocks until the child exits. The
-`SandboxChild` returned is pre-resolved. This is a known limitation to be
-addressed when the full Tier 1 implementation lands.
+`Backend::spawn` returns a live `SandboxChild::windows` handle immediately.
+`wait()` blocks on `WaitForSingleObject`, reads the exit code, closes the process
+handle, and best-effort calls `DeleteAppContainerProfile` for the invocation's
+container name.
 
 ---
 
-## 4. Known gaps and blockers
+## 4. Resolved review items (commit `867b056` → current)
 
-The following issues were identified by code review
-(`_docs/wip/windows-review.md`). All blockers must be fixed before the backend
-can enforce anything. They are listed in priority order.
+The static review in `_docs/wip/windows-review.md` identified four implementation
+bugs in the original draft. Status in the current tree:
 
-### BLOCKER 1 — No real AppContainer is created
-
-`TokenAppContainerSid` is not a settable token property. The lowbox (AppContainer)
-SID is established at token-creation time, not via `SetTokenInformation` on an
-ordinary primary token. The call is expected to fail or produce a non-lowbox token
-— in either case **no AppContainer isolation results**. The entire
-`Win32_Security_Isolation` feature in `Cargo.toml` is unused.
-
-**Fix:** rewrite `launch_appcontainer` to follow the documented flow:
-`CreateAppContainerProfile` → `DeriveAppContainerSidFromAppContainerName` →
-`SECURITY_CAPABILITIES` → `CreateProcessW` with
-`PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`.
-
-### BLOCKER 2 — Unicode env block passed without `CREATE_UNICODE_ENVIRONMENT`
-
-`build_env_block` emits a UTF-16 (`Vec<u16>`) double-null-terminated block, but
-`CreateProcessAsUserW` is called with `dwCreationFlags = Default::default()` (0).
-Without `CREATE_UNICODE_ENVIRONMENT`, Windows reads `lpEnvironment` as ANSI and the
-wide block is garbled; the child receives a broken or empty environment. Additionally,
-an empty env map produces a single `0u16` terminator, but the empty block requires
-two consecutive nulls.
-
-**Fix:** OR `CREATE_UNICODE_ENVIRONMENT` into `dwCreationFlags`; make the empty-map
-case produce `[0u16, 0u16]`.
-
-### BLOCKER 3 — `TOKEN_GROUPS` capability buffer is misaligned on x64
-
-`build_token_groups` hand-packs the capability buffer by writing a 4-byte
-`GroupCount` immediately followed by the `SID_AND_ATTRIBUTES` array at offset 4.
-On x64, `SID_AND_ATTRIBUTES` contains a pointer and requires 8-byte alignment;
-`TOKEN_GROUPS.Groups` starts at offset 8 (4-byte count + 4 bytes of padding).
-Writing the first entry at offset 4 produces a misaligned / garbage capability array
-handed to the kernel.
-
-**Fix:** use a `#[repr(C)]` struct that lets the compiler insert the correct padding,
-or offset entries by `mem::align_of::<SID_AND_ATTRIBUTES>()`. Do not hand-pack
-buffers containing aligned pointer types.
-
-### Significant — Command line not quoted
-
-`cmd.join(" ")` produces an unquoted command line. Any argument containing a space
-(`C:\Program Files\...` is common on Windows) is silently split by
-`CommandLineToArgvW`. This is also an argument injection vector for a sandbox
-launching arbitrary agent commands.
-
-**Fix:** apply MSDN `CommandLineToArgvW`-compatible quoting per argument: quote
-arguments containing spaces, tabs, or quotes; double internal quotes; escape
-trailing backslashes before a closing quote.
+| Item | Status |
+|------|--------|
+| Wrong launch path (`SetTokenInformation` / `CreateProcessAsUserW`) | **Fixed** — `CreateAppContainerProfile` + `SECURITY_CAPABILITIES` + `CreateProcessW` |
+| Missing `CREATE_UNICODE_ENVIRONMENT` / empty env block | **Fixed** |
+| Misaligned `TOKEN_GROUPS` hand-pack | **Fixed** — `Vec<SID_AND_ATTRIBUTES>` passed to `SECURITY_CAPABILITIES` |
+| Naive `cmd.join(" ")` quoting | **Fixed** — `quote_arg` / `build_quoted_command_line` |
 
 ---
 
@@ -376,6 +325,5 @@ cargo test
 isol8 --show-policies cmd /c echo hi   # inspect the documentary policy output
 ```
 
-Until BLOCKER 1 is fixed, do not rely on isol8's Windows backend for any
-isolation. Running `isol8` on Windows will spawn the child process but will not
-confine it.
+Run `cargo run --bin isol8-field-test` on a Windows host to verify AppContainer
+spawn and env scenarios. Path scenarios remain skipped (R2 documentary only).

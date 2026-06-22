@@ -157,8 +157,13 @@ fn node_package_dir(exe: &Path) -> Option<PathBuf> {
 /// Resolve `name` to an absolute executable path, mirroring execvp: a name
 /// containing `/` is treated as a path (relative to cwd), otherwise the host
 /// `PATH` is searched. Returns a clean error if nothing executable is found.
+fn looks_like_path(name: &str) -> bool {
+    let p = Path::new(name);
+    p.has_root() || name.contains('/') || name.contains('\\')
+}
+
 fn resolve_executable(name: &str) -> Result<PathBuf> {
-    if name.contains('/') {
+    if looks_like_path(name) {
         let p = Path::new(name);
         let abs = if p.is_absolute() {
             p.to_path_buf()
@@ -211,6 +216,7 @@ fn is_executable_file(p: &Path) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn resolves_path_command_to_absolute() {
         // /bin/sh exists and is executable on every unix host; point PATH at it so
@@ -221,12 +227,23 @@ mod tests {
         assert!(is_executable_file(&p));
     }
 
+    #[cfg(unix)]
     #[test]
     fn absolute_path_passes_through() {
         assert_eq!(
             resolve_executable("/bin/sh").unwrap(),
             PathBuf::from("/bin/sh")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_absolute_path_with_backslashes() {
+        let system_root = std::env::var("SYSTEMROOT").unwrap_or_else(|_| "C:\\Windows".into());
+        let cmd = format!("{system_root}\\System32\\cmd.exe");
+        if is_executable_file(Path::new(&cmd)) {
+            assert_eq!(resolve_executable(&cmd).unwrap(), PathBuf::from(&cmd));
+        }
     }
 
     #[test]

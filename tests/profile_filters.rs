@@ -330,7 +330,12 @@ fn default_run_keeps_real_home() {
     // the effective HOME is the real one — HOME replacement is opt-in.
     let run = run_with(&["echo", "hi"], false, &[]);
     let effective = resolve::effective_policy(&run).unwrap();
-    let real = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME set in test env"));
+    let real = std::path::PathBuf::from(match std::env::consts::OS {
+        "windows" => std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .expect("USERPROFILE or HOME set in test env"),
+        _ => std::env::var_os("HOME").expect("HOME set in test env"),
+    });
     assert_eq!(
         effective.home.path, real,
         "default run must not replace HOME; got {:?}",
@@ -367,13 +372,19 @@ fn profile_home_replace_overrides_home() {
 
 #[test]
 fn confine_executable_absolutizes_and_grants_binary() {
-    // /bin/sh exists on macOS and Linux; the path branch avoids PATH dependence.
-    let run = run_with(&["/bin/sh"], false, &[]);
+    let exe = match std::env::consts::OS {
+        "windows" => {
+            let root = std::env::var("SYSTEMROOT").unwrap_or_else(|_| "C:\\Windows".into());
+            format!("{root}\\System32\\cmd.exe")
+        }
+        _ => "/bin/sh".into(),
+    };
+    let run = run_with(&[&exe], false, &[]);
     let mut effective = resolve::effective_policy(&run).unwrap();
     resolve::confine_executable(&mut effective.profile, &mut effective.cmd).unwrap();
-    assert_eq!(effective.cmd[0], "/bin/sh");
+    assert_eq!(effective.cmd[0], exe);
     assert!(
-        effective.profile.paths.iter().any(|g| g.path == "/bin/sh"),
+        effective.profile.paths.iter().any(|g| g.path == exe),
         "resolved binary must be auto-granted; got {:?}",
         effective.profile.paths
     );

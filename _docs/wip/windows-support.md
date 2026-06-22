@@ -2,8 +2,10 @@
 
 ## Status
 
-**Phase 5 (MVP).** AppContainer-based confinement implemented. No admin
-required (policy-only — no file ACLs modified).
+**Phase 5 (MVP).** Tier 1 AppContainer launch path implemented (`CreateAppContainerProfile`
++ `SECURITY_CAPABILITIES` + `CreateProcessW`). No admin required (policy-only — no file
+ACLs modified). Path grants remain documentary (R2 partial). Verify with
+`cargo run --bin isol8-field-test` on a Windows host.
 
 ## Three-Tier Architecture (planned)
 

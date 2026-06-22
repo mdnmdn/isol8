@@ -148,7 +148,40 @@ pub fn expand_grant(path: &str, effective_home: &Path) -> String {
     } else {
         path.to_string()
     };
-    expand_tilde(&substituted, effective_home)
+    let expanded = expand_tilde(&substituted, effective_home);
+    #[cfg(windows)]
+    {
+        expand_windows_vars(&expanded)
+    }
+    #[cfg(not(windows))]
+    {
+        expanded
+    }
+}
+
+/// Expand Windows `%VAR%` tokens in a path grant (e.g. `%SYSTEMROOT%`).
+#[cfg(windows)]
+pub fn expand_windows_vars(path: &str) -> String {
+    let mut result = path.to_string();
+    for (var, key) in &[
+        ("%SYSTEMROOT%", "SYSTEMROOT"),
+        ("%USERPROFILE%", "USERPROFILE"),
+        ("%LOCALAPPDATA%", "LOCALAPPDATA"),
+        ("%APPDATA%", "APPDATA"),
+        ("%PROGRAMFILES%", "ProgramFiles"),
+        ("%PROGRAMFILES(X86)%", "ProgramFiles(x86)"),
+        ("%ALLUSERSPROFILE%", "ALLUSERSPROFILE"),
+        ("%SYSTEMDRIVE%", "SYSTEMDRIVE"),
+        ("%TEMP%", "TEMP"),
+        ("%TMP%", "TMP"),
+        ("%HOMEDRIVE%", "HOMEDRIVE"),
+        ("%HOMEPATH%", "HOMEPATH"),
+    ] {
+        if let Some(val) = std::env::var_os(key) {
+            result = result.replace(var, &val.to_string_lossy());
+        }
+    }
+    result
 }
 
 /// Copy allowlisted real-home entries read-only into the (scratch) home (R4.4).
@@ -210,7 +243,7 @@ mod tests {
     fn expand_tilde_subpath() {
         assert_eq!(
             expand_tilde("~/.cargo", Path::new("/scratch")),
-            "/scratch/.cargo"
+            Path::new("/scratch").join(".cargo").to_string_lossy()
         );
     }
 
@@ -225,7 +258,7 @@ mod tests {
         );
         assert_eq!(
             expand_grant("~/.cargo", Path::new("/scratch")),
-            "/scratch/.cargo"
+            Path::new("/scratch").join(".cargo").to_string_lossy()
         );
         match prev {
             Some(v) => std::env::set_var("HOME", v),
@@ -259,6 +292,15 @@ mod tests {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn expand_windows_vars_substitutes_systemroot() {
+        std::env::set_var("SYSTEMROOT", "C:\\Windows");
+        let out = expand_windows_vars("%SYSTEMROOT%\\System32");
+        assert_eq!(out, "C:\\Windows\\System32");
+        std::env::remove_var("SYSTEMROOT");
     }
 
     #[test]
@@ -301,15 +343,31 @@ mod tests {
             }),
             ..Default::default()
         }];
-        let prev = std::env::var_os("HOME");
+        let prev_home = std::env::var_os("HOME");
+        #[cfg(windows)]
+        let prev_profile = std::env::var_os("USERPROFILE");
+        #[cfg(not(windows))]
         std::env::set_var("HOME", "/real/home");
+        #[cfg(windows)]
+        {
+            std::env::set_var("HOME", r"C:\real\home");
+            std::env::set_var("USERPROFILE", r"C:\real\home");
+        }
 
         let home = resolve(&run, &layers).unwrap();
+        #[cfg(not(windows))]
         assert_eq!(home.path, PathBuf::from("/real/home"));
+        #[cfg(windows)]
+        assert_eq!(home.path, PathBuf::from(r"C:\real\home"));
 
-        match prev {
+        match prev_home {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
+        }
+        #[cfg(windows)]
+        match prev_profile {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
         }
     }
 

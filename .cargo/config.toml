@@ -1,0 +1,4 @@
+# Windows GNU toolchain: requires MinGW-w64 `gcc` on PATH (e.g. WinLibs via winget).
+# See _docs/testing-strategies.md §5.1.
+[target.x86_64-pc-windows-gnu]
+linker = "gcc"

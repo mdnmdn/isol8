@@ -1,40 +1,42 @@
-//! Windows AppContainer backend (token-based).
+//! Windows AppContainer backend (Tier 1).
 //!
 //! Renders the merged Profile into an AppContainer policy and runs the command under
-//! process-windowing confinement (no file ACLs are modified).
+//! AppContainer confinement using the documented non-admin launch path:
+//!   CreateAppContainerProfile → DeriveAppContainerSidFromAppContainerName (or reuse SID)
+//!   → SECURITY_CAPABILITIES + PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES
+//!   → CreateProcessW with EXTENDED_STARTUPINFO_PRESENT.
 //!
-//! ## Architecture
+//! Path grants from profiles are **documentary only** (R2 is partial on Windows in Phase 5);
+//! AppContainer gives deny-by-default + capability-gated libraries, not fine-grained ACLs
+//! unless the caller separately ACLs objects for the derived package SID.
 //!
-//! **Tier 1 — AppContainer (primary).** Duplicates the process token, sets the
-//! AppContainer SID and capability SIDs via `SetTokenInformation`, then launches
-//! the command via `CreateProcessAsUserW`.
-//!
-//! TODO(Phase 5): Tier 2 — Elevated retry via `ShellExecuteExW("runas")`.
-//! TODO(Phase 5): Tier 3 — Job Object + Low IL + Restricted Token fallback.
-//! TODO(Phase 5): `--elevate` / `--no-elevate` CLI flags.
+//! TODO(Phase 5+): Tier 2 elevated, Tier 3 Job+LowIL, resource limits, WFP net.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::error::{Error, Result, ResultExt};
+use crate::error::{Error, Result};
 use crate::sandbox::SandboxChild;
-use windows::core::PCWSTR;
-use windows::core::PWSTR;
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::core::{PCWSTR, PWSTR};
+use windows::Win32::Foundation::CloseHandle;
+use windows::Win32::Security::Isolation::{
+    CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
+};
 use windows::Win32::Security::{
-    AllocateAndInitializeSid, DuplicateTokenEx, FreeSid, SecurityImpersonation,
-    TokenAppContainerSid, TokenCapabilities, SID_AND_ATTRIBUTES, SID_IDENTIFIER_AUTHORITY,
-    TOKEN_ADJUST_DEFAULT, TOKEN_ALL_ACCESS, TOKEN_APPCONTAINER_INFORMATION, TOKEN_ASSIGN_PRIMARY,
-    TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_TYPE,
+    AllocateAndInitializeSid, FreeSid, PSID, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES,
+    SID_IDENTIFIER_AUTHORITY,
 };
 use windows::Win32::System::Threading::{
-    CreateProcessAsUserW, GetCurrentProcess, GetExitCodeProcess, OpenProcessToken,
-    WaitForSingleObject, PROCESS_INFORMATION, STARTUPINFOW,
+    CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
+    UpdateProcThreadAttribute, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT,
+    LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+    STARTUPINFOEXW,
 };
 
 use super::Backend;
+use crate::home::expand_windows_vars;
 use crate::profile::{Profile, WindowsCapability};
 
 pub struct WindowsBackend;
@@ -82,9 +84,10 @@ impl Backend for WindowsBackend {
                 .unwrap_or(&Vec::new()),
         );
 
-        let result = launch_appcontainer(&caps, env, cmd);
+        // launch now returns a live SandboxChild (non-blocking)
+        let child = launch_appcontainer(&caps, env, cmd);
         free_capability_sids(&caps);
-        result.map(SandboxChild::exited)
+        child
     }
 
     fn render_policy(&self, profile: &Profile) -> String {
@@ -96,124 +99,168 @@ fn launch_appcontainer(
     caps: &[SID_AND_ATTRIBUTES],
     env: &HashMap<String, String>,
     cmd: &[String],
-) -> Result<i32> {
-    unsafe {
-        let mut proc_token = HANDLE(std::ptr::null_mut());
-        OpenProcessToken(
-            GetCurrentProcess(),
-            TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT | TOKEN_ASSIGN_PRIMARY,
-            &mut proc_token as *mut HANDLE,
-        )
-        .ctx(|| "OpenProcessToken failed")?;
+) -> Result<SandboxChild> {
+    // Unique name for this invocation's AppContainer profile (no admin).
+    let container_name = format!(
+        "Isol8.{:x}{:x}{:x}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u32)
+            .unwrap_or(0),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
 
-        let mut dup_token = HANDLE(std::ptr::null_mut());
-        DuplicateTokenEx(
-            proc_token,
-            TOKEN_ALL_ACCESS,
-            None,
-            SecurityImpersonation,
-            TOKEN_TYPE(1), // TokenPrimary
-            &mut dup_token as *mut HANDLE,
-        )
-        .ctx(|| "DuplicateTokenEx failed")?;
+    let name_wide: Vec<u16> = container_name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let name_pcw = PCWSTR(name_wide.as_ptr());
 
-        let _ = CloseHandle(proc_token);
+    let display = windows::core::w!("isol8");
+    let desc = windows::core::w!("isol8 agent sandbox");
 
-        // Create unique AppContainer package SID: S-1-15-2-{BASE}-{U1}-{U2}-{U3}
-        let mut pkg_sid = windows::Win32::Security::PSID(std::ptr::null_mut());
-        let token = hex_token_values();
-        AllocateAndInitializeSid(
-            &app_package_authority() as *const SID_IDENTIFIER_AUTHORITY,
-            4, // 4 subauthorities
-            2, // SECURITY_APP_PACKAGE_BASE_RID
-            token.0,
-            token.1,
-            token.2,
-            0,
-            0,
-            0,
-            0,
-            &mut pkg_sid as *mut windows::Win32::Security::PSID,
-        )
-        .ctx(|| "AllocateAndInitializeSid (package SID) failed")?;
-
-        // Set AppContainer SID on the token.
-        let ac_info = TOKEN_APPCONTAINER_INFORMATION {
-            TokenAppContainer: pkg_sid,
-        };
-        set_token_info(
-            dup_token,
-            TokenAppContainerSid,
-            &ac_info as *const _ as *const c_void,
-            std::mem::size_of::<TOKEN_APPCONTAINER_INFORMATION>() as u32,
-        )
-        .ctx(|| "SetTokenInformation(TokenAppContainerSid) failed")?;
-
-        // Set capabilities on the token.
-        if !caps.is_empty() {
-            let caps_buf = build_token_groups(caps);
-            set_token_info(
-                dup_token,
-                TokenCapabilities,
-                caps_buf.as_ptr() as *const c_void,
-                caps_buf.len() as u32,
-            )
-            .ctx(|| "SetTokenInformation(TokenCapabilities) failed")?;
+    // 1. Create profile (or derive if name already registered by previous run).
+    let pkg_sid: PSID = unsafe {
+        let cap_slice: Option<&[SID_AND_ATTRIBUTES]> =
+            if caps.is_empty() { None } else { Some(caps) };
+        match CreateAppContainerProfile(name_pcw, display, desc, cap_slice) {
+            Ok(sid) => sid,
+            Err(e) => {
+                // 0x800700b7 == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) as i32
+                if e.code().0 != (0x8007_00b7u32 as i32) {
+                    return Err(Error::Message(format!(
+                        "CreateAppContainerProfile({container_name}) failed: {e}"
+                    )));
+                }
+                DeriveAppContainerSidFromAppContainerName(name_pcw).map_err(|e| {
+                    Error::Message(format!(
+                        "DeriveAppContainerSidFromAppContainerName({container_name}): {e}"
+                    ))
+                })?
+            }
         }
+    };
 
-        // Build command line and env.
-        let cmd_line = cmd.join(" ");
-        let mut cmd_wide: Vec<u16> = cmd_line.encode_utf16().collect();
-        cmd_wide.push(0);
-        let env_block = build_env_block(env);
+    // 2. SECURITY_CAPABILITIES struct for the attribute.
+    let sec_caps = SECURITY_CAPABILITIES {
+        AppContainerSid: pkg_sid,
+        Capabilities: if caps.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            caps.as_ptr() as *mut SID_AND_ATTRIBUTES
+        },
+        CapabilityCount: caps.len() as u32,
+        Reserved: 0,
+    };
 
-        let mut si: STARTUPINFOW = std::mem::zeroed();
-        si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-        let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+    // 3. Proc thread attribute list (size query + init + update).
+    let mut attr_size: usize = 0;
+    unsafe {
+        // Query size (expected to "fail" with buffer size written).
+        let _ = InitializeProcThreadAttributeList(None, 1, None, &mut attr_size);
+    }
+    if attr_size == 0 {
+        attr_size = 2048;
+    }
+    let mut attr_buf: Vec<u8> = vec![0u8; attr_size];
+    let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(attr_buf.as_mut_ptr() as *mut c_void);
 
-        CreateProcessAsUserW(
-            Some(dup_token),
-            PCWSTR(std::ptr::null()),
+    unsafe {
+        InitializeProcThreadAttributeList(Some(attr_list), 1, None, &mut attr_size)
+            .map_err(|e| Error::Message(format!("InitializeProcThreadAttributeList: {e}")))?;
+
+        UpdateProcThreadAttribute(
+            attr_list,
+            0,
+            PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
+            Some(&sec_caps as *const _ as *const c_void),
+            std::mem::size_of::<SECURITY_CAPABILITIES>(),
+            None,
+            None,
+        )
+        .map_err(|e| {
+            Error::Message(format!(
+                "UpdateProcThreadAttribute(SECURITY_CAPABILITIES): {e}"
+            ))
+        })?;
+    }
+
+    // 4. Quoted cmdline + env. When argv[0] is absolute, pass it as lpApplicationName
+    // so CreateProcessW does not rely on PATH search inside the AppContainer.
+    let cmd_line = build_quoted_command_line(cmd);
+    let mut cmd_wide: Vec<u16> = cmd_line.encode_utf16().chain(std::iter::once(0)).collect();
+    let app_wide: Option<Vec<u16>> = std::path::Path::new(&cmd[0])
+        .is_absolute()
+        .then(|| cmd[0].encode_utf16().chain(std::iter::once(0)).collect());
+    let env_block = build_env_block(env);
+
+    let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
+    si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+    si.lpAttributeList = attr_list;
+
+    let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    let creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
+
+    let app_name = app_wide
+        .as_ref()
+        .map(|w| PCWSTR(w.as_ptr()))
+        .unwrap_or(PCWSTR(std::ptr::null()));
+
+    let create_res = unsafe {
+        CreateProcessW(
+            app_name,
             Some(PWSTR(cmd_wide.as_mut_ptr())),
             None,
             None,
             false,
-            Default::default(),
+            creation_flags,
             Some(env_block.as_ptr() as *const c_void),
-            None,
-            &mut si as *mut STARTUPINFOW,
-            &mut pi as *mut PROCESS_INFORMATION,
+            PCWSTR(std::ptr::null()),
+            &si.StartupInfo,
+            &mut pi,
         )
-        .ctx(|| "CreateProcessAsUserW failed")?;
+    };
 
-        WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
-
-        let mut exit_code: u32 = 0;
-        GetExitCodeProcess(pi.hProcess, &mut exit_code as *mut u32)
-            .ctx(|| "GetExitCodeProcess failed")?;
-
-        let _ = CloseHandle(pi.hProcess);
-        let _ = CloseHandle(pi.hThread);
-        let _ = CloseHandle(dup_token);
-        FreeSid(pkg_sid);
-
-        Ok(exit_code as i32)
+    // Always cleanup the attribute list we allocated.
+    unsafe {
+        DeleteProcThreadAttributeList(attr_list);
     }
+    // Free the SID we received from Create/Derive (kernel took a copy for the token).
+    free_pkg_sid(pkg_sid);
+
+    if let Err(e) = create_res {
+        return Err(Error::Message(format!(
+            "CreateProcessW under AppContainer failed: {e}"
+        )));
+    }
+
+    unsafe {
+        let _ = CloseHandle(pi.hThread);
+    }
+
+    Ok(SandboxChild::windows(
+        pi.dwProcessId,
+        pi.hProcess,
+        Some(container_name),
+    ))
 }
 
-fn set_token_info(
-    token: HANDLE,
-    info_class: windows::Win32::Security::TOKEN_INFORMATION_CLASS,
-    value: *const c_void,
-    value_len: u32,
-) -> Result<()> {
-    unsafe {
-        windows::Win32::Security::SetTokenInformation(token, info_class, value, value_len)
-            .ctx(|| "SetTokenInformation system call failed")
+static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+fn free_pkg_sid(sid: PSID) {
+    if !sid.0.is_null() {
+        unsafe {
+            let _ = FreeSid(sid);
+        }
     }
 }
 
 fn build_env_block(env: &HashMap<String, String>) -> Vec<u16> {
+    if env.is_empty() {
+        // A valid empty environment block is two terminating nulls.
+        return vec![0, 0];
+    }
     let mut buf = Vec::new();
     let mut keys: Vec<&String> = env.keys().collect();
     keys.sort();
@@ -226,6 +273,51 @@ fn build_env_block(env: &HashMap<String, String>) -> Vec<u16> {
     }
     buf.push(0);
     buf
+}
+
+/// Quote a single argument for the Windows command line parser (CommandLineToArgvW rules).
+/// Rules: if the arg contains space, tab, or quote (or is empty), wrap in "..." .
+/// Internal " become \", backslashes immediately before a " or at end are doubled.
+fn quote_arg(arg: &str) -> String {
+    if arg.is_empty() || arg.contains([' ', '\t', '"']) {
+        let mut out = String::with_capacity(arg.len() + 2);
+        out.push('"');
+        let mut backslashes = 0usize;
+        for ch in arg.chars() {
+            if ch == '\\' {
+                backslashes += 1;
+            } else if ch == '"' {
+                // emit doubled backs + \"
+                for _ in 0..backslashes {
+                    out.push('\\');
+                }
+                out.push('\\');
+                out.push('"');
+                backslashes = 0;
+            } else {
+                for _ in 0..backslashes {
+                    out.push('\\');
+                }
+                out.push(ch);
+                backslashes = 0;
+            }
+        }
+        // trailing backs before the closing quote must be doubled
+        for _ in 0..backslashes {
+            out.push('\\');
+        }
+        out.push('"');
+        out
+    } else {
+        arg.to_owned()
+    }
+}
+
+fn build_quoted_command_line(args: &[String]) -> String {
+    args.iter()
+        .map(|a| quote_arg(a))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn build_capability_sids(caps: &[WindowsCapability]) -> Vec<SID_AND_ATTRIBUTES> {
@@ -260,21 +352,6 @@ fn build_capability_sids(caps: &[WindowsCapability]) -> Vec<SID_AND_ATTRIBUTES> 
         .collect()
 }
 
-fn build_token_groups(caps: &[SID_AND_ATTRIBUTES]) -> Vec<u8> {
-    let header_size = std::mem::size_of::<u32>();
-    let entry_size = std::mem::size_of::<SID_AND_ATTRIBUTES>();
-    let total = header_size + std::mem::size_of_val(caps);
-    let mut buf = vec![0u8; total];
-    buf[..4].copy_from_slice(&(caps.len() as u32).to_ne_bytes());
-    for (i, cap) in caps.iter().enumerate() {
-        let offset = header_size + i * entry_size;
-        let entry: [u8; std::mem::size_of::<SID_AND_ATTRIBUTES>()] =
-            unsafe { std::mem::transmute(*cap) };
-        buf[offset..offset + entry_size].copy_from_slice(&entry);
-    }
-    buf
-}
-
 fn free_capability_sids(caps: &[SID_AND_ATTRIBUTES]) {
     for cap in caps {
         if !cap.Sid.0.is_null() {
@@ -285,44 +362,34 @@ fn free_capability_sids(caps: &[SID_AND_ATTRIBUTES]) {
     }
 }
 
-pub fn expand_windows_vars(path: &str) -> String {
-    let mut result = path.to_string();
-    for (var, key) in &[
-        ("%SYSTEMROOT%", "SYSTEMROOT"),
-        ("%USERPROFILE%", "USERPROFILE"),
-        ("%LOCALAPPDATA%", "LOCALAPPDATA"),
-        ("%APPDATA%", "APPDATA"),
-        ("%PROGRAMFILES%", "ProgramFiles"),
-        ("%PROGRAMFILES(X86)%", "ProgramFiles(x86)"),
-        ("%ALLUSERSPROFILE%", "ALLUSERSPROFILE"),
-        ("%SYSTEMDRIVE%", "SYSTEMDRIVE"),
-        ("%TEMP%", "TEMP"),
-        ("%TMP%", "TMP"),
-        ("%HOMEDRIVE%", "HOMEDRIVE"),
-        ("%HOMEPATH%", "HOMEPATH"),
-    ] {
-        if let Some(val) = std::env::var_os(key) {
-            result = result.replace(var, &val.to_string_lossy());
-        }
-    }
-    result
-}
-
 pub fn render_policy(profile: &Profile) -> String {
     let mut out = String::new();
-    out.push_str("-- Windows AppContainer policy --\n");
-    out.push_str("  Deny-by-default: process runs under AppContainer token\n");
+    out.push_str("-- Windows AppContainer policy (Tier 1) --\n");
+    out.push_str("  Mechanism: AppContainer + SECURITY_CAPABILITIES (no admin)\n");
+    out.push_str(
+        "  Deny-by-default for most named objects, IPC, devices, and WinRT outside granted caps.\n",
+    );
+    out.push_str("  NOTE: filesystem path grants below are DOCUMENTARY ONLY and NOT ENFORCED.\n");
+    out.push_str("        AppContainer does not support Seatbelt/Landlock-style per-path ro/rw.\n");
+    out.push_str(
+        "        To actually protect paths you must separately grant the derived package SID\n",
+    );
+    out.push_str(
+        "        via icacls (defeats the policy-only model) or move tools under %ProgramFiles%.\n",
+    );
     if let Some(w) = &profile.windows {
         if !w.capabilities.is_empty() {
-            out.push_str("  Capabilities:\n");
+            out.push_str("  Granted capabilities:\n");
             for c in &w.capabilities {
                 out.push_str(&format!("    {c:?}\n"));
             }
+        } else {
+            out.push_str("  Granted capabilities: (none)\n");
         }
     } else {
-        out.push_str("  Capabilities: (none)\n");
+        out.push_str("  Granted capabilities: (none)\n");
     }
-    out.push_str("  Path grants (documentary):\n");
+    out.push_str("  Path grants (DOCUMENTARY / NOT ENFORCED):\n");
     if profile.paths.is_empty() {
         out.push_str("    (none)\n");
     } else {
@@ -338,15 +405,63 @@ pub fn render_policy(profile: &Profile) -> String {
     out
 }
 
-fn hex_token_values() -> (u32, u32, u32) {
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    (
-        std::process::id(),
-        (nanos >> 32) as u32,
-        (nanos as u32).wrapping_add(COUNTER.fetch_add(1, Ordering::Relaxed)),
-    )
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_env_block_is_double_null() {
+        let block = build_env_block(&HashMap::new());
+        assert_eq!(block, vec![0u16, 0u16]);
+    }
+
+    #[test]
+    fn env_block_encodes_sorted_entries() {
+        let mut env = HashMap::new();
+        env.insert("B".into(), "2".into());
+        env.insert("A".into(), "1".into());
+        let block = build_env_block(&env);
+        let s = String::from_utf16(
+            &block[..block.len().saturating_sub(1)]
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert!(s.starts_with("A=1\0B=2"));
+    }
+
+    #[test]
+    fn quote_arg_spaces_and_quotes() {
+        assert_eq!(quote_arg("plain"), "plain");
+        assert_eq!(
+            quote_arg("C:\\Program Files\\app.exe"),
+            "\"C:\\Program Files\\app.exe\""
+        );
+        assert_eq!(quote_arg("say \"hi\""), "\"say \\\"hi\\\"\"");
+        // Trailing backslash alone does not require quoting (no space/tab/quote).
+        assert_eq!(quote_arg("trail\\"), "trail\\");
+    }
+
+    #[test]
+    fn quoted_command_line_joins_args() {
+        let line = build_quoted_command_line(&[
+            "C:\\Program Files\\isol8.exe".into(),
+            "--flag".into(),
+            "a b".into(),
+        ]);
+        assert_eq!(line, "\"C:\\Program Files\\isol8.exe\" --flag \"a b\"");
+    }
+}
+
+/// Delete a named AppContainer profile (best-effort).
+/// Called by SandboxChild::wait / kill after the child has exited.
+#[allow(dead_code)] // called via re-export from sandbox under cfg(windows)
+pub(crate) fn delete_app_container_profile(name: &str) -> Result<()> {
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        // Ignore failure — profile may already be gone or still referenced briefly.
+        let _ = DeleteAppContainerProfile(PCWSTR(wide.as_ptr()));
+    }
+    Ok(())
 }

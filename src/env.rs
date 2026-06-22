@@ -17,6 +17,11 @@ const ALLOWLIST: &[&str] = &[
     "TMP",
     "TEMP",
     "PWD",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "HOMEDRIVE",
+    "HOMEPATH",
 ];
 
 /// Env var stamped on every confined process so a nested isol8 can detect that it is
@@ -43,12 +48,16 @@ pub fn build_minimal(
     env.insert("HOME".to_string(), home.to_string_lossy().into_owned());
 
     // Filter the host env to the allowlist (HOME already set, don't overwrite it).
+    // Windows env names are case-insensitive; normalize to the canonical allowlist spelling.
     for (k, v) in std::env::vars() {
-        if k == "HOME" {
+        if k.eq_ignore_ascii_case("HOME") {
             continue;
         }
-        if ALLOWLIST.contains(&k.as_str()) {
-            env.insert(k, v);
+        if let Some(canonical) = ALLOWLIST
+            .iter()
+            .find(|&&name| name.eq_ignore_ascii_case(&k))
+        {
+            env.insert((*canonical).to_string(), v);
         }
     }
 
@@ -73,7 +82,38 @@ pub fn build_minimal(
     // Last, so --set-env can't clear the nesting guard.
     env.insert(SANDBOX_MARKER.to_string(), "1".to_string());
 
+    // On Windows make USERPROFILE / APPDATA / etc follow the authoritative (possibly
+    // replaced) HOME so that R4 HOME replacement has effect for native tools.
+    #[cfg(windows)]
+    apply_windows_home_vars(&mut env);
+
     env
+}
+
+#[cfg(windows)]
+fn apply_windows_home_vars(env: &mut HashMap<String, String>) {
+    if let Some(home) = env.get("HOME").cloned() {
+        env.insert("USERPROFILE".to_string(), home.clone());
+        let (hdrive, hpath) = if home.len() >= 2 && home.as_bytes()[1] == b':' {
+            (home[0..2].to_string(), home[2..].to_string())
+        } else {
+            ("C:".to_string(), home.clone())
+        };
+        env.insert("HOMEDRIVE".to_string(), hdrive);
+        env.insert(
+            "HOMEPATH".to_string(),
+            if hpath.is_empty() {
+                "\\".to_string()
+            } else {
+                hpath
+            },
+        );
+        env.insert("APPDATA".to_string(), format!("{home}\\AppData\\Roaming"));
+        env.insert(
+            "LOCALAPPDATA".to_string(),
+            format!("{home}\\AppData\\Local"),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -97,7 +137,10 @@ mod tests {
     fn allowlist_filters_secrets() {
         let _g = ENV_LOCK.lock().unwrap();
         std::env::set_var("SECRET_TOKEN", "shh");
+        #[cfg(not(windows))]
         std::env::set_var("PATH", "/usr/bin");
+        #[cfg(windows)]
+        std::env::set_var("PATH", r"C:\Windows\System32");
         let env = build_minimal(&Profile::default(), Path::new("/scratch"), &[], &[]);
         assert!(!env.contains_key("SECRET_TOKEN"));
         assert!(env.contains_key("PATH"));
@@ -127,6 +170,19 @@ mod tests {
         assert_eq!(env["PATH"], "/host/path");
         // a profile-only var is folded in.
         assert_eq!(env["CARGO_TERM_COLOR"], "always");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_home_vars_follow_effective_home() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let env = build_minimal(&Profile::default(), Path::new("D:\\scratch"), &[], &[]);
+        assert_eq!(env["HOME"], "D:\\scratch");
+        assert_eq!(env["USERPROFILE"], "D:\\scratch");
+        assert_eq!(env["HOMEDRIVE"], "D:");
+        assert_eq!(env["HOMEPATH"], "\\scratch");
+        assert_eq!(env["APPDATA"], "D:\\scratch\\AppData\\Roaming");
+        assert_eq!(env["LOCALAPPDATA"], "D:\\scratch\\AppData\\Local");
     }
 
     #[test]

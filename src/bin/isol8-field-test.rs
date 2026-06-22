@@ -22,6 +22,7 @@ use isol8::profile::{
     apply_rewrite, Access, Capability, MacosExtra, MatchKind, PathGrant, Profile, Rewrite,
     WindowsCapability, WindowsExtra,
 };
+use isol8::resolve::confine_executable;
 
 fn grant(path: &str, access: Access, m: MatchKind) -> PathGrant {
     PathGrant {
@@ -101,10 +102,15 @@ fn profile_with(extra: Vec<PathGrant>) -> Profile {
 }
 
 fn run(profile: &Profile, home: &Path, cmd: &[&str]) -> i32 {
-    let env = build_minimal(profile, home, &[], &[]);
-    let cmd: Vec<String> = cmd.iter().map(|s| s.to_string()).collect();
+    let mut profile = profile.clone();
+    let mut cmd: Vec<String> = cmd.iter().map(|s| s.to_string()).collect();
+    if let Err(e) = confine_executable(&mut profile, &mut cmd) {
+        eprintln!("    confine_executable error: {e:#}");
+        return -1;
+    }
+    let env = build_minimal(&profile, home, &[], &[]);
     match backends::select()
-        .spawn(profile, &env, &cmd)
+        .spawn(&profile, &env, &cmd)
         .and_then(|mut child| child.wait())
     {
         Ok(code) => code,
@@ -340,12 +346,13 @@ fn main() {
         pass: None,
         note: "network tier not implemented",
     });
-    // 9. command rewrite → an injected arg reaches the executed program.
-    // Unix only: /usr/bin/touch works cleanly with apply_rewrite; Windows
-    // cmd.exe /c is incompatible with the arg-rewrite model, and path
-    // enforcement isn't available there anyway.
+    // 9. command rewrite (Unix) or AppContainer spawn smoke test (Windows).
     {
-        let (code, injected_made, note) = if path_enforced {
+        let (code, injected_made, note) = if platform == "windows" {
+            let p = profile_with(vec![]);
+            let c = run(&p, &home, &["cmd.exe", "/c", "exit 0"]);
+            (c, c == 0, "AppContainer CreateProcessW smoke test")
+        } else if path_enforced {
             let mut p = profile_with(vec![grant(ws, Access::Rw, MatchKind::Subpath)]);
             let injected = format!("{ws}/injected.txt");
             p.rewrite = Some(Rewrite {
@@ -360,8 +367,12 @@ fn main() {
             (-1, false, "rewrite field test only on Unix backends")
         };
         results.push(Outcome {
-            name: "09 rewrite-injects-arg",
-            pass: if path_enforced {
+            name: if platform == "windows" {
+                "09 appcontainer-spawn"
+            } else {
+                "09 rewrite-injects-arg"
+            },
+            pass: if platform == "windows" || path_enforced {
                 Some(code == 0 && injected_made)
             } else {
                 None
