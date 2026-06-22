@@ -2,6 +2,8 @@
 # Agent: Goose Goose CLI binary, state, and config paths.
 # filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
 
+filter = { executables = ["goose"] }
+
 requires = ["integrations/keychain"]
 
 paths = [

@@ -1,0 +1,14 @@
+# agents/agy
+# Agent: Antigravity Antigravity CLI binary, state, and config paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+filter = { executables = ["agy"] }
+
+requires = ["integrations/keychain"]
+
+paths = [
+  { path = "~/.local/bin/agy", access = "rw", match = "prefix" },
+  { path = "~/.antigravity", access = "rw" },
+  { path = "~/.gemini/antigravity", access = "rw" },
+  { path = "~/Library/Application Support/Antigravity", access = "rw" },
+]

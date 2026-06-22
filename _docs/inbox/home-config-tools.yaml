@@ -1,0 +1,346 @@
+# home-config-tools.yaml — declarative tool registry for the home-config wizard.
+#
+# The wizard reads this file, asks the user a mode per tool (or per resource),
+# and emits dev-home.toml ([[paths]] + [env] + requires) plus dev-agent flags.
+# Adding/altering a tool is a data edit here — no wizard code changes.
+#
+# See home-config-wizard.md for the conceptual model. This file is the schema.
+# =============================================================================
+#
+# ── EXPOSURE MODES (per resource) ────────────────────────────────────────────
+#   mask     no grant at all (hidden / denied)            → emits nothing
+#   ro       read + execute, no writes                    → #HOME/<path>  access=ro
+#   isolate  RW but in the SCRATCH home (disposable)      → ~/<path>      access=rw  (+mkdir)
+#   share    RW mapped to the REAL host dir (shared)      → #HOME/<path>  access=rw
+#
+#   The SAME home-relative `path` resolves under the real home (#HOME) for
+#   ro/share, or the scratch home (~) for isolate. `base: system` opts out of
+#   the home and uses an absolute path verbatim.
+#
+# ── PRESETS (per tool, a bundle of resource modes — the wizard's main UI) ─────
+#   hidden     every resource → mask
+#   read-only  install ro, caches ro
+#   cache-rw   install ro, caches share   ← "partial RW": run host tool, share its cache
+#   full-rw    install share, caches share
+#   managed    ignore host install; provision into scratch via `manager` (mise)
+#   A user picks a preset, then may override individual resources.
+#
+# ── SYSTEM DEFAULTS, NOT MACHINE-SPECIFIC ────────────────────────────────────
+#   Paths/env below are the upstream DEFAULT install locations (~/.cargo,
+#   ~/.rustup, ~/go, sdkman ~/.sdkman, `go env GOROOT`, …). A user's non-standard
+#   location is discovered at generation time:
+#     - detect.env / `path_from_env`: if that env var is set in the host shell,
+#       its value overrides the default path (e.g. CARGO_HOME=~/works/rust/sdk/cargo).
+#     - {{detected:…}} placeholders are probed from the host (see below).
+#   So this registry stays portable; the wizard fills in the real machine paths.
+#
+# ── PLACEHOLDERS in paths/env (expanded by the WIZARD at generation time, NOT
+#    by isol8 — isol8 env values are literal/absolute) ─────────────────────────
+#   {{host_home}}     real host home     (e.g. /Users/mdn)
+#   {{scratch_home}}  the --home dir     (e.g. /Users/mdn/works/_dev-home)
+#   {{detected:NAME}} probed from host, with the documented fallback, e.g.
+#       cargo_home  = $CARGO_HOME  || ~/.cargo
+#       rustup_home = $RUSTUP_HOME || ~/.rustup
+#       go_root     = `go env GOROOT`
+#       go_path     = $GOPATH      || ~/go
+#       sdkman_dir  = $SDKMAN_DIR  || ~/.sdkman
+#       java_home   = $JAVA_HOME   || `/usr/libexec/java_home`
+#
+# ── FIELD REFERENCE ──────────────────────────────────────────────────────────
+#   tool:
+#     id, name, category(vcs|toolchain|meta-tool|runtime|service)
+#     executables: []            # basenames this tool owns (also -> agent PATH/skip)
+#     detect:                    # ANY match ⇒ present on host
+#       executables: []          #   on $PATH
+#       paths: []                #   exist under real home (home-relative)
+#       env: []                  #   set in host shell
+#     provisioning: host|sandbox|service
+#     manager: mise              # only when a resource uses mode `managed`/sandbox
+#     requires: []               # isol8 builtin layers, pulled when tool is enabled
+#     default_preset: <name>
+#     resources: [ <resource> ]
+#     env: [ <env> ]             # emitted when tool enabled (values may select by mode)
+#     services: [ <service> ]    # for category: service (sockets/daemons)
+#
+#   resource:
+#     id, role(binary|library|cache|global|config|state|versions|data)
+#     description
+#     paths: []                  # ALWAYS a list (even for one entry). Each item is
+#                                #   <home-relative-string> or { base: home|system, path: <abs> }
+#     path_from_env: NAME        # if NAME is set on host, its value overrides paths
+#                                #   (how non-standard installs are found)
+#     default_mode, allowed_modes: []
+#     create_if_missing: true    # wizard mkdir -p in scratch when mode=isolate
+#     requires: []               # extra isol8 layers, only if this resource enabled
+#
+#   env:
+#     name
+#     value: "<literal/placeholder>"          # OR
+#     select: { share: "...", isolate: "..." } # value chosen by the mode of…
+#     by: <resource-id>                         # …this resource
+# =============================================================================
+
+version: 1
+
+# Cross-cutting features that aren't a single tool. Default ON; candidates to be
+# upstreamed into isol8 builtins (see wizard doc §9). The wizard offers each as a
+# yes/no and emits the listed grants.
+globals:
+  - id: terminal
+    description: Forward terminal identity/locale so CLIs render color + unicode.
+    default: true
+    env_pass: [TERM, COLORTERM, TERM_PROGRAM, TERM_PROGRAM_VERSION, LANG, LC_ALL, LC_CTYPE]
+
+  - id: tls-trust
+    description: Let rustls tools (cargo, mise) validate certs via the macOS trust daemon.
+    default: true
+    requires: [integrations/keychain]   # under --home, RW keychain paths land in scratch
+    env:
+      - { name: SSL_CERT_FILE, value: "/etc/ssl/cert.pem" }   # belt-and-suspenders for openssl tools
+
+  - id: macos-git-shim
+    description: /usr/bin/git is an xcode-select shim; point it at CommandLineTools.
+    default: true
+    requires: [toolchains/apple-toolchain-core]
+    env:
+      - { name: DEVELOPER_DIR, value: "/Library/Developer/CommandLineTools" }
+
+# -----------------------------------------------------------------------------
+tools:
+
+  # ── VCS / shim ──────────────────────────────────────────────────────────────
+  - id: git
+    name: Git
+    category: vcs
+    executables: [git]
+    detect: { executables: [git] }     # always present on macOS (the shim)
+    provisioning: host
+    requires: [integrations/git]        # seeds ~/.gitconfig RO
+    default_preset: read-only
+    resources:
+      - id: cli
+        role: binary
+        description: CommandLineTools git (via macos-git-shim global)
+        paths: [ { base: system, path: /Library/Developer/CommandLineTools } ]
+        default_mode: ro
+        allowed_modes: [ro]
+      - id: gitconfig
+        role: config
+        description: user ~/.gitconfig (name/email/aliases)
+        paths: [.gitconfig]
+        default_mode: ro
+        allowed_modes: [ro, mask]
+
+  # ── Host toolchain via a manager (sdkman) ────────────────────────────────────
+  - id: java
+    name: Java / Maven / Gradle (sdkman)
+    category: toolchain
+    executables: [java, javac, mvn, gradle]
+    detect: { paths: [.sdkman], env: [SDKMAN_DIR], executables: [java] }
+    provisioning: host
+    default_preset: cache-rw          # run host JDK, SHARE the (expensive) dep caches
+    resources:
+      - id: sdkman
+        role: binary
+        description: sdkman candidates — JDK, maven, gradle, liquibase
+        paths: [.sdkman]
+        path_from_env: SDKMAN_DIR
+        default_mode: ro
+        allowed_modes: [ro, mask]
+      - id: maven-repo
+        role: cache
+        description: ~/.m2 — maven local repository + settings.xml
+        paths: [.m2]
+        default_mode: share
+        allowed_modes: [share, isolate, ro, mask]
+        create_if_missing: true
+      - id: gradle-cache
+        role: cache
+        description: ~/.gradle — gradle caches + wrapper dists
+        paths: [.gradle]
+        default_mode: share
+        allowed_modes: [share, isolate, ro, mask]
+        create_if_missing: true
+    env:
+      - { name: SDKMAN_DIR,  value: "{{detected:sdkman_dir}}" }
+      - { name: JAVA_HOME,   value: "{{detected:java_home}}" }
+      - { name: MAVEN_HOME,  value: "{{detected:sdkman_dir}}/candidates/maven/current" }
+      - { name: GRADLE_HOME, value: "{{detected:sdkman_dir}}/candidates/gradle/current" }
+      # NB: maven derives the repo from JVM user.home (real account home), so it
+      # naturally hits {{host_home}}/.m2 — keep maven-repo at ro/share, not isolate,
+      # unless you also set MAVEN_OPTS=-Duser.home={{scratch_home}}.
+
+  # ── Host toolchain, direct install (rustup) ──────────────────────────────────
+  - id: rust
+    name: Rust (rustup/cargo)
+    category: toolchain
+    executables: [cargo, rustc, rustup, clippy-driver, rustfmt]
+    detect: { paths: [.cargo, .rustup], env: [CARGO_HOME, RUSTUP_HOME] }
+    provisioning: host
+    requires: [toolchains/rust]
+    default_preset: cache-rw
+    resources:
+      - id: toolchains
+        role: binary
+        description: rustup toolchains + std (~/.rustup)
+        paths: [.rustup]
+        path_from_env: RUSTUP_HOME
+        default_mode: ro
+        allowed_modes: [ro, mask]
+      - id: cargo-home
+        role: binary
+        description: cargo bin + config (~/.cargo, minus the caches below)
+        paths: [.cargo]
+        path_from_env: CARGO_HOME
+        default_mode: ro
+        allowed_modes: [ro, share, mask]   # share = whole CARGO_HOME incl. bin
+      - id: registry-cache
+        role: cache
+        description: downloaded crates + git deps (CARGO_HOME registry/git)
+        paths: [.cargo/registry, .cargo/git]
+        path_from_env: CARGO_HOME          # joined with /registry, /git
+        default_mode: share
+        allowed_modes: [share, isolate, ro, mask]
+        create_if_missing: true
+    env:
+      - { name: RUSTUP_HOME, value: "{{detected:rustup_home}}" }
+      - name: CARGO_HOME
+        select:
+          share:   "{{detected:cargo_home}}"     # shared host cache (~/.cargo by default)
+          ro:      "{{detected:cargo_home}}"
+          isolate: "{{scratch_home}}/.cargo"      # disposable scratch cache
+        by: registry-cache
+
+  # ── Host toolchain (go) ──────────────────────────────────────────────────────
+  - id: go
+    name: Go
+    category: toolchain
+    executables: [go, gofmt]
+    detect: { paths: [go], env: [GOROOT, GOPATH], executables: [go] }
+    provisioning: host
+    requires: [toolchains/go]
+    default_preset: cache-rw
+    resources:
+      - id: sdk
+        role: binary
+        description: go SDK / GOROOT (system install — `go env GOROOT`)
+        paths: [ { base: system, path: "{{detected:go_root}}" } ]
+        default_mode: ro
+        allowed_modes: [ro, mask]
+      - id: gopath
+        role: binary
+        description: GOPATH bin + src (~/go, minus the mod cache below)
+        paths: [go]
+        path_from_env: GOPATH
+        default_mode: ro
+        allowed_modes: [ro, share, mask]
+      - id: mod-cache
+        role: cache
+        description: downloaded modules (GOMODCACHE = GOPATH/pkg/mod)
+        paths: [go/pkg/mod]
+        path_from_env: GOPATH              # joined with /pkg/mod
+        default_mode: share
+        allowed_modes: [share, isolate, ro, mask]
+        create_if_missing: true
+      - id: build-cache
+        role: cache
+        description: compiled object cache (GOCACHE; ~/.cache/go-build on Linux)
+        paths: [ { base: home, path: Library/Caches/go-build } ]
+        default_mode: share
+        allowed_modes: [share, isolate, mask]
+        create_if_missing: true
+    env:
+      - { name: GOROOT, value: "{{detected:go_root}}" }
+      - name: GOMODCACHE
+        select: { share: "{{detected:go_path}}/pkg/mod", isolate: "{{scratch_home}}/go/pkg/mod" }
+        by: mod-cache
+      - name: GOCACHE
+        select: { share: "{{host_home}}/Library/Caches/go-build", isolate: "{{scratch_home}}/Library/Caches/go-build" }
+        by: build-cache
+
+  # ── Sandbox-managed runtime (node via mise) ──────────────────────────────────
+  # Default strategy: ignore host nvm, install node into the scratch home so the
+  # RO host home can't break `npm i -g`. nvm shown below as the host alternative.
+  - id: node
+    name: Node.js (mise-managed)
+    category: runtime
+    executables: [node, npm, npx, corepack]
+    detect: { executables: [node], paths: [.nvm], env: [NVM_DIR] }
+    provisioning: sandbox
+    manager: mise
+    requires: [toolchains/node, toolchains/runtime-managers]
+    default_preset: managed
+    resources:
+      - id: toolchain
+        role: data
+        description: node installed by mise into the scratch home
+        paths: [.local/share/mise]         # scratch only
+        default_mode: isolate
+        allowed_modes: [isolate]
+        create_if_missing: true
+      - id: npm-global
+        role: global
+        description: npm -g prefix (so global CLIs are writable + runnable)
+        paths: [.npm-global]
+        default_mode: isolate
+        allowed_modes: [isolate, share]
+        create_if_missing: true
+      - id: user-bin
+        role: global
+        description: ~/.local/bin for installer-dropped CLIs
+        paths: [.local/bin]
+        default_mode: isolate
+        allowed_modes: [isolate]
+        create_if_missing: true
+    env:
+      - { name: NPM_CONFIG_PREFIX, value: "{{scratch_home}}/.npm-global" }
+    # PATH prepend the wizard adds to dev-agent for this tool:
+    path_prepend:
+      - "{{scratch_home}}/.local/share/mise/shims"
+      - "{{scratch_home}}/.npm-global/bin"
+      - "{{scratch_home}}/.local/bin"
+
+  # ── Meta-tool (mise) — the engine behind `managed` provisioning ──────────────
+  - id: mise
+    name: mise (runtime manager)
+    category: meta-tool
+    executables: [mise]
+    detect: { executables: [mise] }
+    provisioning: sandbox
+    requires: [toolchains/runtime-managers]
+    default_preset: managed
+    resources:
+      - id: state
+        role: state
+        description: mise installs/shims/state (must be pre-created — parent isn't writable)
+        paths: [.local/share/mise, .local/state/mise, .config/mise, .cache/mise]
+        default_mode: isolate
+        allowed_modes: [isolate]
+        create_if_missing: true
+
+  # ── Service tool (docker) — socket/daemon, default OFF ───────────────────────
+  - id: docker
+    name: Docker / Colima
+    category: service
+    executables: [docker, docker-compose]
+    detect: { executables: [docker], paths: [.docker, .colima] }
+    provisioning: service
+    default_preset: hidden            # highest blast radius — opt-in only
+    resources:
+      - id: config
+        role: config
+        description: ~/.docker (contexts, auths)
+        paths: [.docker]
+        default_mode: mask
+        allowed_modes: [mask, ro, share]
+    services:
+      - id: daemon
+        description: docker/colima daemon socket — shares the HOST engine + containers
+        # off=no socket; share=mount host socket RW. mask==off here.
+        default_mode: mask
+        allowed_modes: [mask, share]
+        requires: [integrations/docker]
+        socket:
+          # candidate host sockets; wizard picks the first that exists
+          - { base: system, path: /var/run/docker.sock }
+          - { base: home,   path: .colima/default/docker.sock }

@@ -111,9 +111,42 @@ pub fn confine_executable(profile: &mut Profile, cmd: &mut [String]) -> Result<(
             access: Access::Ro,
             r#match: MatchKind::Literal,
         });
+        // Node-based agents are launched via a thin script (often a PATH symlink)
+        // that `require.resolve`s sibling/nested packages at runtime. Granting only
+        // the entry script hides those, so resolution fails (e.g. codex's platform
+        // binary under node_modules/@openai/codex-darwin-arm64). Grant the enclosing
+        // node package directory ro so the whole package — incl. nested node_modules
+        // — is reachable. No-op for non-node binaries.
+        if let Some(pkg) = node_package_dir(&exe) {
+            profile.paths.push(PathGrant {
+                path: pkg.to_string_lossy().into_owned(),
+                access: Access::Ro,
+                r#match: MatchKind::Subpath,
+            });
+        }
         cmd[0] = exe_str;
     }
     Ok(())
+}
+
+/// If `exe` (after symlink resolution) lives inside a `node_modules` tree, return
+/// the enclosing package directory: `node_modules/<pkg>` or `node_modules/@scope/<pkg>`.
+/// Uses the *last* `node_modules` segment so the innermost package wins.
+fn node_package_dir(exe: &Path) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(exe).ok()?;
+    let comps: Vec<&std::ffi::OsStr> = real.iter().collect();
+    let nm = comps.iter().rposition(|c| *c == "node_modules")?;
+    // First path component after node_modules; if it's a scope (`@...`), include the next.
+    let first = comps.get(nm + 1)?;
+    let last = if first.to_string_lossy().starts_with('@') {
+        nm + 2
+    } else {
+        nm + 1
+    };
+    if last >= comps.len() {
+        return None;
+    }
+    Some(comps[..=last].iter().collect())
 }
 
 /// Resolve `name` to an absolute executable path, mirroring execvp: a name
@@ -174,6 +207,32 @@ mod tests {
             resolve_executable("/bin/sh").unwrap(),
             PathBuf::from("/bin/sh")
         );
+    }
+
+    #[test]
+    fn node_package_dir_finds_scoped_and_plain_packages() {
+        let raw = std::env::temp_dir().join(format!("isol8-nm-{}", std::process::id()));
+        std::fs::create_dir_all(&raw).unwrap();
+        // canonicalize so the expected paths match symlinked tmp (e.g. macOS /var→/private/var).
+        let base = std::fs::canonicalize(&raw).unwrap();
+        // scoped: node_modules/@openai/codex/bin/codex.js
+        let scoped = base.join("node_modules/@openai/codex/bin");
+        std::fs::create_dir_all(&scoped).unwrap();
+        let js = scoped.join("codex.js");
+        std::fs::write(&js, "//").unwrap();
+        assert_eq!(
+            node_package_dir(&js),
+            Some(base.join("node_modules/@openai/codex"))
+        );
+        // plain: node_modules/foo/lib/cli.js
+        let plain = base.join("node_modules/foo/lib");
+        std::fs::create_dir_all(&plain).unwrap();
+        let cli = plain.join("cli.js");
+        std::fs::write(&cli, "//").unwrap();
+        assert_eq!(node_package_dir(&cli), Some(base.join("node_modules/foo")));
+        // non-node path: no package dir.
+        assert_eq!(node_package_dir(Path::new("/bin/sh")), None);
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

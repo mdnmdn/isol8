@@ -2,6 +2,8 @@
 # Agent: Droid Droid CLI binary, Factory helpers, state, and config paths.
 # filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
 
+filter = { executables = ["droid"] }
+
 requires = ["macos/system-runtime"]
 
 paths = [

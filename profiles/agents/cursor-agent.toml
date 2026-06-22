@@ -2,6 +2,8 @@
 # Agent: Cursor Cursor CLI binary, state, config, and app bundle paths.
 # filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
 
+filter = { executables = ["cursor-agent", "agent"] }
+
 requires = ["integrations/keychain"]
 
 paths = [

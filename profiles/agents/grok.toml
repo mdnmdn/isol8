@@ -1,0 +1,15 @@
+# agents/grok
+# Agent: Grok Grok CLI binary, state, and config paths.
+# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+
+filter = { executables = ["grok"] }
+
+requires = ["integrations/keychain"]
+
+paths = [
+  # ~/.grok is grok's home: config.toml, auth.json, sessions, projects, and the
+  # versioned binary (bin/grok -> downloads/grok-*) all live here.
+  { path = "~/.grok", access = "rw" },
+  { path = "~/.config/grok", access = "rw" },
+  { path = "~/.cache/grok", access = "rw" },
+]
