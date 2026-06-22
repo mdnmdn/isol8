@@ -78,6 +78,11 @@ enforced on macOS via Seatbelt:
 - **config** — `isol8.toml`/`isol8.yaml` (cwd, `ISOL8_CONFIG_PATH`, or `~/.config/isol8/`),
   `ISOL8_*` env overrides, `isol8 init`. Defaults: `base` + OS system-runtime; `auto_profiles`
   selects agent layers by executable name (e.g. `claude` → `agents/claude-code`).
+- **Windows backend (Phase 1)** — token-based AppContainer (`DuplicateTokenEx` +
+  `SetTokenInformation(TokenAppContainerSid, TokenCapabilities)` +
+  `CreateProcessAsUserW`). Supports 12 capability SIDs. Tiers 2–3 deferred.
+  `%VAR%` expansion for path grants. System profile with `%SYSTEMROOT%`,
+  `%TEMP%` etc. embedded. Compiles on `x86_64-pc-windows-msvc`.
 - **CLI** — direct `isol8 CMD` (no `run`); `--show-policies` (layer stack tagged
   explicit/auto/required) / `--show-profiles`; `--no-seed`, `--env-pass`, `--set-env`;
   meta commands `@init`, `@profiles-list`, `@profiles-show`, `@diag`; `--profile-path`.
@@ -89,19 +94,21 @@ enforced on macOS via Seatbelt:
   (`just field-test`, scenarios 1–7) prove the OS actually enforces the policy.
 
 **Not yet:** the Linux (Landlock) backend still `bail!`s; `--env-file`,
-resource limits, and the Windows backend are unstarted.
+resource limits.
 Known gaps: macOS `git`/`cargo` need extra developer-tool paths beyond `macos-system`.
 
 ## Roadmap
 
-1. **Phase 1** — Core path + HOME MVP (Linux Landlock + macOS Seatbelt); profile
-   parser/merger; minimal env sanitization; opt-in scratch home.
+1. **Phase 1** — Core path + HOME MVP (Linux Landlock + macOS Seatbelt + Windows
+   AppContainer T1); profile parser/merger; minimal env sanitization; opt-in scratch
+   home. **(macOS + Windows done; Linux pending)**
 2. **Phase 2** — Full R3 env features, resource limits, `--dry-run` policy dump,
    WSL2 testing, docs.
 3. **Phase 3** — Network tiers N1→N2 (pasta)→N3 (helper + nftables); DNS/IPv6/MITM.
 4. **Phase 4** — Seccomp profiles, structured audit logs, integration test harness,
    hardening, hybrid isolation modes, packaging.
-5. **Phase 5** — Windows backend (AppContainer + Job Objects + WFP), best-effort HOME.
+5. **Phase 5** — Windows Job Objects + Low IL + WFP (Tiers 2–3), best-effort HOME,
+   `--elevate`/`--no-elevate` flags.
 
 ## Working directives
 

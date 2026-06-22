@@ -27,6 +27,8 @@ impl Config {
             "macos/system-runtime"
         } else if cfg!(target_os = "linux") {
             "linux/system-runtime"
+        } else if cfg!(target_os = "windows") {
+            "windows/system-runtime"
         } else {
             "base"
         };
@@ -67,6 +69,15 @@ pub fn discover_config_path() -> Option<PathBuf> {
             std::env::var_os("HOME")
                 .filter(|h| !h.is_empty())
                 .map(|h| PathBuf::from(h).join(".config"))
+        })
+        .or_else(|| {
+            if cfg!(windows) {
+                std::env::var_os("APPDATA")
+                    .filter(|h| !h.is_empty())
+                    .map(PathBuf::from)
+            } else {
+                None
+            }
         })?;
     for name in ["isol8.toml", "isol8.yaml", "isol8.yml"] {
         let candidate = config_home.join("isol8").join(name);
@@ -238,6 +249,15 @@ pub fn default_init_path(format: &str) -> PathBuf {
             std::env::var_os("HOME")
                 .filter(|h| !h.is_empty())
                 .map(|h| PathBuf::from(h).join(".config"))
+        })
+        .or_else(|| {
+            if cfg!(windows) {
+                std::env::var_os("APPDATA")
+                    .filter(|h| !h.is_empty())
+                    .map(PathBuf::from)
+            } else {
+                None
+            }
         })
         .map(|p| p.join("isol8").join(format!("isol8.{ext}")))
         .unwrap_or_else(|| PathBuf::from(format!("isol8.{ext}")))

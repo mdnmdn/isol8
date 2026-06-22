@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::profile::{MacosExtra, Profile, ProfileFilter};
+use crate::profile::{MacosExtra, Profile, ProfileFilter, WindowsExtra};
 
 /// Runtime context used to evaluate profile filters.
 #[derive(Debug, Clone)]
@@ -85,9 +85,23 @@ pub fn apply_policies(mut layer: Profile, ctx: &RunContext) -> Profile {
                 None => layer.macos = Some(m.clone()),
             }
         }
+        if let Some(w) = &policy.windows {
+            match &mut layer.windows {
+                Some(existing) => merge_windows(existing, w),
+                None => layer.windows = Some(w.clone()),
+            }
+        }
     }
     layer.policies.clear();
     layer
+}
+
+fn merge_windows(dst: &mut WindowsExtra, src: &WindowsExtra) {
+    for c in &src.capabilities {
+        if !dst.capabilities.contains(c) {
+            dst.capabilities.push(*c);
+        }
+    }
 }
 
 fn merge_macos(dst: &mut MacosExtra, src: &MacosExtra) {
@@ -113,6 +127,7 @@ pub fn apply_layer_filter(mut layer: Profile, ctx: &RunContext) -> Profile {
             layer.home_replace = None;
             layer.rewrite = None;
             layer.macos = None;
+            layer.windows = None;
             layer.policies.clear();
             return layer;
         }
@@ -123,7 +138,7 @@ pub fn apply_layer_filter(mut layer: Profile, ctx: &RunContext) -> Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::{Access, PathGrant, Policy};
+    use crate::profile::{Access, PathGrant, Policy, WindowsCapability, WindowsExtra};
 
     fn ctx(cmd: &str) -> RunContext {
         RunContext {
@@ -192,11 +207,69 @@ mod tests {
                     r#match: Default::default(),
                 }],
                 macos: None,
+                windows: None,
             }],
             ..Default::default()
         };
         let out = apply_layer_filter(layer, &ctx("claude"));
         assert_eq!(out.paths.len(), 1);
         assert!(out.policies.is_empty());
+    }
+
+    #[test]
+    fn merge_windows_union() {
+        let mut dst = WindowsExtra {
+            capabilities: vec![WindowsCapability::InternetClient],
+        };
+        let src = WindowsExtra {
+            capabilities: vec![
+                WindowsCapability::InternetClient, // duplicate
+                WindowsCapability::InternetClientServer,
+            ],
+        };
+        merge_windows(&mut dst, &src);
+        assert_eq!(dst.capabilities.len(), 2);
+        assert!(dst
+            .capabilities
+            .contains(&WindowsCapability::InternetClient));
+        assert!(dst
+            .capabilities
+            .contains(&WindowsCapability::InternetClientServer));
+    }
+
+    #[test]
+    fn apply_policies_folds_windows_caps() {
+        let layer = Profile {
+            policies: vec![Policy {
+                filter: ProfileFilter {
+                    executables: vec!["claude".into()],
+                    ..Default::default()
+                },
+                windows: Some(WindowsExtra {
+                    capabilities: vec![WindowsCapability::InternetClient],
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let out = apply_layer_filter(layer, &ctx("claude"));
+        let w = out.windows.unwrap();
+        assert_eq!(w.capabilities, vec![WindowsCapability::InternetClient]);
+    }
+
+    #[test]
+    fn apply_layer_filter_clears_windows_on_os_mismatch() {
+        let layer = Profile {
+            filter: Some(ProfileFilter {
+                os: vec!["linux".into()],
+                ..Default::default()
+            }),
+            windows: Some(WindowsExtra {
+                capabilities: vec![WindowsCapability::InternetClient],
+            }),
+            ..Default::default()
+        };
+        let out = apply_layer_filter(layer, &ctx("sh"));
+        assert!(out.windows.is_none());
     }
 }

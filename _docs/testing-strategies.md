@@ -6,11 +6,15 @@ sandbox against an ad-hoc home + profile and reports what was actually allowed o
 denied). Field tests are the ground truth — a profile is only correct if the OS
 enforces it.
 
-> Status: implemented (macOS). Unit + integration tests (`cargo test`) and the
-> field-test binary `src/bin/isol8-field-test.rs` (`just field-test`) are in place
-> and green on macOS; scenarios 1–7 enforce, the network scenario (8) is `SKIP`
-> until the net tiers land. The Linux path scenarios `SKIP` until that backend
-> exists. See [`AGENTS.md`](../AGENTS.md).
+> Status: implemented (macOS + Windows Phase 1). Unit + integration tests
+> (`cargo test`) and the field-test binary `src/bin/isol8-field-test.rs`
+> (`just field-test`) are in place and green on macOS; scenarios 1–7 enforce,
+> the network scenario (8) is `SKIP` until the net tiers land. The Linux path
+> scenarios `SKIP` until that backend exists. On Windows the field-test binary
+> compiles and runs env scenarios (6–7) through the AppContainer backend; path
+> scenarios (1–5) skip because ACL-level enforcement is deferred to Phase 5.
+> Building+linking the binary requires a host with the Windows SDK or mingw
+> toolchain. See [`AGENTS.md`](../AGENTS.md).
 
 ---
 
@@ -220,7 +224,7 @@ decides, per OS, whether a scenario runs, is expected to enforce, or is skipped:
 | Linux (no Landlock) | — | Path scenarios `SKIP` with reason (kernel too old). |
 | macOS | Seatbelt (`sandbox-exec`) | Run & enforce. |
 | WSL2 | Linux backend (if WSL kernel has Landlock) | Same as Linux; probe decides. |
-| Windows | AppContainer (Phase 5) | All `SKIP` until backend exists. |
+| Windows | AppContainer (Phase 1 — token-based) | Backend written, compiles; env scenarios run, path scenarios skip (needs ACL mod, Phase 5). Linking requires host toolchain. |
 
 The probe is the same one `select()` uses in `src/backends/mod.rs`, so field
 tests and the real CLI agree on what the current platform can do. A scenario that

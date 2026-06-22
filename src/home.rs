@@ -101,12 +101,29 @@ fn create_scratch_home() -> Result<PathBuf> {
     anyhow::bail!("failed to create a unique scratch home directory after 16 attempts");
 }
 
-/// The real `$HOME`, or `/` if unset (never panics on user environment).
+/// The real `$HOME`, or a platform-appropriate fallback (never panics on user
+/// environment). On Windows, falls back to `USERPROFILE` then `C:\`; on other
+/// platforms falls back to `/`.
 fn real_home() -> PathBuf {
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"))
+        .or_else(|| {
+            if cfg!(windows) {
+                std::env::var_os("USERPROFILE")
+                    .filter(|h| !h.is_empty())
+                    .map(PathBuf::from)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                PathBuf::from(r"C:\")
+            } else {
+                PathBuf::from("/")
+            }
+        })
 }
 
 /// Expand a leading `~` / `~/...` in `path` against `home`. Non-tilde paths pass

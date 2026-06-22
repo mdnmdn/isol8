@@ -8,6 +8,8 @@ use crate::profile::Profile;
 mod linux;
 #[cfg(target_os = "macos")]
 pub(crate) mod macos;
+#[cfg(windows)]
+pub(crate) mod windows;
 
 /// A platform sandbox implementation. Renders the merged `Profile` into the
 /// OS-native policy (Landlock ruleset, Seatbelt text, …) and execs the command.
@@ -31,9 +33,13 @@ pub fn select() -> Box<dyn Backend> {
     {
         Box::new(macos::MacosBackend)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
     {
-        compile_error!("no sandbox backend for this OS yet (Windows is deferred)")
+        Box::new(windows::WindowsBackend)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        compile_error!("no sandbox backend for this OS")
     }
 }
 
@@ -90,5 +96,10 @@ pub fn render_dry_run(profile: &Profile, env: &HashMap<String, String>, cmd: &[S
     {
         println!("\n-- generated Landlock rules --");
         print!("{}", linux::render_policy(profile));
+    }
+
+    #[cfg(windows)]
+    {
+        print!("{}", windows::render_policy(profile));
     }
 }

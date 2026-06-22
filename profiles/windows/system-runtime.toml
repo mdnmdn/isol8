@@ -1,0 +1,27 @@
+# windows/system-runtime
+# Windows system runtime essentials — system dirs, temp, and device paths.
+# Uses %VAR% tokens that the Windows backend expands at runtime.
+
+filter = { os = ["windows"] }
+
+requires = ["base"]
+
+paths = [
+  # Windows system directories (read-only).
+  { path = "%SYSTEMROOT%", access = "ro" },
+  { path = "%PROGRAMFILES%", access = "ro" },
+  { path = "%PROGRAMFILES(X86)%", access = "ro" },
+
+  # Per-user ProgramData (roaming app data, read-only).
+  { path = "%ALLUSERSPROFILE%", access = "ro" },
+
+  # Temp directories (read-write).
+  { path = "%TEMP%", access = "rw" },
+  { path = "%TMP%", access = "rw" },
+
+  # Root drive for path resolution.
+  { path = "%SYSTEMDRIVE%", access = "ro", match = "literal" },
+]
+
+[windows]
+capabilities = ["internet-client"]

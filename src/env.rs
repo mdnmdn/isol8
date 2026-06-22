@@ -5,7 +5,19 @@ use crate::profile::Profile;
 
 /// Variables passed through by default (R3.1). Everything else is dropped so host
 /// secrets (API keys, tokens) don't leak into the confined process.
+#[cfg(not(windows))]
 const ALLOWLIST: &[&str] = &["HOME", "PATH", "SHELL", "TMPDIR", "USER", "LOGNAME", "PWD"];
+
+#[cfg(windows)]
+const ALLOWLIST: &[&str] = &[
+    "HOME",
+    "PATH",
+    "USERNAME",
+    "SYSTEMROOT",
+    "TMP",
+    "TEMP",
+    "PWD",
+];
 
 /// Env var stamped on every confined process so a nested isol8 can detect that it is
 /// already inside a sandbox (Seatbelt cannot nest) and fail fast with a clear error.

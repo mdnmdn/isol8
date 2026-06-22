@@ -10,6 +10,7 @@ fn os_system_profile() -> &'static str {
     match std::env::consts::OS {
         "macos" => "macos/system-runtime",
         "linux" => "linux/system-runtime",
+        "windows" => "windows/system-runtime",
         _ => "base",
     }
 }
