@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Version helpers for isol8 releases.
 #
-#   bump <version>   — validate, lint+test, update Cargo.toml, commit and tag
+#   bump <version>   — validate, lint+test, update Cargo.toml + Cargo.lock, commit and tag
 #   verify [tag]     — ensure tag (e.g. v0.3.0) matches Cargo.toml (for CI)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CARGO_TOML="${REPO_ROOT}/Cargo.toml"
+CARGO_LOCK="${REPO_ROOT}/Cargo.lock"
 
 usage() {
   cat <<'EOF' >&2
@@ -71,7 +72,10 @@ cmd_bump() {
   echo "updating Cargo.toml: ${current} -> ${version}"
   update_cargo_version "${version}"
 
-  git add Cargo.toml Cargo.lock
+  echo "syncing Cargo.lock..."
+  cargo generate-lockfile --quiet
+
+  git add "${CARGO_TOML}" "${CARGO_LOCK}"
   git commit -m "chore: release v${version}"
   git tag -a "v${version}" -m "v${version}"
 
