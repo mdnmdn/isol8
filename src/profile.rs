@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::cli::RunArgs;
+use crate::error::{Error, Result, ResultExt};
 use crate::filter::{self, RunContext};
 use crate::home::{self, EffectiveHome};
+use crate::sandbox::Spec;
 
 /// Per-path access level. Default is deny (`None`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -37,11 +37,15 @@ pub enum MatchKind {
     Regex,
 }
 
+/// A single path rule: what path, what access level, and how the path is matched.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PathGrant {
+    /// Filesystem path subject to this grant (may contain `~` or `#HOME` tokens).
     pub path: String,
+    /// Access level to grant (or deny) for this path.
     pub access: Access,
+    /// How `path` is interpreted against the filesystem (default: `subpath`).
     #[serde(default, rename = "match")]
     pub r#match: MatchKind,
 }
@@ -50,19 +54,33 @@ pub struct PathGrant {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Capability {
+    /// Allow Mach service name lookups via the bootstrap server.
     MachLookup,
+    /// Allow registration of Mach service names.
     MachRegister,
+    /// Allow opening IOKit user-client connections.
     IokitOpen,
+    /// Allow reading sysctl values.
     SysctlRead,
+    /// Allow executing other processes.
     ProcessExec,
+    /// Allow forking child processes.
     ProcessFork,
+    /// Allow querying process info (e.g. `sysctl proc_info`).
     ProcessInfo,
+    /// Allow sending signals to other processes.
     Signal,
+    /// Allow allocating a pseudo-terminal device.
     PseudoTty,
+    /// Allow reading `CFPreferences` / `NSUserDefaults`.
     UserPreferenceRead,
+    /// Allow writing `CFPreferences` / `NSUserDefaults`.
     UserPreferenceWrite,
+    /// Allow POSIX shared-memory operations.
     IpcPosixShm,
+    /// Allow System V semaphore operations.
     SysvSem,
+    /// Allow access to the pasteboard (clipboard).
     Pasteboard,
 }
 
@@ -70,17 +88,29 @@ pub enum Capability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WindowsCapability {
+    /// Outbound internet access (TCP/UDP client).
     InternetClient,
+    /// Bidirectional internet access (client + server).
     InternetClientServer,
+    /// Access to private/intranet network resources.
     PrivateNetworkClientServer,
+    /// Access to the Documents library.
     DocumentsLibrary,
+    /// Access to the Pictures library.
     PicturesLibrary,
+    /// Access to the Videos library.
     VideosLibrary,
+    /// Access to the Music library.
     MusicLibrary,
+    /// Use of Windows integrated authentication (Kerberos/NTLM).
     EnterpriseAuthentication,
+    /// Access to shared user certificate stores.
     SharedUserCertificates,
+    /// Access to removable storage devices.
     RemovableStorage,
+    /// Access to the Appointments (calendar) store.
     Appointments,
+    /// Access to the Contacts store.
     Contacts,
 }
 
@@ -89,6 +119,7 @@ pub enum WindowsCapability {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MacosExtra {
+    /// Seatbelt operation classes to allow beyond filesystem grants.
     #[serde(default)]
     pub capabilities: Vec<Capability>,
     /// Verbatim Seatbelt rules, concatenated after generated rules.
@@ -100,6 +131,7 @@ pub struct MacosExtra {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowsExtra {
+    /// AppContainer capability SIDs to grant the sandboxed process.
     #[serde(default)]
     pub capabilities: Vec<WindowsCapability>,
 }
@@ -108,12 +140,16 @@ pub struct WindowsExtra {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
+    /// Run-context filter that gates this policy block (empty = always applies).
     #[serde(default)]
     pub filter: ProfileFilter,
+    /// Path grants applied when this policy's filter matches.
     #[serde(default)]
     pub paths: Vec<PathGrant>,
+    /// macOS-specific capability grants applied when this policy's filter matches.
     #[serde(default)]
     pub macos: Option<MacosExtra>,
+    /// Windows-specific capability grants applied when this policy's filter matches.
     #[serde(default)]
     pub windows: Option<WindowsExtra>,
 }
@@ -122,19 +158,25 @@ pub struct Policy {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileFilter {
+    /// Operating system names that activate this layer/policy (e.g. `["linux", "macos"]`).
     #[serde(default)]
     pub os: Vec<String>,
+    /// CPU architectures that activate this layer/policy (e.g. `["x86_64", "aarch64"]`).
     #[serde(default)]
     pub arch: Vec<String>,
+    /// Command basename patterns that trigger auto-selection of this layer.
     #[serde(default)]
     pub executables: Vec<String>,
 }
 
+/// HOME substitution configuration: activate, path, and optional seed entries (R4).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HomeReplace {
+    /// Whether home replacement is active for this layer.
     #[serde(default)]
     pub enabled: bool,
+    /// Create a temporary scratch directory as the replacement home automatically.
     #[serde(default)]
     pub auto_scratch: bool,
     /// Explicit replacement home (overridden by `--home`).
@@ -148,11 +190,11 @@ pub struct HomeReplace {
 /// Command rewrite: ensure certain arguments are present in the confined command.
 ///
 /// Gated by the layer's `filter` (e.g. `executables = ["claude"]`), so it only
-/// applies to matching commands. Missing args are inserted right after argv[0].
+/// applies to matching commands. Missing args are inserted right after `argv[0]`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rewrite {
-    /// Arguments that must be present; each is inserted after argv[0] if absent.
+    /// Arguments that must be present; each is inserted after `argv[0]` if absent.
     #[serde(default)]
     pub ensure_args: Vec<String>,
 }
@@ -171,18 +213,25 @@ pub struct Profile {
     /// context (empty lists = no constraint on that axis).
     #[serde(default)]
     pub filter: Option<ProfileFilter>,
+    /// Conditional policy blocks, each gated by its own filter.
     #[serde(default)]
     pub policies: Vec<Policy>,
+    /// Unconditional path grants for this layer.
     #[serde(default)]
     pub paths: Vec<PathGrant>,
+    /// Default environment variables contributed by this layer (first-writer-wins on merge).
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// HOME substitution settings for this layer.
     #[serde(default)]
     pub home_replace: Option<HomeReplace>,
+    /// Command argument rewrites applied when this layer's filter matches.
     #[serde(default)]
     pub rewrite: Option<Rewrite>,
+    /// macOS-only Seatbelt extras (capabilities + raw SBPL) for this layer.
     #[serde(default)]
     pub macos: Option<MacosExtra>,
+    /// Windows-only AppContainer extras for this layer.
     #[serde(default)]
     pub windows: Option<WindowsExtra>,
 }
@@ -193,8 +242,11 @@ include!(concat!(env!("OUT_DIR"), "/profiles_embedded.rs"));
 /// Where a profile layer was loaded from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayerSource {
+    /// Embedded at compile time from `profiles/**/*.toml` via `build.rs`.
     Builtin,
+    /// Loaded from the user's config directory (`~/.config/isol8/profiles/`).
     UserConfig,
+    /// Loaded from an explicit `--profile-path` argument (path stored here).
     ProfilePath(String),
 }
 
@@ -210,6 +262,7 @@ pub struct LayerRegistry {
 }
 
 impl LayerRegistry {
+    /// Build a registry from builtin layers, user config, and any explicit `--profile-path` entries.
     pub fn load(profile_paths: &[String]) -> Result<Self> {
         let mut entries = HashMap::new();
         for (name, body) in BUILTIN_PROFILES {
@@ -229,6 +282,7 @@ impl LayerRegistry {
         Ok(Self { entries })
     }
 
+    /// Return all registered profiles as a cloned name-to-`Profile` map.
     pub fn profiles(&self) -> HashMap<String, Profile> {
         self.entries
             .iter()
@@ -236,14 +290,17 @@ impl LayerRegistry {
             .collect()
     }
 
+    /// Look up a single layer by name, returning a reference to its `Profile`.
     pub fn get(&self, name: &str) -> Option<&Profile> {
         self.entries.get(name).map(|e| &e.profile)
     }
 
+    /// Return the load source for a layer by name.
     pub fn source(&self, name: &str) -> Option<&LayerSource> {
         self.entries.get(name).map(|e| &e.source)
     }
 
+    /// Return all layer names and their sources, sorted alphabetically.
     pub fn list(&self) -> Vec<(String, LayerSource)> {
         let mut names: Vec<_> = self
             .entries
@@ -258,7 +315,7 @@ impl LayerRegistry {
 /// Parse a TOML layer body, attaching the layer name for clear error messages.
 fn parse_layer(name: &str, body: &str, source: &str) -> Result<Profile> {
     toml::from_str::<Profile>(body)
-        .with_context(|| format!("failed to parse profile layer '{name}' ({source})"))
+        .ctx(|| format!("failed to parse profile layer '{name}' ({source})"))
 }
 
 fn user_config_profiles_dir() -> Option<std::path::PathBuf> {
@@ -287,14 +344,16 @@ fn load_user_layers(entries: &mut HashMap<String, LayerEntry>) -> Result<()> {
 fn load_profile_path(path: &str, entries: &mut HashMap<String, LayerEntry>) -> Result<()> {
     let p = std::path::Path::new(path);
     if !p.exists() {
-        bail!("profile-path does not exist: {path}");
+        return Err(Error::Profile(format!(
+            "profile-path does not exist: {path}"
+        )));
     }
     let source = LayerSource::ProfilePath(path.to_string());
     if p.is_file() {
         let name = p
             .file_stem()
             .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow!("invalid profile file '{}'", p.display()))?;
+            .ok_or_else(|| Error::Profile(format!("invalid profile file '{}'", p.display())))?;
         load_toml_file(p, name, source, entries)?;
     } else {
         load_toml_tree(p, p, source, entries)?;
@@ -327,8 +386,8 @@ fn load_toml_file(
     source: LayerSource,
     entries: &mut HashMap<String, LayerEntry>,
 ) -> Result<()> {
-    let body = std::fs::read_to_string(path)
-        .with_context(|| format!("reading profile '{}'", path.display()))?;
+    let body =
+        std::fs::read_to_string(path).ctx(|| format!("reading profile '{}'", path.display()))?;
     let layer = parse_layer(name, &body, &path.display().to_string())?;
     entries.insert(
         name.to_string(),
@@ -342,7 +401,7 @@ fn load_toml_file(
 
 /// Select layer names: explicit profiles + auto-matched executable filters.
 pub fn select_layer_names(
-    run: &RunArgs,
+    spec: &Spec,
     registry: &LayerRegistry,
     ctx: &RunContext,
 ) -> Result<Vec<String>> {
@@ -351,7 +410,9 @@ pub fn select_layer_names(
 
     let mut push = |name: &str| -> Result<()> {
         if !registry.entries.contains_key(name) {
-            bail!("unknown profile '{name}' (not a built-in, user, or profile-path layer)");
+            return Err(Error::Profile(format!(
+                "unknown profile '{name}' (not a built-in, user, or profile-path layer)"
+            )));
         }
         if seen.insert(name.to_string()) {
             selected.push(name.to_string());
@@ -359,11 +420,11 @@ pub fn select_layer_names(
         Ok(())
     };
 
-    for name in run.profiles() {
+    for name in &spec.profiles {
         push(name)?;
     }
 
-    if run.auto_profiles() {
+    if spec.auto_profiles {
         let mut auto_names: Vec<String> = registry
             .entries
             .iter()
@@ -424,13 +485,17 @@ pub fn resolve_requires(
                 cycle.push(name.to_string());
                 let from = cycle.iter().position(|n| n == name).unwrap_or(0);
                 let path = cycle[from..].join(" -> ");
-                bail!("profile dependency cycle detected: {path}");
+                return Err(Error::Profile(format!(
+                    "profile dependency cycle detected: {path}"
+                )));
             }
             None => {}
         }
-        let layer = all
-            .get(name)
-            .ok_or_else(|| anyhow!("unknown profile layer '{name}' referenced via requires"))?;
+        let layer = all.get(name).ok_or_else(|| {
+            Error::Profile(format!(
+                "unknown profile layer '{name}' referenced via requires"
+            ))
+        })?;
         state.insert(name.to_string(), State::Gray);
         stack.push(name.to_string());
         for dep in &layer.requires {
@@ -445,7 +510,9 @@ pub fn resolve_requires(
     let mut stack: Vec<String> = Vec::new();
     for name in selected {
         if !all.contains_key(name) {
-            bail!("unknown profile '{name}' (not a built-in or user layer)");
+            return Err(Error::Profile(format!(
+                "unknown profile '{name}' (not a built-in or user layer)"
+            )));
         }
         visit(name, all, &mut state, &mut order, &mut stack)?;
     }
@@ -589,7 +656,7 @@ pub fn merge(layers: &[Profile]) -> Profile {
 }
 
 /// Apply a merged `rewrite` to the confined command: insert each missing
-/// `ensure_args` entry right after argv[0]. Already-present args are left alone.
+/// `ensure_args` entry right after `argv[0]`. Already-present args are left alone.
 ///
 /// ponytail: exact whole-arg match for "present"; doesn't understand `--flag=val`
 /// aliases — add normalization only if a profile actually needs it.
@@ -614,25 +681,25 @@ pub fn apply_rewrite(cmd: &[String], rewrite: &Option<Rewrite>) -> Vec<String> {
 ///
 /// The cwd grant is pushed first so an explicit `--add-dirs-*` on the same path
 /// still wins (within a layer the later grant for a `(path, match)` key overrides).
-fn overrides_layer(run: &RunArgs) -> Profile {
+fn overrides_layer(spec: &Spec) -> Profile {
     let mut paths = Vec::new();
     // cwd auto-grant: read-write by default, read-only with `--cwd-ro`. Skipped if
     // the cwd can't be read (e.g. it was deleted) — no grant, no panic.
     if let Ok(cwd) = std::env::current_dir() {
         paths.push(PathGrant {
             path: cwd.to_string_lossy().into_owned(),
-            access: if run.cwd_ro() { Access::Ro } else { Access::Rw },
+            access: if spec.cwd_ro { Access::Ro } else { Access::Rw },
             r#match: MatchKind::Subpath,
         });
     }
-    for dir in run.add_dirs_rw() {
+    for dir in &spec.add_dirs_rw {
         paths.push(PathGrant {
             path: dir.clone(),
             access: Access::Rw,
             r#match: MatchKind::Subpath,
         });
     }
-    for dir in run.add_dirs_ro() {
+    for dir in &spec.add_dirs_ro {
         paths.push(PathGrant {
             path: dir.clone(),
             access: Access::Ro,
@@ -646,10 +713,10 @@ fn overrides_layer(run: &RunArgs) -> Profile {
 }
 
 /// Resolve selected layers (deps-first), applying filters. No merge or `~` expansion.
-pub fn resolved_layers(run: &RunArgs) -> Result<Vec<Profile>> {
-    let registry = LayerRegistry::load(run.profile_paths())?;
-    let ctx = RunContext::from_cmd(&run.cmd);
-    let names = select_layer_names(run, &registry, &ctx)?;
+pub fn resolved_layers(spec: &Spec) -> Result<Vec<Profile>> {
+    let registry = LayerRegistry::load(&spec.profile_paths)?;
+    let ctx = RunContext::from_cmd(&spec.cmd);
+    let names = select_layer_names(spec, &registry, &ctx)?;
     let layers = resolve_requires(&names, &registry.profiles())?;
     Ok(layers
         .into_iter()
@@ -659,7 +726,7 @@ pub fn resolved_layers(run: &RunArgs) -> Result<Vec<Profile>> {
 
 /// Merge resolved layers + invocation overrides into one effective profile.
 pub fn load_merged(
-    run: &RunArgs,
+    spec: &Spec,
     layers: &[Profile],
     home: &EffectiveHome,
     _ctx: &RunContext,
@@ -675,7 +742,7 @@ pub fn load_merged(
         })
         .collect();
 
-    let mut over = overrides_layer(run);
+    let mut over = overrides_layer(spec);
     for grant in &mut over.paths {
         grant.path = home::expand_grant(&grant.path, &home.path);
     }
@@ -684,15 +751,15 @@ pub fn load_merged(
 }
 
 /// Load profile layers, resolve inheritance, expand `~`, merge deny-first.
-pub fn load(run: &RunArgs, home: &EffectiveHome) -> Result<Profile> {
-    let layers = resolved_layers(run)?;
-    let ctx = RunContext::from_cmd(&run.cmd);
-    load_merged(run, &layers, home, &ctx)
+pub fn load(spec: &Spec, home: &EffectiveHome) -> Result<Profile> {
+    let layers = resolved_layers(spec)?;
+    let ctx = RunContext::from_cmd(&spec.cmd);
+    load_merged(spec, &layers, home, &ctx)
 }
 
 /// Serialize a layer back to TOML for `profiles show`.
 pub fn format_layer(profile: &Profile) -> Result<String> {
-    toml::to_string_pretty(profile).context("serializing profile layer")
+    toml::to_string_pretty(profile).ctx(|| "serializing profile layer")
 }
 
 #[cfg(test)]
@@ -843,7 +910,7 @@ mod tests {
         assert_eq!(m.raw, "(allow a)\n(allow b)\n"); // layer order
     }
 
-    fn run_args(cwd_ro: bool) -> RunArgs {
+    fn run_args(cwd_ro: bool) -> Spec {
         crate::cli::run_from(
             crate::cli::ProfileOpts {
                 cwd_ro,

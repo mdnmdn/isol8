@@ -2,13 +2,12 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
-
-use crate::cli::RunArgs;
 use crate::env;
+use crate::error::{Error, Result};
 use crate::filter::RunContext;
 use crate::home::{self, EffectiveHome};
 use crate::profile::{self, Access, LayerRegistry, MatchKind, PathGrant, Profile};
+use crate::sandbox::Spec;
 
 /// How a layer entered the resolved stack (for `--show-policies` provenance).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +21,7 @@ pub enum LayerOrigin {
 }
 
 impl LayerOrigin {
+    /// A lowercase label for this provenance (`explicit` / `auto` / `required`).
     pub fn label(self) -> &'static str {
         match self {
             LayerOrigin::Explicit => "explicit",
@@ -35,24 +35,27 @@ impl LayerOrigin {
 pub struct EffectivePolicy {
     /// Resolved layer stack in merge order (deps-first), tagged with provenance.
     pub layer_names: Vec<(String, LayerOrigin)>,
+    /// The merged, deny-first profile with all path grants resolved.
     pub profile: Profile,
+    /// The sanitized environment for the confined process.
     pub env: std::collections::HashMap<String, String>,
+    /// The effective `$HOME` (and its seed list) for the run.
     pub home: EffectiveHome,
     /// The command after profile `rewrite` rules are applied (what actually runs).
     pub cmd: Vec<String>,
 }
 
 /// Resolve layer stack, home, merged profile, and env without spawning.
-pub fn effective_policy(run: &RunArgs) -> Result<EffectivePolicy> {
-    let registry = LayerRegistry::load(run.profile_paths())?;
-    let ctx = RunContext::from_cmd(&run.cmd);
-    let selected = profile::select_layer_names(run, &registry, &ctx)?;
+pub fn effective_policy(spec: &Spec) -> Result<EffectivePolicy> {
+    let registry = LayerRegistry::load(&spec.profile_paths)?;
+    let ctx = RunContext::from_cmd(&spec.cmd);
+    let selected = profile::select_layer_names(spec, &registry, &ctx)?;
     let all = registry.profiles();
     let resolved = profile::resolve_requires(&selected, &all)?;
 
     // Classify provenance: explicit (named) > auto (selected but not named) > required.
     let explicit: std::collections::HashSet<&str> =
-        run.profiles().iter().map(String::as_str).collect();
+        spec.profiles.iter().map(String::as_str).collect();
     let selected_set: std::collections::HashSet<&str> =
         selected.iter().map(String::as_str).collect();
     let layer_names: Vec<(String, LayerOrigin)> = resolved
@@ -70,11 +73,11 @@ pub fn effective_policy(run: &RunArgs) -> Result<EffectivePolicy> {
         .collect();
 
     let layers: Vec<Profile> = resolved.into_iter().map(|(_, p)| p).collect();
-    let effective_home = home::resolve(run, &layers)?;
-    let merged = profile::load_merged(run, &layers, &effective_home, &ctx)?;
-    let set_env = parse_set_env(run.set_env())?;
-    let env_map = env::build_minimal(&merged, &effective_home.path, run.env_pass(), &set_env);
-    let cmd = profile::apply_rewrite(&run.cmd, &merged.rewrite);
+    let effective_home = home::resolve(spec, &layers)?;
+    let merged = profile::load_merged(spec, &layers, &effective_home, &ctx)?;
+    let set_env = parse_set_env(&spec.set_env)?;
+    let env_map = env::build_minimal(&merged, &effective_home.path, &spec.env_pass, &set_env);
+    let cmd = profile::apply_rewrite(&spec.cmd, &merged.rewrite);
     Ok(EffectivePolicy {
         layer_names,
         profile: merged,
@@ -90,7 +93,9 @@ fn parse_set_env(raw: &[String]) -> Result<Vec<(String, String)>> {
     raw.iter()
         .map(|e| match e.split_once('=') {
             Some((k, v)) if !k.is_empty() => Ok((k.to_string(), v.to_string())),
-            _ => bail!("invalid --set-env {e:?} (expected NAME=VALUE)"),
+            _ => Err(Error::InvalidEnv(format!(
+                "--set-env {e:?} (expected NAME=VALUE)"
+            ))),
         })
         .collect()
 }
@@ -163,7 +168,7 @@ fn resolve_executable(name: &str) -> Result<PathBuf> {
         if is_executable_file(&abs) {
             return Ok(abs);
         }
-        bail!("command {name:?} not found");
+        return Err(Error::CommandNotFound(name.to_string()));
     }
     let path = std::env::var_os("PATH").unwrap_or_default();
     for dir in std::env::split_paths(&path) {
@@ -175,7 +180,7 @@ fn resolve_executable(name: &str) -> Result<PathBuf> {
             return Ok(cand);
         }
     }
-    bail!("command {name:?} not found");
+    Err(Error::CommandNotFound(name.to_string()))
 }
 
 /// True if `p` exists, is a regular file (symlinks followed), and is executable.

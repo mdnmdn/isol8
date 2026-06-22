@@ -18,7 +18,8 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use crate::error::{Error, Result, ResultExt};
+use crate::sandbox::SandboxChild;
 use windows::core::PCWSTR;
 use windows::core::PWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -66,9 +67,11 @@ impl Backend for WindowsBackend {
         profile: &Profile,
         env: &HashMap<String, String>,
         cmd: &[String],
-    ) -> Result<i32> {
+    ) -> Result<SandboxChild> {
         if cmd.is_empty() {
-            bail!("no command given to run under the sandbox");
+            return Err(Error::Message(
+                "no command given to run under the sandbox".into(),
+            ));
         }
 
         let caps = build_capability_sids(
@@ -81,7 +84,11 @@ impl Backend for WindowsBackend {
 
         let result = launch_appcontainer(&caps, env, cmd);
         free_capability_sids(&caps);
-        result
+        result.map(SandboxChild::exited)
+    }
+
+    fn render_policy(&self, profile: &Profile) -> String {
+        render_policy(profile)
     }
 }
 
@@ -97,7 +104,7 @@ fn launch_appcontainer(
             TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT | TOKEN_ASSIGN_PRIMARY,
             &mut proc_token as *mut HANDLE,
         )
-        .context("OpenProcessToken failed")?;
+        .ctx(|| "OpenProcessToken failed")?;
 
         let mut dup_token = HANDLE(std::ptr::null_mut());
         DuplicateTokenEx(
@@ -108,7 +115,7 @@ fn launch_appcontainer(
             TOKEN_TYPE(1), // TokenPrimary
             &mut dup_token as *mut HANDLE,
         )
-        .context("DuplicateTokenEx failed")?;
+        .ctx(|| "DuplicateTokenEx failed")?;
 
         let _ = CloseHandle(proc_token);
 
@@ -128,7 +135,7 @@ fn launch_appcontainer(
             0,
             &mut pkg_sid as *mut windows::Win32::Security::PSID,
         )
-        .context("AllocateAndInitializeSid (package SID) failed")?;
+        .ctx(|| "AllocateAndInitializeSid (package SID) failed")?;
 
         // Set AppContainer SID on the token.
         let ac_info = TOKEN_APPCONTAINER_INFORMATION {
@@ -140,7 +147,7 @@ fn launch_appcontainer(
             &ac_info as *const _ as *const c_void,
             std::mem::size_of::<TOKEN_APPCONTAINER_INFORMATION>() as u32,
         )
-        .context("SetTokenInformation(TokenAppContainerSid) failed")?;
+        .ctx(|| "SetTokenInformation(TokenAppContainerSid) failed")?;
 
         // Set capabilities on the token.
         if !caps.is_empty() {
@@ -151,7 +158,7 @@ fn launch_appcontainer(
                 caps_buf.as_ptr() as *const c_void,
                 caps_buf.len() as u32,
             )
-            .context("SetTokenInformation(TokenCapabilities) failed")?;
+            .ctx(|| "SetTokenInformation(TokenCapabilities) failed")?;
         }
 
         // Build command line and env.
@@ -177,13 +184,13 @@ fn launch_appcontainer(
             &mut si as *mut STARTUPINFOW,
             &mut pi as *mut PROCESS_INFORMATION,
         )
-        .context("CreateProcessAsUserW failed")?;
+        .ctx(|| "CreateProcessAsUserW failed")?;
 
         WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
 
         let mut exit_code: u32 = 0;
         GetExitCodeProcess(pi.hProcess, &mut exit_code as *mut u32)
-            .context("GetExitCodeProcess failed")?;
+            .ctx(|| "GetExitCodeProcess failed")?;
 
         let _ = CloseHandle(pi.hProcess);
         let _ = CloseHandle(pi.hThread);
@@ -202,7 +209,7 @@ fn set_token_info(
 ) -> Result<()> {
     unsafe {
         windows::Win32::Security::SetTokenInformation(token, info_class, value, value_len)
-            .context("SetTokenInformation system call failed")
+            .ctx(|| "SetTokenInformation system call failed")
     }
 }
 

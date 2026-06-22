@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
-
+use crate::error::Result;
 use crate::profile::Profile;
+use crate::sandbox::SandboxChild;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -14,13 +14,20 @@ pub(crate) mod windows;
 /// A platform sandbox implementation. Renders the merged `Profile` into the
 /// OS-native policy (Landlock ruleset, Seatbelt text, …) and execs the command.
 pub trait Backend {
-    /// Apply the policy and run `cmd`, returning its exit code.
+    /// Apply the policy and launch `cmd`, returning a non-blocking handle.
+    ///
+    /// The child is *not* waited on; call [`SandboxChild::wait`] to block and
+    /// collect the exit code (which the handle interprets per backend).
     fn spawn(
         &self,
         profile: &Profile,
         env: &HashMap<String, String>,
         cmd: &[String],
-    ) -> Result<i32>;
+    ) -> Result<SandboxChild>;
+
+    /// Render the merged profile into the OS-native policy text (Seatbelt SBPL,
+    /// Landlock rules, …) for dry-run / introspection — no side effects.
+    fn render_policy(&self, profile: &Profile) -> String;
 }
 
 /// Select the backend for the current OS.
@@ -40,66 +47,5 @@ pub fn select() -> Box<dyn Backend> {
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         compile_error!("no sandbox backend for this OS")
-    }
-}
-
-/// Print the effective policy for `--dry-run`: the merged path grants, the sorted
-/// sanitized env, the resolved HOME, the target command, and (on macOS) the
-/// generated SBPL. Plain text — structured/JSON output is Phase 4.
-pub fn render_dry_run(profile: &Profile, env: &HashMap<String, String>, cmd: &[String]) {
-    println!("== isol8 effective policy (dry-run) ==");
-
-    println!("\n-- path grants --");
-    if profile.paths.is_empty() {
-        println!("  (none — deny-by-default; nothing is reachable)");
-    } else {
-        for g in &profile.paths {
-            println!(
-                "  {:<8} {:<8} {}",
-                format!("{:?}", g.access).to_lowercase(),
-                format!("{:?}", g.r#match).to_lowercase(),
-                g.path
-            );
-        }
-    }
-
-    println!("\n-- environment --");
-    let mut keys: Vec<&String> = env.keys().collect();
-    keys.sort();
-    let home = env.get("HOME").map(String::as_str).unwrap_or("(unset)");
-    println!("  HOME = {home}");
-    if keys.is_empty() {
-        println!("  (empty)");
-    } else {
-        for k in keys {
-            if k == "HOME" {
-                continue; // already printed first
-            }
-            println!("  {k} = {}", env[k]);
-        }
-    }
-
-    println!("\n-- command --");
-    if cmd.is_empty() {
-        println!("  (none)");
-    } else {
-        println!("  {}", cmd.join(" "));
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        println!("\n-- generated Seatbelt policy (SBPL) --");
-        print!("{}", macos::render_policy(profile));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        println!("\n-- generated Landlock rules --");
-        print!("{}", linux::render_policy(profile));
-    }
-
-    #[cfg(windows)]
-    {
-        print!("{}", windows::render_policy(profile));
     }
 }

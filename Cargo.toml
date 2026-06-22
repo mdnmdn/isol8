@@ -13,18 +13,26 @@ path = "src/lib.rs"
 [[bin]]
 name = "isol8"
 path = "src/main.rs"
+required-features = ["cli"]
 
 # Real-sandbox field tests (see _docs/testing-strategies.md §3). Run: `just field-test`.
 [[bin]]
 name = "isol8-field-test"
 path = "src/bin/isol8-field-test.rs"
 
+[features]
+default = ["cli"]
+# The CLI binary's arg parsing + YAML config; an embedder using only the engine API
+# can drop these with `default-features = false`.
+cli = ["dep:clap", "dep:serde_yaml"]
+
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-serde_yaml = "0.9"
+serde_yaml = { version = "0.9", optional = true }
 anyhow = "1"
+thiserror = "1"
 
 [build-dependencies]
 # build.rs only walks profiles/; no extra deps needed.

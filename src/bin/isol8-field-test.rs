@@ -103,7 +103,10 @@ fn profile_with(extra: Vec<PathGrant>) -> Profile {
 fn run(profile: &Profile, home: &Path, cmd: &[&str]) -> i32 {
     let env = build_minimal(profile, home, &[], &[]);
     let cmd: Vec<String> = cmd.iter().map(|s| s.to_string()).collect();
-    match backends::select().spawn(profile, &env, &cmd) {
+    match backends::select()
+        .spawn(profile, &env, &cmd)
+        .and_then(|mut child| child.wait())
+    {
         Ok(code) => code,
         Err(e) => {
             eprintln!("    spawn error: {e:#}");

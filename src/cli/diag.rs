@@ -16,15 +16,15 @@
 
 use anyhow::Result;
 
-use crate::cli::RunArgs;
+use crate::sandbox::Spec;
 
 #[cfg(target_os = "macos")]
-pub fn run(args: &RunArgs) -> Result<()> {
+pub fn run(args: &Spec) -> Result<()> {
     macos::run(args)
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn run(_args: &RunArgs) -> Result<()> {
+pub fn run(_args: &Spec) -> Result<()> {
     anyhow::bail!("@diag is only supported on macOS (the only enforcing backend so far)");
 }
 
@@ -37,15 +37,15 @@ mod macos {
     use anyhow::{bail, Context, Result};
 
     use crate::backends::macos::render_policy;
-    use crate::cli::RunArgs;
     use crate::resolve;
+    use crate::sandbox::Spec;
 
     const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
     /// Per-trial launch budget. `@diag` is meant for fast-exiting probes (`node
     /// --version`); a long-running command is killed and counted as "launched".
     const TRIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
-    pub fn run(args: &RunArgs) -> Result<()> {
+    pub fn run(args: &Spec) -> Result<()> {
         let mut eff = resolve::effective_policy(args)?;
         if eff.cmd.is_empty() {
             bail!("@diag needs a command (e.g. isol8 @diag node --version)");

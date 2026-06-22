@@ -7,12 +7,16 @@ use crate::profile::{MacosExtra, Profile, ProfileFilter, WindowsExtra};
 /// Runtime context used to evaluate profile filters.
 #[derive(Debug, Clone)]
 pub struct RunContext {
+    /// Argv of the confined command (index 0 is the executable).
     pub cmd: Vec<String>,
+    /// Normalized OS identifier (`macos`, `linux`, `windows`, …).
     pub os: String,
+    /// CPU architecture string as reported by `std::env::consts::ARCH`.
     pub arch: String,
 }
 
 impl RunContext {
+    /// Build a `RunContext` from a command argv, deriving OS and arch from the host.
     pub fn from_cmd(cmd: &[String]) -> Self {
         Self {
             cmd: cmd.to_vec(),

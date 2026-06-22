@@ -58,3 +58,8 @@ doc:
 # Remove build artifacts.
 clean:
     cargo clean
+
+# Bump release version: validate tag, lint+test, update Cargo.toml, commit and tag.
+# Usage: `just bump 0.3.0`
+bump version:
+    bash _devops/scripts/version.sh bump {{version}}

@@ -6,10 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
-
-use crate::cli::RunArgs;
+use crate::error::{Error, Result, ResultExt};
 use crate::profile::Profile;
+use crate::sandbox::Spec;
 
 /// Token usable in profile/CLI path grants that expands to the *real* home, so a
 /// grant survives an active `--home` replacement (which `~` would retarget). §9.
@@ -17,6 +16,7 @@ pub const REAL_HOME_TOKEN: &str = "#HOME";
 
 /// The resolved effective home for a run.
 pub struct EffectiveHome {
+    /// The resolved effective `$HOME` directory for the run.
     pub path: PathBuf,
     /// Real-home entries to seed read-only into the home (e.g. "~/.gitconfig").
     pub seed: Vec<String>,
@@ -29,7 +29,7 @@ pub struct EffectiveHome {
 /// `home_replace` wins, matching merge semantics. Seeds are unioned across layers.
 ///
 /// ponytail: std scratch dir, no tempfile crate; cleanup best-effort.
-pub fn resolve(run: &RunArgs, layers: &[Profile]) -> Result<EffectiveHome> {
+pub fn resolve(spec: &Spec, layers: &[Profile]) -> Result<EffectiveHome> {
     // Highest layer that sets home_replace wins; seeds union across all layers.
     let mut hr_path: Option<String> = None;
     let mut auto_scratch = false;
@@ -50,7 +50,7 @@ pub fn resolve(run: &RunArgs, layers: &[Profile]) -> Result<EffectiveHome> {
     }
 
     let real = real_home();
-    let path = if let Some(home) = run.home() {
+    let path = if let Some(home) = &spec.home {
         PathBuf::from(expand_tilde(home, &real))
     } else if let Some(p) = hr_path {
         PathBuf::from(expand_tilde(&p, &real))
@@ -61,7 +61,7 @@ pub fn resolve(run: &RunArgs, layers: &[Profile]) -> Result<EffectiveHome> {
         real
     };
 
-    if run.no_seed() {
+    if spec.no_seed {
         seed.clear();
     }
 
@@ -85,7 +85,7 @@ fn create_scratch_home() -> Result<PathBuf> {
         match std::fs::create_dir(&dir) {
             Ok(()) => {
                 let meta = std::fs::symlink_metadata(&dir)
-                    .with_context(|| format!("stat scratch home {}", dir.display()))?;
+                    .ctx(|| format!("stat scratch home {}", dir.display()))?;
                 if meta.file_type().is_symlink() {
                     continue;
                 }
@@ -93,12 +93,13 @@ fn create_scratch_home() -> Result<PathBuf> {
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
-                return Err(e)
-                    .with_context(|| format!("creating scratch home at {}", dir.display()));
+                return Err(e).ctx(|| format!("creating scratch home at {}", dir.display()));
             }
         }
     }
-    anyhow::bail!("failed to create a unique scratch home directory after 16 attempts");
+    Err(Error::Message(
+        "failed to create a unique scratch home directory after 16 attempts".into(),
+    ))
 }
 
 /// The real `$HOME`, or a platform-appropriate fallback (never panics on user
@@ -165,11 +166,10 @@ pub fn seed(home: &EffectiveHome) -> Result<()> {
         }
         let dst = home.path.join(rel);
         if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
+            std::fs::create_dir_all(parent).ctx(|| format!("creating {}", parent.display()))?;
         }
         copy_readonly(&src, &dst)
-            .with_context(|| format!("seeding {} -> {}", src.display(), dst.display()))?;
+            .ctx(|| format!("seeding {} -> {}", src.display(), dst.display()))?;
     }
     Ok(())
 }

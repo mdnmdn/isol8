@@ -5,6 +5,7 @@ use isol8::cli::{self, ProfileOpts};
 use isol8::filter::{self, RunContext};
 use isol8::profile::{self, LayerRegistry};
 use isol8::resolve;
+use isol8::sandbox::Spec;
 
 fn os_system_profile() -> &'static str {
     match std::env::consts::OS {
@@ -15,7 +16,7 @@ fn os_system_profile() -> &'static str {
     }
 }
 
-fn run_with(cmd: &[&str], auto_profiles: bool, profiles: &[&str]) -> cli::RunArgs {
+fn run_with(cmd: &[&str], auto_profiles: bool, profiles: &[&str]) -> Spec {
     let mut names = vec!["base".into(), os_system_profile().into()];
     names.extend(profiles.iter().map(|s| (*s).to_string()));
     cli::run_from(
@@ -28,13 +29,13 @@ fn run_with(cmd: &[&str], auto_profiles: bool, profiles: &[&str]) -> cli::RunArg
     )
 }
 
-fn select_names(run: &cli::RunArgs) -> Vec<String> {
-    let registry = LayerRegistry::load(run.profile_paths()).unwrap();
+fn select_names(run: &Spec) -> Vec<String> {
+    let registry = LayerRegistry::load(&run.profile_paths).unwrap();
     let ctx = RunContext::from_cmd(&run.cmd);
     profile::select_layer_names(run, &registry, &ctx).unwrap()
 }
 
-fn layer_paths(run: &cli::RunArgs) -> Vec<String> {
+fn layer_paths(run: &Spec) -> Vec<String> {
     profile::resolved_layers(run)
         .unwrap()
         .into_iter()

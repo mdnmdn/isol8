@@ -279,6 +279,80 @@ isol8 --profile macos-system --show-policies date
 
 ---
 
+## Embedding isol8
+
+`isol8` is usable as a Rust library. All engine modules are public and re-exported
+from the crate root. The CLI (clap + serde_yaml) is behind the default-on `cli`
+cargo feature — disable it to get a lean engine-only dependency:
+
+```toml
+# Cargo.toml
+isol8 = { path = "../isol8", default-features = false }
+```
+
+### `Sandbox` builder
+
+The `isol8::Sandbox` builder mirrors the CLI flags. Choose one of three terminals:
+
+```rust
+// run — blocking, returns exit code
+let exit: i32 = isol8::Sandbox::new()
+    .profile("base")
+    .grant_rw("/my/project")
+    .home("/tmp/scratch")
+    .run(["node", "script.js"])?;
+
+// spawn — non-blocking, returns SandboxChild
+let mut child = isol8::Sandbox::new()
+    .profile("base")
+    .spawn(["sleep", "5"])?;
+let code: i32 = child.wait()?;
+// child.kill()? to send kill signal
+
+// dry_run — structured policy data, no execution
+let dry: isol8::DryRun = isol8::Sandbox::new()
+    .profile("base")
+    .dry_run(["node", "x"])?;
+// dry.policy, dry.env, dry.layer_names, …
+```
+
+Available builder methods:
+
+| Method | Equivalent CLI flag |
+|--------|---------------------|
+| `.profile("name")` | `--profile` |
+| `.profile_path(p)` | `--profile-path` |
+| `.auto_profiles(bool)` | `--auto-profiles` |
+| `.grant_rw(path)` | `--add-dirs-rw` |
+| `.grant_ro(path)` | `--add-dirs-ro` |
+| `.cwd_ro(bool)` | `--cwd-ro` |
+| `.home(path)` | `--home` |
+| `.no_seed()` | `--no-seed` |
+| `.env_pass(iter)` | `--env-pass` |
+| `.set_env("K=V")` | `--set-env` |
+
+### Error handling
+
+Engine functions return `isol8::Result<T>` where `isol8::Error` is a typed enum
+(via `thiserror`):
+
+```rust
+use isol8::{Error, Result};
+
+match isol8::Sandbox::new().run(["x"]) {
+    Err(Error::CommandNotFound(name)) => eprintln!("not found: {name}"),
+    Err(Error::NestedSandbox) => eprintln!("already inside isol8"),
+    Err(e) => return Err(e.into()),
+    Ok(code) => std::process::exit(code),
+}
+```
+
+Key variants: `CommandNotFound(String)`, `InvalidEnv(String)`, `NestedSandbox`,
+`UnsupportedOs(&'static str)`, `PolicyRejected(String)`, `Profile(String)`,
+`Io(io::Error)`, `Toml(toml::de::Error)`, `Message(String)`.
+
+---
+
 ## Troubleshooting
 
 - **`command "x" not found`** — the command isn't on your `PATH`. Use its full path

@@ -34,12 +34,23 @@ Full specification: [`_docs/project-description.md`](_docs/project-description.m
 
 Modules (see spec §7):
 
-- `cli` — clap arg parsing, profile selection, invocation overrides.
+- `cli` — clap arg parsing, profile selection, invocation overrides. Behind the
+  default-on `cli` cargo feature (`cli = ["dep:clap", "dep:serde_yaml"]`); embedders
+  can use `default-features = false` to get the engine without clap/serde_yaml.
+  Layout: `src/cli/{mod,config,diag}.rs`; `src/main.rs` is a thin shim calling
+  `isol8::cli::main()`.
+- `error` — typed `pub enum Error` (thiserror) + `pub type Result<T>`. Engine modules
+  return `isol8::Result`; the CLI layer keeps `anyhow` and upconverts at the boundary.
+- `sandbox` — library entry surface: `Spec` (clap-free confinement request), `Sandbox`
+  (ergonomic builder with `run`/`spawn`/`dry_run` terminals), `SandboxChild` (non-blocking
+  handle with `id`/`wait`/`kill`), `DryRun` (structured policy data, no printing).
 - `profile` — `Profile` / `PathGrant` / `Access` / `HomeReplace`, TOML (de)serialization,
   deny-first `merge`. **Drives everything.**
 - `env` — minimal sanitized environment construction (HOME first).
 - `backends/{linux,macos,windows}` — render the merged profile into the OS-native
-  policy (Landlock ruleset / Seatbelt text / AppContainer) and exec the command.
+  policy (Landlock ruleset / Seatbelt text / AppContainer) and spawn the command.
+  `Backend` trait: `spawn(...) -> Result<SandboxChild>` (non-blocking),
+  `render_policy(&self, profile) -> String`.
 - `spawn` — cross-platform child execution with policy applied.
 - `net` (future) — proxy config + N2/N3 helpers.
 
@@ -80,6 +91,30 @@ enforced on macOS via Seatbelt and on Linux via Landlock:
   Unix DAC handles path traversal). ABI version probed at runtime. WSL2 (kernel 5.15)
   verified enforced. Namespace helpers (user/mount) exist but are disabled pending
   `uid_map` write availability.
+- **typed errors** — `src/error.rs` defines `pub enum Error` (thiserror) with variants
+  `CommandNotFound`, `InvalidEnv`, `NestedSandbox`, `UnsupportedOs`, `PolicyRejected`,
+  `Profile`, `Io`, `Toml`, `Message`; all engine modules return `isol8::Result`. The
+  CLI layer uses `anyhow` and upconverts at the boundary. A `ResultExt::ctx` helper
+  adds context without a full `anyhow` dependency in engine code.
+- **library API** — `src/sandbox.rs` exposes `Spec` (plain, clap-free confinement
+  request), `Sandbox` (builder: `new()`, `profile`, `profile_path`, `auto_profiles`,
+  `grant_rw`, `grant_ro`, `cwd_ro`, `home`, `no_seed`, `env_pass`, `set_env`, then
+  `run(cmd) -> Result<i32>` / `spawn(cmd) -> Result<SandboxChild>` /
+  `dry_run(cmd) -> Result<DryRun>`), and `ensure_not_nested() -> Result<()>`.
+  `src/lib.rs` re-exports `Error`, `Result`, `Access`, `MatchKind`, `PathGrant`,
+  `Profile`, `confine_executable`, `effective_policy`, `EffectivePolicy`, `LayerOrigin`,
+  `Sandbox`, `Spec`, `SandboxChild`, `DryRun`. The `cli` module is gated on the
+  `cli` feature.
+- **non-blocking spawn** — `SandboxChild` is returned by `Backend::spawn` (and
+  `Sandbox::spawn`); methods: `id() -> u32`, `wait() -> Result<i32>`, `kill() ->
+  Result<()>`. macOS wraps `std::process::Child`; Linux uses a forked `Pid`
+  (`waitpid` on wait); Windows resolves synchronously.
+- **structured dry-run** — `DryRun { layer_names, profile, env, cmd, policy,
+  policy_label }` is returned by `Sandbox::dry_run` — pure data, no printing. The
+  CLI calls `print_dry_run(&DryRun)` to render the text report.
+- **cli feature gate** — `cli = ["dep:clap", "dep:serde_yaml"]` is on by default.
+  `isol8 = { ..., default-features = false }` drops clap/serde_yaml for engine-only
+  embedding. The `[[bin]] isol8` has `required-features = ["cli"]`.
 - **--dry-run** / `isol8 policies show` print layer stack + effective grants, env, command, SBPL/Landlock rules.
 - **config** — `isol8.toml`/`isol8.yaml` (cwd, `ISOL8_CONFIG_PATH`, or `~/.config/isol8/`),
   `ISOL8_*` env overrides, `isol8 init`. Defaults: `base` + OS system-runtime; `auto_profiles`
@@ -171,6 +206,29 @@ isol8 --show-policies echo hi
 isol8 --profile-path ./my-profiles echo hi
 ```
 
+### Embedding isol8 as a library
+
+```toml
+# Cargo.toml — engine only (no clap / serde_yaml):
+isol8 = { path = "../isol8", default-features = false }
+```
+
+```rust
+// blocking run:
+let exit = isol8::Sandbox::new()
+    .profile("base")
+    .grant_rw("/my/project")
+    .home("/tmp/scratch")
+    .run(["node", "script.js"])?;   // -> i32
+
+// non-blocking:
+let mut child = isol8::Sandbox::new().profile("base").spawn(["sleep", "5"])?;
+let code = child.wait()?;
+
+// structured dry-run (no spawn):
+let dry = isol8::Sandbox::new().profile("base").dry_run(["node", "x"])?;
+```
+
 
 ## Docs
 
@@ -181,4 +239,6 @@ isol8 --profile-path ./my-profiles echo hi
 | [`_docs/project-structure.md`](_docs/project-structure.md) | Code layout and data flow |
 | [`_docs/project-description.md`](_docs/project-description.md) | Full requirements |
 | [`_docs/testing-strategies.md`](_docs/testing-strategies.md) | Unit + field tests |
+| [`_docs/macos-support.md`](_docs/macos-support.md) | macOS Seatbelt backend: SBPL rendering, capabilities, `@diag`, limits |
+| [`_docs/windows-support.md`](_docs/windows-support.md) | Windows AppContainer backend (draft): state, blockers, roadmap |
 | [`AGENTS.md`](AGENTS.md) | Guide for contributors and agents |

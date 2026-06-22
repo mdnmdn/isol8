@@ -32,10 +32,10 @@
 //!   emit `(allow file-read-metadata (literal "<ancestor>"))` for each ancestor.
 
 use std::collections::HashMap;
-use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use crate::error::{Error, Result};
+use crate::sandbox::SandboxChild;
 
 use super::Backend;
 use crate::profile::{Access, Capability, MatchKind, Profile};
@@ -50,9 +50,11 @@ impl Backend for MacosBackend {
         profile: &Profile,
         env: &HashMap<String, String>,
         cmd: &[String],
-    ) -> Result<i32> {
+    ) -> Result<SandboxChild> {
         if cmd.is_empty() {
-            bail!("no command given to run under the sandbox");
+            return Err(Error::Message(
+                "no command given to run under the sandbox".into(),
+            ));
         }
 
         let policy = render_policy(profile);
@@ -62,60 +64,54 @@ impl Backend for MacosBackend {
         command.arg("-p").arg(&policy).args(cmd);
         command.env_clear().envs(env);
 
-        let mut child = command.spawn().map_err(|e| {
+        let child = command.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                anyhow::anyhow!(
+                Error::Message(format!(
                     "{SANDBOX_EXEC} not found. Seatbelt is deprecated but present on \
                      macOS 12+; isol8 requires it for the macOS backend."
-                )
+                ))
             } else {
-                anyhow::Error::new(e).context(format!("failed to launch {SANDBOX_EXEC}"))
+                Error::Message(format!("failed to launch {SANDBOX_EXEC}: {e}"))
             }
         })?;
 
-        let status = child
-            .wait()
-            .with_context(|| format!("waiting for {SANDBOX_EXEC}"))?;
+        // sandbox-exec overloads exit 64/65/71/134 for its own usage/policy/exec/
+        // abort failures; interpret them when the caller waits (the policy text is
+        // captured for the exit-65 diagnostic).
+        let cmd0 = cmd[0].clone();
+        let on_exit = Box::new(move |code: i32| -> Result<i32> {
+            match code {
+                64 => Err(Error::Message(
+                    "sandbox-exec reported a usage error (exit 64). Check that the confined \
+                     command and arguments are valid."
+                        .into(),
+                )),
+                65 => Err(Error::PolicyRejected(format!(
+                    "sandbox-exec rejected the generated Seatbelt policy (exit 65). This is \
+                     a policy-compile error, not the command failing. Generated policy:\n\
+                     ----\n{policy}\n----\n\
+                     Re-run with --show-policies to inspect the effective policy."
+                ))),
+                71 => Err(Error::Message(format!(
+                    "could not run \"{cmd0}\": the command is missing or not executable \
+                     inside the sandbox."
+                ))),
+                134 => Err(Error::Message(
+                    "the confined command aborted (exit 134 / SIGABRT). This usually means \
+                     isol8 is running inside another sandbox that forbids nesting, or the \
+                     policy denies read access to '/'. Re-run with --show-policies to inspect \
+                     the effective policy."
+                        .into(),
+                )),
+                other => Ok(other),
+            }
+        });
 
-        // sandbox-exec uses exit 64/65/71 for its own usage/policy/exec failures.
-        match status.code() {
-            Some(64) => bail!(
-                "sandbox-exec reported a usage error (exit 64). Check that the confined \
-                 command and arguments are valid."
-            ),
-            Some(65) => bail!(
-                "sandbox-exec rejected the generated Seatbelt policy (exit 65). This is \
-                 a policy-compile error, not the command failing. Generated policy:\n\
-                 ----\n{policy}\n----\n\
-                 Re-run with --show-policies to inspect the effective policy."
-            ),
-            Some(71) => bail!(
-                "could not run \"{}\": the command is missing or not executable inside \
-                 the sandbox.",
-                cmd[0]
-            ),
-            Some(134) => bail!(
-                "the confined command aborted (exit 134 / SIGABRT). This usually means \
-                 isol8 is running inside another sandbox that forbids nesting, or the \
-                 policy denies read access to '/'. Re-run with --show-policies to inspect \
-                 the effective policy."
-            ),
-            _ => {}
-        }
-
-        Ok(exit_code(&status))
+        Ok(SandboxChild::process(child, on_exit))
     }
-}
 
-/// Map a child `ExitStatus` to a shell-style exit code: the real code, or 128+signo
-/// if signal-terminated, else 1.
-fn exit_code(status: &std::process::ExitStatus) -> i32 {
-    if let Some(code) = status.code() {
-        code
-    } else if let Some(sig) = status.signal() {
-        128 + sig
-    } else {
-        1
+    fn render_policy(&self, profile: &Profile) -> String {
+        render_policy(profile)
     }
 }
 

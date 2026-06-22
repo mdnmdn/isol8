@@ -18,7 +18,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use crate::error::{Error, Result, ResultExt};
+use crate::sandbox::SandboxChild;
 use landlock::{
     make_bitflags, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, Ruleset, RulesetAttr,
     RulesetCreatedAttr, RulesetStatus,
@@ -33,9 +34,11 @@ impl Backend for super::linux::LinuxBackend {
         profile: &Profile,
         env: &HashMap<String, String>,
         cmd: &[String],
-    ) -> Result<i32> {
+    ) -> Result<SandboxChild> {
         if cmd.is_empty() {
-            bail!("no command given to run under the sandbox");
+            return Err(Error::Message(
+                "no command given to run under the sandbox".into(),
+            ));
         }
 
         // Determine the replacement HOME for bind-mounting.
@@ -47,26 +50,25 @@ impl Backend for super::linux::LinuxBackend {
         // Build Landlock rules from path grants.
         let rules = build_landlock_rules(profile)?;
 
-        // We fork so the child can set up namespaces + Landlock + exec,
-        // while the parent waits.
+        // Fork so the child can set up namespaces + Landlock + exec; the parent
+        // returns a non-blocking handle around the child pid (reaped on wait()).
         match unsafe { nix::unistd::fork() } {
-            Ok(nix::unistd::ForkResult::Parent { child }) => {
-                // Parent: wait for child.
-                let status = nix::sys::wait::waitpid(child, None)
-                    .map_err(|e| anyhow::anyhow!("waitpid failed: {e}"))?;
-                Ok(exit_code_from_waitstatus(&status))
-            }
+            Ok(nix::unistd::ForkResult::Parent { child }) => Ok(SandboxChild::forked(child)),
             Ok(nix::unistd::ForkResult::Child) => {
                 // Child: set up isolation, apply policy, exec.
                 if let Err(e) = child_setup_and_exec(rules, &effective_home, env, cmd) {
                     // eprintln! can't fail in the child after fork.
-                    eprintln!("isol8: child setup failed: {e:#}");
+                    eprintln!("isol8: child setup failed: {e}");
                     std::process::exit(127);
                 }
                 unreachable!()
             }
-            Err(e) => bail!("fork failed: {e}"),
+            Err(e) => Err(Error::Message(format!("fork failed: {e}"))),
         }
+    }
+
+    fn render_policy(&self, profile: &Profile) -> String {
+        render_policy(profile)
     }
 }
 
@@ -228,15 +230,15 @@ fn apply_landlock(rules: &[LandlockRule]) -> Result<()> {
     let ruleset = Ruleset::default()
         .set_compatibility(CompatLevel::BestEffort)
         .handle_access(handled_accesses)
-        .map_err(|e| anyhow::anyhow!("Landlock ruleset handle_access: {e}"))?
+        .map_err(|e| Error::Message(format!("Landlock ruleset handle_access: {e}")))?
         .create()
-        .map_err(|e| anyhow::anyhow!("Landlock ruleset create: {e}"))?;
+        .map_err(|e| Error::Message(format!("Landlock ruleset create: {e}")))?;
 
     let mut fds: Vec<landlock::PathFd> = Vec::new();
     for rule in rules {
         let path = Path::new(&rule.path);
         let fd = landlock::PathFd::new(path)
-            .map_err(|e| anyhow::anyhow!("Landlock PathFd({}): {e}", rule.path))?;
+            .map_err(|e| Error::Message(format!("Landlock PathFd({}): {e}", rule.path)))?;
         fds.push(fd);
     }
 
@@ -244,12 +246,12 @@ fn apply_landlock(rules: &[LandlockRule]) -> Result<()> {
     for (rule, fd) in rules.iter().zip(fds.iter()) {
         created = created
             .add_rule(PathBeneath::new(fd, rule.access))
-            .map_err(|e| anyhow::anyhow!("Landlock add_rule: {e}"))?;
+            .map_err(|e| Error::Message(format!("Landlock add_rule: {e}")))?;
     }
 
     let status = created
         .restrict_self()
-        .map_err(|e| anyhow::anyhow!("Landlock restrict_self: {e}"))?;
+        .map_err(|e| Error::Message(format!("Landlock restrict_self: {e}")))?;
 
     match status.ruleset {
         RulesetStatus::FullyEnforced => {}
@@ -260,10 +262,11 @@ fn apply_landlock(rules: &[LandlockRule]) -> Result<()> {
             );
         }
         RulesetStatus::NotEnforced => {
-            bail!(
+            return Err(Error::Message(
                 "Landlock not enforced. Check kernel version (>= 5.13) and \
                  /proc/sys/kernel/unprivileged_userns_clone settings."
-            );
+                    .into(),
+            ));
         }
     }
 
@@ -290,7 +293,7 @@ fn child_setup_and_exec(
     // 6. Exec the target command with the sanitized environment.
     let program = cmd
         .first()
-        .ok_or_else(|| anyhow::anyhow!("empty command"))?;
+        .ok_or_else(|| Error::Message("empty command".into()))?;
     let args = &cmd[1..];
 
     let mut command = Command::new(program);
@@ -301,7 +304,7 @@ fn child_setup_and_exec(
     use std::os::unix::process::CommandExt;
     let err = command.exec();
     // exec only returns on error.
-    bail!("exec failed for {}: {err}", program)
+    Err(Error::Message(format!("exec failed for {program}: {err}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -313,10 +316,10 @@ fn child_setup_and_exec(
 fn set_no_new_privs() -> Result<()> {
     unsafe {
         if nix::libc::prctl(nix::libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-            bail!(
+            return Err(Error::Message(format!(
                 "PR_SET_NO_NEW_PRIVS failed: {}",
                 std::io::Error::last_os_error()
-            );
+            )));
         }
     }
     Ok(())
@@ -332,7 +335,7 @@ fn set_no_new_privs() -> Result<()> {
 fn unshare_user_and_mount_ns() -> Result<()> {
     let flags = nix::sched::CloneFlags::CLONE_NEWUSER | nix::sched::CloneFlags::CLONE_NEWNS;
     nix::sched::unshare(flags)
-        .map_err(|e| anyhow::anyhow!("unshare(CLONE_NEWUSER | CLONE_NEWNS) failed: {e}"))?;
+        .map_err(|e| Error::Message(format!("unshare(CLONE_NEWUSER | CLONE_NEWNS) failed: {e}")))?;
     Ok(())
 }
 
@@ -346,14 +349,14 @@ fn write_uid_gid_mappings() -> Result<()> {
     // Write uid_map: "0 <real-uid> 1"
     let uid_map = format!("0 {} 1", uid);
     std::fs::write("/proc/self/uid_map", &uid_map)
-        .context("writing /proc/self/uid_map (did you unshare CLONE_NEWUSER?)")?;
+        .ctx(|| "writing /proc/self/uid_map (did you unshare CLONE_NEWUSER?)")?;
 
     // Write deny to /proc/self/setgroups before gid_map (required for unprivileged).
-    std::fs::write("/proc/self/setgroups", "deny").context("writing /proc/self/setgroups")?;
+    std::fs::write("/proc/self/setgroups", "deny").ctx(|| "writing /proc/self/setgroups")?;
 
     // Write gid_map: "0 <real-gid> 1"
     let gid_map = format!("0 {} 1", gid);
-    std::fs::write("/proc/self/gid_map", &gid_map).context("writing /proc/self/gid_map")?;
+    std::fs::write("/proc/self/gid_map", &gid_map).ctx(|| "writing /proc/self/gid_map")?;
 
     Ok(())
 }
@@ -365,8 +368,7 @@ fn bind_mount_home(new_home: &str, real_home: &str) -> Result<()> {
     use nix::mount::{mount, MsFlags};
 
     // Ensure the target (real home) exists as a mount point.
-    std::fs::create_dir_all(real_home)
-        .with_context(|| format!("creating mount point at {real_home}"))?;
+    std::fs::create_dir_all(real_home).ctx(|| format!("creating mount point at {real_home}"))?;
 
     // MS_BIND | MS_REC: recursively bind-mount new_home over real_home.
     mount(
@@ -376,7 +378,7 @@ fn bind_mount_home(new_home: &str, real_home: &str) -> Result<()> {
         MsFlags::MS_BIND | MsFlags::MS_REC,
         None::<&str>,
     )
-    .map_err(|e| anyhow::anyhow!("bind-mount {} -> {} failed: {e}", new_home, real_home))?;
+    .map_err(|e| Error::Message(format!("bind-mount {new_home} -> {real_home} failed: {e}")))?;
 
     Ok(())
 }
@@ -386,6 +388,10 @@ fn bind_mount_home(new_home: &str, real_home: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Map a `WaitStatus` to a shell-style exit code.
+///
+/// The parent no longer reaps inline (it returns a `SandboxChild::forked` handle, and
+/// `SandboxChild::wait` does the `waitpid` + mapping); kept for the unit test.
+#[allow(dead_code)]
 fn exit_code_from_waitstatus(status: &nix::sys::wait::WaitStatus) -> i32 {
     match status {
         nix::sys::wait::WaitStatus::Exited(_, code) => *code,
