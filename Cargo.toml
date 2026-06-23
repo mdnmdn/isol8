@@ -1,6 +1,6 @@
 [package]
 name = "isol8"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 licence = "MIT"
 repository = "https://github.com/mdnmdn/isol8"
