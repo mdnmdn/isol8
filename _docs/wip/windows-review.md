@@ -125,3 +125,264 @@ expect.
 4. Decide and document the R2 story (#5): ACL granted paths to the package SID, or
    state plainly that Windows path confinement is out of scope for Phase 5.
 5. Drop `InstallationLog.txt`; add Windows field-test scenarios once #1 works.
+
+---
+
+# Second-pass review — hook mode (commit `cb35a78 windows policy supports with hooks`)
+
+Reviewed `cb35a78` (vs merge-base `cb74cd6`, v0.2.4). Scope: hybrid backend —
+`isol8-path-policy` crate, `isol8-winhook` cdylib (MinHook detours), dual launch
+(`windows.rs` hook vs AppContainer), `windows_policy.rs`, `windows_hook.rs`, probe
+binary, integration tests, release packaging.
+
+Static review again (`cfg(windows)` / cdylib don't build on the macOS host); the
+portable `isol8-path-policy` crate does build and test green (5 passing).
+
+## Status of the original blockers
+
+#1–#4 above are **fixed**: real `CreateAppContainerProfile` → `SECURITY_CAPABILITIES`
+→ `CreateProcessW(EXTENDED_STARTUPINFO_PRESENT)`; `CREATE_UNICODE_ENVIRONMENT` set
+with `[0,0]` empty case; `Vec<SID_AND_ATTRIBUTES>` instead of the hand-packed
+`TOKEN_GROUPS`; MSDN per-arg quoting (`quote_arg`). SID lifetimes are correct
+(`pkg_sid` freed after `CreateProcessW`). Hook mode (Tier 1b) now delivers real
+per-path enforcement, partially addressing #5.
+
+## New blockers (hook mode)
+
+### H1. Path-traversal bypass — `..` / short names / junctions not resolved (`crates/isol8-path-policy/src/lib.rs:94` `normalize_path`)
+
+Matching is string-prefix on a normalized-but-not-canonicalized path. `normalize_path`
+swaps slashes, lowercases drive paths, trims trailing `\` — it does **not** collapse
+`..`. So with `grant C:\workspace (rw, subpath)`:
+
+```
+open C:\workspace\..\Windows\System32\config\SAM  → starts_with "c:\workspace\" → ALLOWED
+```
+
+The path resolves outside the grant but passes. Same class: 8.3 short names
+(`C:\PROGRA~1\…`) and junctions/symlinks. `..` is trivially exploitable and is **not**
+in the documented known-gaps list.
+
+**Fix:** fail-closed — reject any path component equal to `..` (and ideally canonicalize).
+Document the short-name/junction limitation alongside mmap/CopyFile.
+
+### H2. Subprocess escape — child processes are not confined
+
+The hook is injected into the launched process only. `CreateProcess` /
+`NtCreateUserProcess` is **not** hooked, and the DLL is not propagated to
+grandchildren. `ISOL8_PATH_POLICY` is inherited via env, but with no DLL loaded the
+grandchild enforces nothing. A confined agent runs `cmd /c type C:\secret` (or spawns
+its compiler/shell) and reads anything the user can. For AI agents — which spawn
+subprocesses constantly — this removes R2 from essentially every real workload.
+
+**Fix:** hook process creation + auto-inject into children, or state unmissably (docs
++ `--show-policies`) that only the direct child is confined.
+
+### H3. `DELETE` access missing from `WRITE_MASK` (`crates/isol8-winhook/src/lib.rs:197`)
+
+```rust
+const WRITE_MASK: u32 = GENERIC_WRITE | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0100;
+```
+
+`DELETE` (`0x0001_0000`) is absent, so opening a file with `DELETE` access
+(rename/delete, incl. `FILE_FLAG_DELETE_ON_CLOSE`) on an **`ro`** grant is classified
+as a read and allowed — an `ro` path can be deleted/renamed.
+
+**Fix:** add `0x0001_0000` to `WRITE_MASK`.
+
+> H2+H3 land in the **default** release config: the zip ships the hook DLL beside the
+> binary, so hook mode (FS-hook only, no AppContainer process/IPC/device isolation) is
+> the default — the weakest enforcement is the default path. Make this loud in
+> `--show-policies`, not just "ENFORCED via hook DLL".
+
+## Significant (hook mode)
+
+### H4. Wrong bit in `WRITE_MASK`: `0x0008` is `FILE_READ_EA` (`isol8-winhook/src/lib.rs:197`)
+
+`0x0008` is a read bit; the intended write bit `FILE_WRITE_EA` (`0x0010`) is already
+present. Including `0x0008` makes a read requesting `READ_EA` count as a write →
+spuriously denied on `ro` grants. **Fix:** drop `0x0008`.
+
+### H5. Non-drive paths not case-folded (`isol8-path-policy/src/lib.rs:96`)
+
+Lowercasing is gated on `p[1]==':'`. UNC (`\\server\share`) and device paths stay
+case-sensitive → case variation bypasses a grant on a case-insensitive FS. **Fix:**
+always lowercase, or document drive-paths-only.
+
+### H6. Longest-prefix ranks by raw `rule.path.len()` (`isol8-path-policy/src/lib.rs:85`)
+
+Ranking uses the un-normalized grant length while matching against the normalized
+path. A grant written with `/` or a trailing `\` mis-ranks vs a normalized sibling, so
+"most specific wins" can pick the wrong rule. **Fix:** rank by
+`normalize_path(&rule.path).len()`.
+
+## Minor (hook mode)
+
+- **Suspended child leaked on inject failure** (`windows.rs:164` / `windows_hook.rs`).
+  Fail-closed is correct (never runs unconfined), but the child stays `CREATE_SUSPENDED`
+  with handles dropped. `TerminateProcess` before returning `Err`.
+- **`ISOL8_PATH_POLICY_FILE` fallback defined + documented but unused by the launcher**
+  (`windows.rs:124` sets only the inline env var). Wire the file fallback (the DLL reads
+  it) or drop the doc claim.
+- **Hook mode builds + frees capability SIDs it never uses** (`windows.rs:83` →
+  `launch_with_hook` ignores `caps`). Skip `build_capability_sids` when the DLL is present.
+- **`GetExitCodeThread` truncates the 64-bit `HMODULE` to 32 bits** (`windows_hook.rs:118`)
+  as the `LoadLibraryW` success test; a handle with zero low-32-bits reads as failure.
+  Note the heuristic.
+- **`fn to_unit(_) -> ()`** (`isol8-winhook/src/lib.rs:190`) may trip
+  `clippy::unused_unit`/`let_unit_value`; confirm clippy is clean for `windows-gnu`.
+- **`isol8-winhook` is a workspace member**; confirm CI doesn't `cargo build/test
+  --workspace` (would try to compile the cdylib on macOS/Linux). `default-members=["."]`
+  covers the bare invocation.
+
+## Tests (hook mode)
+
+Good: `path-policy` unit tests (deny-default, ro/rw, explicit-none carve-out, roundtrip)
+and `wants_write` tests covering the subtle `GENERIC_READ|SYNCHRONIZE` vs write case.
+`windows_spawn.rs` integration tests skip cleanly without the DLL. **Missing** and would
+currently fail (the point): `..`-traversal denial (H1), `DELETE`-on-`ro` denial (H3),
+subprocess-escape expectation (H2).
+
+## Recommended order (hook mode)
+
+1. H1 (`..` fail-closed) and H3 (`DELETE` in mask) + H4 (drop `0x0008`) — small,
+   host-testable in `isol8-path-policy` / `wants_write`. Add the failing unit tests.
+2. H2 — hook `CreateProcess*` in the DLL and self-reinject into every child (decided).
+3. H5/H6 normalization fixes.
+4. Minor cleanups.
+
+## Proposed fixes (hook mode)
+
+Concrete patches for the code-level findings. H2 is a design choice (no snippet — see
+options below).
+
+### H1 + H5 + H6 — `normalize_path` and prefix ranking (`crates/isol8-path-policy/src/lib.rs`)
+
+Fail-closed on `..`, always case-fold, and rank by the normalized grant length:
+
+```rust
+fn normalize_path(path: &str) -> String {
+    // Windows FS is case-insensitive — fold the whole path, not just drive paths (H5).
+    let mut p = path.replace('/', "\\").to_ascii_lowercase();
+    // Fail-closed on traversal: any ".." component voids the path (H1). Empty → denied.
+    if p.split('\\').any(|c| c == "..") {
+        return String::new();
+    }
+    while p.len() > 3 && p.ends_with('\\') {
+        p.pop();
+    }
+    p
+}
+
+fn effective_access(&self, path: &str) -> Option<GrantAccess> {
+    let mut best: Option<(usize, GrantAccess)> = None;
+    for rule in &self.grants {
+        if !rule_matches(path, rule) {
+            continue;
+        }
+        let spec = normalize_path(&rule.path).len(); // rank by normalized length (H6)
+        if best.map(|(len, _)| spec > len).unwrap_or(true) {
+            best = Some((spec, rule.access));
+        }
+    }
+    best.map(|(_, a)| a)
+}
+```
+
+Add unit tests (host-runnable, currently failing):
+
+```rust
+#[test]
+fn dotdot_traversal_is_denied() {
+    let p = policy(vec![rule(r"C:\workspace", GrantAccess::Rw, GrantMatch::Subpath)]);
+    assert!(!p.allows(r"C:\workspace\..\Windows\System32\config\SAM", false));
+}
+
+#[test]
+fn unc_grant_is_case_insensitive() {
+    let p = policy(vec![rule(r"\\srv\Share", GrantAccess::Ro, GrantMatch::Subpath)]);
+    assert!(p.allows(r"\\SRV\share\a.txt", false));
+}
+```
+
+### H3 + H4 — `WRITE_MASK` (`crates/isol8-winhook/src/lib.rs:196`)
+
+Add `DELETE`, drop the stray `FILE_READ_EA` (`0x0008`):
+
+```rust
+const GENERIC_WRITE: u32 = 0x4000_0000;
+const FILE_WRITE_DATA: u32 = 0x0002;
+const FILE_APPEND_DATA: u32 = 0x0004;
+const FILE_WRITE_EA: u32 = 0x0010;       // was joined by stray FILE_READ_EA 0x0008
+const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+const DELETE: u32 = 0x0001_0000;         // rename/delete, incl. FILE_FLAG_DELETE_ON_CLOSE
+const WRITE_MASK: u32 = GENERIC_WRITE
+    | FILE_WRITE_DATA
+    | FILE_APPEND_DATA
+    | FILE_WRITE_EA
+    | FILE_WRITE_ATTRIBUTES
+    | DELETE;
+```
+
+New `wants_write` tests:
+
+```rust
+#[test]
+fn delete_access_is_write() {
+    assert!(wants_write_nt(0x0001_0000, 1));   // DELETE, FILE_OPEN
+    assert!(wants_write_win32(0x0001_0000, 3)); // DELETE, OPEN_EXISTING
+}
+
+#[test]
+fn read_ea_is_not_write() {
+    assert!(!wants_write_nt(0x0008, 1));
+    assert!(!wants_write_win32(0x0008, 3));
+}
+```
+
+### H2 — subprocess escape — **decision: hook + reinject**
+
+Resolution: enforce on children. Hook process creation in the child and re-inject the
+hook DLL into every descendant so the policy follows the whole process tree (agents
+spawn shells/compilers constantly — documenting "direct child only" is not enough).
+
+Implementation:
+
+1. **Hook the create-process path in the DLL.** Detour `CreateProcessW` /
+   `CreateProcessA` (and ideally `kernelbase!CreateProcessInternalW`, the common
+   sink). In the detour, force `CREATE_SUSPENDED` into `dwCreationFlags`, call the
+   original, then inject before resuming.
+2. **Reuse the parent's injection logic in-DLL.** The child already has the policy
+   (`ISOL8_PATH_POLICY` is inherited via env) and knows its own DLL path
+   (`GetModuleFileNameW` on the hook module). Port `inject_dll_and_resume`
+   (`VirtualAllocEx` → `WriteProcessMemory` → `CreateRemoteThread(LoadLibraryW)`) into
+   the DLL so it self-propagates into each new child, then `ResumeThread` the
+   grandchild's primary thread.
+3. **Fail-closed.** If injection into a child fails, `TerminateProcess` the child and
+   make the create call return failure — never let an un-injected descendant run.
+4. **Idempotency.** `DllMain`'s `DLL_PROCESS_ATTACH` already bails if the policy/hooks
+   don't install; guard against double-injection (e.g. skip if the hook module is
+   already loaded in the target — check via a sentinel env var or module enumeration).
+
+Notes / gaps to track:
+
+- Covers `CreateProcess*`; a child that calls `NtCreateUserProcess` directly (rare
+  outside ntdll/CRT) still escapes — document alongside the existing mmap/CopyFile gaps.
+- AppContainer mode can't self-inject (LoadLibrary blocked) — propagation applies to
+  hook mode only, which is already the enforcing path.
+- Add a field-test scenario: confined parent spawns `cmd /c type <denied>` and asserts
+  the child is denied.
+
+### Minor — suspended-child leak (`src/backends/windows_hook.rs`)
+
+On any injection failure, terminate the suspended child before returning so it can't
+leak as a zombie (it never ran unconfined, so this is cleanup, not a security fix):
+
+```rust
+// in inject_dll_and_resume, replace bare `return Err(...)` paths with a helper that
+// calls TerminateProcess(process, 1) first, e.g.:
+if exit_code == 0 {
+    let _ = TerminateProcess(process, 1);
+    return Err(Error::Message(format!("LoadLibraryW failed for {}", dll_path.display())));
+}
+```
