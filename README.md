@@ -22,6 +22,48 @@ Linux and macOS.
 
 Full usage: [`_docs/instructions.md`](_docs/instructions.md).
 
+## Installation
+
+### macOS / Linux
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mdnmdn/isol8/main/install.sh | bash
+```
+
+Or download a release zip from [GitHub Releases](https://github.com/mdnmdn/isol8/releases)
+and place `isol8` on your `PATH`.
+
+Options: `./install.sh --help`, `--version 0.2.4`, `--install-dir ~/.local/bin`.
+
+### Windows
+
+Download `windows-x64.zip` from [GitHub Releases](https://github.com/mdnmdn/isol8/releases)
+and extract **both** `isol8.exe` and `isol8-winhook.dll` into the same folder, or use
+the PowerShell installer (installs both files; path enforcement requires the DLL):
+
+```powershell
+# From a clone of this repo (bypass local script policy if needed):
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+
+# Or one-liner (review the script first if you prefer):
+irm https://raw.githubusercontent.com/mdnmdn/isol8/main/install.ps1 | iex
+```
+
+Options:
+
+```powershell
+.\install.ps1 -Version 0.2.4
+.\install.ps1 -InstallDir "$env:LOCALAPPDATA\Programs\isol8"
+.\install.ps1 -Help
+```
+
+Default install location: `%USERPROFILE%\.local\bin`. If that directory is not on your
+user `PATH`, the script prints the command to add it. Restart the terminal after updating
+`PATH`.
+
+> **Note:** `install.sh` is Unix-only. On Windows use `install.ps1` or manual extraction
+> from `windows-x64.zip`.
+
 ## What it does
 
 - **Process isolation** — unprivileged wrapper around any command and its children.

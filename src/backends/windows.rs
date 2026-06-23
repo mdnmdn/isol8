@@ -80,6 +80,10 @@ impl Backend for WindowsBackend {
             ));
         }
 
+        if let Some(dll) = hook_dll_available() {
+            return launch_with_hook(&dll, env, cmd, profile);
+        }
+
         let caps = build_capability_sids(
             profile
                 .windows
@@ -88,7 +92,7 @@ impl Backend for WindowsBackend {
                 .unwrap_or(&Vec::new()),
         );
 
-        let child = launch_appcontainer(&caps, env, cmd, profile);
+        let child = launch_appcontainer_only(&caps, env, cmd);
         free_capability_sids(&caps);
         child
     }
@@ -96,18 +100,6 @@ impl Backend for WindowsBackend {
     fn render_policy(&self, profile: &Profile) -> String {
         render_policy(profile)
     }
-}
-
-fn launch_appcontainer(
-    caps: &[SID_AND_ATTRIBUTES],
-    env: &HashMap<String, String>,
-    cmd: &[String],
-    profile: &Profile,
-) -> Result<SandboxChild> {
-    if let Some(dll) = hook_dll_available() {
-        return launch_with_hook(&dll, env, cmd, profile);
-    }
-    launch_appcontainer_only(caps, env, cmd)
 }
 
 /// Hook-first launch: suspended child at normal integrity, inject `isol8-winhook.dll`,

@@ -11,7 +11,9 @@ enforces it.
 > and green on macOS, Linux (WSL2), and **Windows (GNU toolchain + MinGW-w64)**.
 > On macOS/Linux scenarios 1–9 enforce path + env. On Windows, scenarios **01–07**
 > enforce path grants when `isol8-winhook.dll` is deployed (hook mode); scenario
-> **08** skips until net tiers land; scenario **09** verifies AppContainer spawn.
+> **08** skips until net tiers land; scenario **09** verifies AppContainer spawn;
+> scenario **10** verifies hook policy propagates to **grandchild** processes
+> spawned by the confined child.
 > Linux-specific scenarios **10–16** compile only on Linux.
 > See [`AGENTS.md`](../AGENTS.md).
 
@@ -138,7 +140,11 @@ so behaviour matches normal config defaults.
 | `backends::windows` | `quoted_command_line_joins_args` | Space-containing paths quoted |
 | `backends::windows_policy` | `ro_seed_overrides_parent_rw`, `seed_data_txt_readable_with_ro_grant` | JSON path policy deny-first merge |
 | `backends::windows_hook` | `hook_dll_name_is_stable` | DLL discovery name is `isol8-winhook.dll` |
+| `isol8-path-policy` | `dotdot_traversal_is_denied` | `..` in path → deny (fail-closed) |
+| `isol8-path-policy` | `unc_grant_is_case_insensitive` | UNC grants match case-insensitively |
+| `isol8-path-policy` | `prefix_rank_uses_normalized_grant_length` | Longest-prefix uses normalized grant length |
 | `isol8-winhook` | `generic_read_with_synchronize_is_not_write` | Read opens not classified as write |
+| `isol8-winhook` | `delete_access_is_write`, `read_ea_is_not_write` | `WRITE_MASK` includes `DELETE`, excludes `FILE_READ_EA` |
 | `home` | `expand_windows_vars_substitutes_systemroot` | `%SYSTEMROOT%` → absolute path |
 | `env` | `windows_home_vars_follow_effective_home` | `USERPROFILE`/`APPDATA`/… follow `HOME` |
 | `resolve` | `windows_absolute_path_with_backslashes` | `C:\...\cmd.exe` resolves without PATH search |
@@ -147,7 +153,7 @@ so behaviour matches normal config defaults.
 
 `tests/windows_spawn.rs` (integration, Windows only): spawns confined `isol8-probe`
 children through `Backend::spawn` and asserts ro-seed read succeeds when the hook
-DLL is present.
+DLL is present; `grandchild_inherits_hook_policy` verifies scenario 10 behaviour.
 
 ---
 
@@ -191,6 +197,7 @@ leave nothing behind (cleaned on exit; `--keep` to inspect failures).
 | 7 | env allowlist | `PATH` / `HOME` present | **EnvPresent** | **EnvPresent** |
 | 8 | (N0, future) | TCP connect to a public host | **SKIP** | **SKIP** |
 | 9 | `rewrite` ensure-arg (Unix) / AppContainer spawn (Windows) | injected arg creates file / `cmd.exe /c exit 0` | **Allowed** (rewrite) | **Allowed** (spawn smoke test) |
+| 10 | (none) | grandchild read outside grant (`isol8-probe spawn read <outside>/secret.txt`) | — | **Denied** (hook reinject on `CreateProcess*`) |
 
 On Unix, scenario 9 builds an ad-hoc layer with a `rewrite`, applies it via
 `profile::apply_rewrite`, and confirms the injected argument reached the executed
@@ -201,8 +208,18 @@ On Windows, scenario **09 appcontainer-spawn** verifies `CreateAppContainerProfi
 code 0 when the hook DLL is absent (AppContainer-only path). Path scenarios 01–07
 use **hook mode** when `isol8-winhook.dll` is found.
 
-Without the hook DLL, Windows path scenarios **01–05** are **SKIP** (AppContainer
-path grants are documentary only).
+Scenario **10 grandchild-deny-outside-grant** (Windows only) exercises subprocess
+escape (review finding H2). The confined parent runs `isol8-probe spawn read
+<outside>/secret.txt`, which calls `CreateProcessW` to launch a **grandchild**
+that attempts the same denied read. The hook DLL detours
+   `kernelbase!CreateProcessInternalW` / `CreateProcessA`, injects itself into every
+   descendant, and inherits
+`ISOL8_PATH_POLICY` via the environment — so the grandchild must fail the read
+even though only the direct child was launched by isol8. Without the hook DLL,
+scenario 10 is **SKIP**.
+
+Without the hook DLL, Windows path scenarios **01–05** and **10** are **SKIP**
+(AppContainer path grants are documentary only; no hook reinject).
 
 Scenarios 1–7 only need the path/env/HOME backend (Phase 1). Network scenarios
 are gated behind the net tiers (Phase 3) and skipped with a clear `SKIP` until
@@ -230,8 +247,9 @@ isol8 field tests — platform: windows   home: C:\Users\...\Temp\isol8-ft-12345
   PASS  07 env-path-home-present
   SKIP  08 net-n0-deny           (network tier not implemented)
   PASS  09 appcontainer-spawn   (AppContainer CreateProcessW smoke test)
+  PASS  10 grandchild-deny-outside-grant   (grandchild read outside grant must fail)
 
-  8 passed, 0 failed, 1 skipped
+  9 passed, 0 failed, 1 skipped
 ```
 
 Exit code: `0` all passed (skips allowed), `1` any failure. This makes it usable
@@ -269,8 +287,8 @@ except via `%SYSTEMROOT%` expansion in profiles or resolving the host `cmd.exe`.
 | Linux (no Landlock) | — | Path scenarios `SKIP` with reason (kernel too old). |
 | macOS | Seatbelt (`sandbox-exec`) | Run & enforce paths + env. |
 | WSL2 | Linux backend (if WSL kernel has Landlock) | Same as Linux; probe decides. |
-| Windows (hook DLL present) | Hook mode (`isol8-winhook.dll`) | **01–07 enforce** path + env; **09** AppContainer spawn smoke test. Requires MinGW-w64 `gcc` on PATH for `x86_64-pc-windows-gnu` (see §5.1). |
-| Windows (no hook DLL) | AppContainer only | **06, 07, 09** enforce; **01–05 skip** (R2 documentary). |
+| Windows (hook DLL present) | Hook mode (`isol8-winhook.dll`) | **01–07, 10** enforce path + env; **09** AppContainer spawn smoke test. Requires MinGW-w64 `gcc` on PATH for `x86_64-pc-windows-gnu` (see §5.1). |
+| Windows (no hook DLL) | AppContainer only | **06, 07, 09** enforce; **01–05, 10 skip** (R2 documentary; no subprocess hook). |
 
 The probe is the same one `select()` uses in `src/backends/mod.rs`, so field
 tests and the real CLI agree on what the current platform can do. A scenario that

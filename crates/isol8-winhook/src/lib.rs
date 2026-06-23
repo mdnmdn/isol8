@@ -17,8 +17,19 @@ use windows_sys::Win32::Storage::FileSystem::{
     CreateFileA, CreateFileW, FindFirstFileA, FindFirstFileW, FILE_CREATION_DISPOSITION,
     FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE, WIN32_FIND_DATAA, WIN32_FIND_DATAW,
 };
-use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
+use windows_sys::Win32::System::LibraryLoader::{
+    GetModuleFileNameW, GetModuleHandleA, GetProcAddress,
+};
+use windows_sys::Win32::System::Memory::{
+    VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
+};
 use windows_sys::Win32::System::SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH};
+use windows_sys::Win32::System::Threading::{
+    CreateProcessA, CreateRemoteThread, GetExitCodeThread, ResumeThread, TerminateProcess,
+    WaitForSingleObject, CREATE_SUSPENDED, INFINITE, LPTHREAD_START_ROUTINE, PROCESS_INFORMATION,
+    STARTUPINFOA, STARTUPINFOW,
+};
 
 const STATUS_ACCESS_DENIED: i32 = 0xC0000022u32 as i32;
 
@@ -88,6 +99,40 @@ static ORIGINAL_A: OnceLock<CreateFileAFn> = OnceLock::new();
 static ORIGINAL_FIND_W: OnceLock<FindFirstFileWFn> = OnceLock::new();
 static ORIGINAL_FIND_A: OnceLock<FindFirstFileAFn> = OnceLock::new();
 static ORIGINAL_NT: OnceLock<NtCreateFileFn> = OnceLock::new();
+static ORIGINAL_CREATE_PROCESS_A: OnceLock<CreateProcessAFn> = OnceLock::new();
+static ORIGINAL_CREATE_PROCESS_INTERNAL_W: OnceLock<CreateProcessInternalWFn> =
+    OnceLock::new();
+static HOOK_DLL_PATH: OnceLock<String> = OnceLock::new();
+
+type CreateProcessAFn = unsafe extern "system" fn(
+    *const u8,
+    *mut u8,
+    *const SECURITY_ATTRIBUTES,
+    *const SECURITY_ATTRIBUTES,
+    i32,
+    u32,
+    *const c_void,
+    *const u8,
+    *const STARTUPINFOA,
+    *mut PROCESS_INFORMATION,
+) -> i32;
+
+/// `kernelbase!CreateProcessInternalW` — the real sink behind `kernel32!CreateProcessW`
+/// (often a tiny forwarder too small for MinHook).
+type CreateProcessInternalWFn = unsafe extern "system" fn(
+    HANDLE,
+    *const u16,
+    *mut u16,
+    *const SECURITY_ATTRIBUTES,
+    *const SECURITY_ATTRIBUTES,
+    i32,
+    u32,
+    *const c_void,
+    *const u16,
+    *const STARTUPINFOW,
+    *mut PROCESS_INFORMATION,
+    *mut HANDLE,
+) -> i32;
 
 thread_local! {
     /// Non-zero while a Win32 `CreateFile*` detour is calling the original (which
@@ -117,13 +162,16 @@ fn in_win32_create_file() -> bool {
 
 #[no_mangle]
 pub unsafe extern "system" fn DllMain(
-    _module: *mut c_void,
+    module: *mut c_void,
     reason: u32,
     _reserved: *mut c_void,
 ) -> i32 {
     match reason {
         DLL_PROCESS_ATTACH => {
-            if load_policy().is_err() || install_hooks().is_err() {
+            if store_hook_dll_path(module).is_err()
+                || load_policy().is_err()
+                || install_hooks().is_err()
+            {
                 return 0;
             }
         }
@@ -133,6 +181,16 @@ pub unsafe extern "system" fn DllMain(
         _ => {}
     }
     1
+}
+
+fn store_hook_dll_path(module: *mut c_void) -> Result<(), ()> {
+    let mut wide = [0u16; 32_768];
+    let len = unsafe { GetModuleFileNameW(module, wide.as_mut_ptr(), wide.len() as u32) };
+    if len == 0 {
+        return Err(());
+    }
+    let path = String::from_utf16(&wide[..len as usize]).map_err(|_| ())?;
+    HOOK_DLL_PATH.set(path).map_err(|_| ())
 }
 
 fn load_policy() -> Result<(), ()> {
@@ -182,19 +240,254 @@ fn install_hooks() -> Result<(), ()> {
             }
         }
 
+        let orig_cpa = MinHook::create_hook(CreateProcessA as _, create_process_a_detour as _)
+            .map_err(to_unit)?;
+        ORIGINAL_CREATE_PROCESS_A
+            .set(std::mem::transmute(orig_cpa))
+            .map_err(|_| ())?;
+
+        // `kernel32!CreateProcessW` is often a tiny forwarder; hook the real sink in kernelbase.
+        let kernelbase = GetModuleHandleA(c"kernelbase.dll".as_ptr() as *const u8);
+        if kernelbase.is_null() {
+            return Err(());
+        }
+        let internal = GetProcAddress(
+            kernelbase,
+            c"CreateProcessInternalW".as_ptr() as *const u8,
+        );
+        let Some(internal) = internal else {
+            return Err(());
+        };
+        let orig_internal =
+            MinHook::create_hook(internal as _, create_process_internal_w_detour as _)
+                .map_err(to_unit)?;
+        ORIGINAL_CREATE_PROCESS_INTERNAL_W
+            .set(std::mem::transmute(orig_internal))
+            .map_err(|_| ())?;
+
         MinHook::enable_all_hooks().map_err(to_unit)?;
     }
     Ok(())
 }
 
-fn to_unit(status: MH_STATUS) -> () {
+fn to_unit(status: MH_STATUS) {
     let _ = status;
+}
+
+/// Remote `LoadLibraryW` inject into a suspended child, then resume if requested.
+fn inject_hook_dll(process: HANDLE, thread: HANDLE, resume: bool) -> bool {
+    let Some(dll_path) = HOOK_DLL_PATH.get() else {
+        let _ = unsafe { TerminateProcess(process, 1) };
+        return false;
+    };
+    let wide: Vec<u16> = dll_path
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let size = wide.len() * std::mem::size_of::<u16>();
+
+    unsafe {
+        let remote = VirtualAllocEx(
+            process,
+            std::ptr::null(),
+            size,
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_READWRITE,
+        );
+        if remote.is_null() {
+            let _ = TerminateProcess(process, 1);
+            return false;
+        }
+
+        if WriteProcessMemory(
+            process,
+            remote,
+            wide.as_ptr() as *const c_void,
+            size,
+            std::ptr::null_mut(),
+        ) == 0
+        {
+            let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
+            let _ = TerminateProcess(process, 1);
+            return false;
+        }
+
+        let kernel32 = GetModuleHandleA(c"kernel32.dll".as_ptr() as *const u8);
+        if kernel32.is_null() {
+            let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
+            let _ = TerminateProcess(process, 1);
+            return false;
+        }
+        let load_lib = GetProcAddress(kernel32, c"LoadLibraryW".as_ptr() as *const u8);
+        let Some(load_lib) = load_lib else {
+            let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
+            let _ = TerminateProcess(process, 1);
+            return false;
+        };
+
+        let start: LPTHREAD_START_ROUTINE = Some(std::mem::transmute(load_lib));
+        let remote_thread = CreateRemoteThread(
+            process,
+            std::ptr::null(),
+            0,
+            start,
+            remote,
+            0,
+            std::ptr::null_mut(),
+        );
+        if remote_thread.is_null() {
+            let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
+            let _ = TerminateProcess(process, 1);
+            return false;
+        }
+
+        let _ = WaitForSingleObject(remote_thread, INFINITE);
+        let mut exit_code = 0u32;
+        if GetExitCodeThread(remote_thread, &mut exit_code) == 0 {
+            let _ = TerminateProcess(process, 1);
+            return false;
+        }
+        let _ = windows_sys::Win32::Foundation::CloseHandle(remote_thread);
+        let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
+
+        if exit_code == 0 {
+            let _ = TerminateProcess(process, 1);
+            return false;
+        }
+
+        if resume && ResumeThread(thread) == u32::MAX {
+            let _ = TerminateProcess(process, 1);
+            return false;
+        }
+    }
+    true
+}
+
+fn confine_created_process(
+    lp_process_information: *mut PROCESS_INFORMATION,
+    caller_suspended: bool,
+) -> i32 {
+    let pi = unsafe { &*lp_process_information };
+    if !inject_hook_dll(pi.hProcess, pi.hThread, !caller_suspended) {
+        unsafe {
+            windows_sys::Win32::Foundation::SetLastError(ERROR_ACCESS_DENIED);
+        }
+        return 0;
+    }
+    1
+}
+
+unsafe extern "system" fn create_process_internal_w_detour(
+    h_token: HANDLE,
+    lp_application_name: *const u16,
+    lp_command_line: *mut u16,
+    lp_process_attributes: *const SECURITY_ATTRIBUTES,
+    lp_thread_attributes: *const SECURITY_ATTRIBUTES,
+    b_inherit_handles: i32,
+    dw_creation_flags: u32,
+    lp_environment: *const c_void,
+    lp_current_directory: *const u16,
+    lp_startup_info: *const STARTUPINFOW,
+    lp_process_information: *mut PROCESS_INFORMATION,
+    h_new_token: *mut HANDLE,
+) -> i32 {
+    let Some(original) = ORIGINAL_CREATE_PROCESS_INTERNAL_W.get() else {
+        return 0;
+    };
+    // Only confine ordinary user creates (no explicit token).
+    if !h_token.is_null() && h_token != INVALID_HANDLE_VALUE {
+        return unsafe {
+            original(
+                h_token,
+                lp_application_name,
+                lp_command_line,
+                lp_process_attributes,
+                lp_thread_attributes,
+                b_inherit_handles,
+                dw_creation_flags,
+                lp_environment,
+                lp_current_directory,
+                lp_startup_info,
+                lp_process_information,
+                h_new_token,
+            )
+        };
+    }
+    let caller_suspended = (dw_creation_flags & CREATE_SUSPENDED) != 0;
+    let flags = dw_creation_flags | CREATE_SUSPENDED;
+    let ok = unsafe {
+        original(
+            h_token,
+            lp_application_name,
+            lp_command_line,
+            lp_process_attributes,
+            lp_thread_attributes,
+            b_inherit_handles,
+            flags,
+            lp_environment,
+            lp_current_directory,
+            lp_startup_info,
+            lp_process_information,
+            h_new_token,
+        )
+    };
+    if ok == 0 {
+        return 0;
+    }
+    confine_created_process(lp_process_information, caller_suspended)
+}
+
+unsafe extern "system" fn create_process_a_detour(
+    lp_application_name: *const u8,
+    lp_command_line: *mut u8,
+    lp_process_attributes: *const SECURITY_ATTRIBUTES,
+    lp_thread_attributes: *const SECURITY_ATTRIBUTES,
+    b_inherit_handles: i32,
+    dw_creation_flags: u32,
+    lp_environment: *const c_void,
+    lp_current_directory: *const u8,
+    lp_startup_info: *const STARTUPINFOA,
+    lp_process_information: *mut PROCESS_INFORMATION,
+) -> i32 {
+    let Some(original) = ORIGINAL_CREATE_PROCESS_A.get() else {
+        return 0;
+    };
+    let caller_suspended = (dw_creation_flags & CREATE_SUSPENDED) != 0;
+    let flags = dw_creation_flags | CREATE_SUSPENDED;
+    let ok = unsafe {
+        original(
+            lp_application_name,
+            lp_command_line,
+            lp_process_attributes,
+            lp_thread_attributes,
+            b_inherit_handles,
+            flags,
+            lp_environment,
+            lp_current_directory,
+            lp_startup_info,
+            lp_process_information,
+        )
+    };
+    if ok == 0 {
+        return 0;
+    }
+    confine_created_process(lp_process_information, caller_suspended)
 }
 
 /// Write-related bits only. Do not use `FILE_GENERIC_WRITE` (0x120116): it includes
 /// `SYNCHRONIZE`, which overlaps legitimate read opens (`GENERIC_READ | SYNCHRONIZE`).
 const GENERIC_WRITE: u32 = 0x4000_0000;
-const WRITE_MASK: u32 = GENERIC_WRITE | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0100;
+const FILE_WRITE_DATA: u32 = 0x0002;
+const FILE_APPEND_DATA: u32 = 0x0004;
+const FILE_WRITE_EA: u32 = 0x0010;
+const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+const DELETE: u32 = 0x0001_0000;
+const WRITE_MASK: u32 = GENERIC_WRITE
+    | FILE_WRITE_DATA
+    | FILE_APPEND_DATA
+    | FILE_WRITE_EA
+    | FILE_WRITE_ATTRIBUTES
+    | DELETE;
 
 /// Win32 `CreateFile*` disposition values (`OPEN_EXISTING` = 3).
 fn wants_write_win32(desired_access: u32, disposition: u32) -> bool {
@@ -476,5 +769,17 @@ mod tests {
     fn create_disposition_implies_write_without_read_bits() {
         assert!(wants_write_nt(0, 2));
         assert!(wants_write_win32(0, 2));
+    }
+
+    #[test]
+    fn delete_access_is_write() {
+        assert!(wants_write_nt(DELETE, 1));
+        assert!(wants_write_win32(DELETE, 3));
+    }
+
+    #[test]
+    fn read_ea_is_not_write() {
+        assert!(!wants_write_nt(0x0008, 1));
+        assert!(!wants_write_win32(0x0008, 3));
     }
 }

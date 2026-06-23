@@ -113,3 +113,53 @@ fn field_test_scenario_04_replica() {
     assert_eq!(code, 0, "field-test replica failed with {code}");
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn grandchild_inherits_hook_policy() {
+    if !backends::path_enforcement_available() {
+        eprintln!("SKIP: isol8-winhook.dll not found");
+        return;
+    }
+    let Some(probe) = probe_path() else {
+        eprintln!("SKIP: build isol8-probe first");
+        return;
+    };
+
+    let root = std::env::temp_dir().join(format!("isol8-gc-{}", std::process::id()));
+    let home = root.join("home");
+    let outside = root
+        .parent()
+        .unwrap_or(&root)
+        .join(format!("outside-{}", root.file_name().unwrap().to_string_lossy()));
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("secret.txt"), "secret\n").unwrap();
+
+    let out = outside.to_str().unwrap();
+    let sysroot = std::env::var("SYSTEMROOT").unwrap_or_else(|_| "C:\\Windows".into());
+    let profile = Profile {
+        paths: vec![
+            grant(&sysroot, Access::Ro, MatchKind::Subpath),
+            grant(root.to_str().unwrap(), Access::Rw, MatchKind::Subpath),
+        ],
+        ..Default::default()
+    };
+
+    let secret = format!("{out}\\secret.txt");
+    let mut cmd = vec![
+        probe.to_string_lossy().into_owned(),
+        "spawn".into(),
+        "read".into(),
+        secret,
+    ];
+    let mut profile = profile;
+    confine_executable(&mut profile, &mut cmd).unwrap();
+    let env = build_minimal(&profile, &home, &[], &[]);
+    let code = backends::select()
+        .spawn(&profile, &env, &cmd)
+        .and_then(|mut child| child.wait())
+        .expect("spawn");
+    assert_ne!(code, 0, "grandchild read outside grant should be denied, got {code}");
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&outside);
+}

@@ -82,7 +82,7 @@ impl PathPolicy {
             if !rule_matches(path, rule) {
                 continue;
             }
-            let spec = rule.path.len();
+            let spec = normalize_path(&rule.path).len();
             if best.map(|(len, _)| spec > len).unwrap_or(true) {
                 best = Some((spec, rule.access));
             }
@@ -92,10 +92,11 @@ impl PathPolicy {
 }
 
 fn normalize_path(path: &str) -> String {
-    let mut p = path.replace('/', "\\");
-    if p.len() >= 2 && p.as_bytes()[1] == b':' {
-        // Drive letter paths: canonicalize case for comparison.
-        p = p.to_ascii_lowercase();
+    // Windows FS is case-insensitive — fold the whole path, not just drive paths.
+    let mut p = path.replace('/', "\\").to_ascii_lowercase();
+    // Fail-closed on traversal: any ".." component voids the path.
+    if p.split('\\').any(|c| c == "..") {
+        return String::new();
     }
     while p.len() > 3 && p.ends_with('\\') {
         p.pop();
@@ -181,5 +182,37 @@ mod tests {
         let j = p.to_json().unwrap();
         let back = PathPolicy::from_json(&j).unwrap();
         assert_eq!(back.grants[0].path, "C:\\tmp");
+    }
+
+    #[test]
+    fn dotdot_traversal_is_denied() {
+        let p = policy(vec![rule(
+            r"C:\workspace",
+            GrantAccess::Rw,
+            GrantMatch::Subpath,
+        )]);
+        assert!(!p.allows(
+            r"C:\workspace\..\Windows\System32\config\SAM",
+            false
+        ));
+    }
+
+    #[test]
+    fn unc_grant_is_case_insensitive() {
+        let p = policy(vec![rule(
+            r"\\srv\Share",
+            GrantAccess::Ro,
+            GrantMatch::Subpath,
+        )]);
+        assert!(p.allows(r"\\SRV\share\a.txt", false));
+    }
+
+    #[test]
+    fn prefix_rank_uses_normalized_grant_length() {
+        let p = policy(vec![
+            rule(r"C:\home", GrantAccess::Rw, GrantMatch::Subpath),
+            rule(r"C:\home/.ssh", GrantAccess::None, GrantMatch::Subpath),
+        ]);
+        assert!(!p.allows(r"C:\home\.ssh\id_rsa", false));
     }
 }

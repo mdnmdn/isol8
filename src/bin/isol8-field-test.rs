@@ -469,6 +469,34 @@ fn main() {
         });
     }
 
+    // 10. grandchild subprocess inherits hook policy (Windows hook mode only).
+    #[cfg(target_os = "windows")]
+    {
+        let (code, note) = if path_enforced {
+            let secret = format!("{out}\\secret.txt");
+            let argv = [
+                probe_exe(),
+                "spawn".into(),
+                "read".into(),
+                secret,
+            ];
+            let p = profile_with(vec![], &root);
+            let cmd: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let c = run(&p, &home, &cmd);
+            (c, "grandchild read outside grant must fail")
+        } else {
+            (
+                -1,
+                "isol8-winhook.dll not found beside binary",
+            )
+        };
+        results.push(Outcome {
+            name: "10 grandchild-deny-outside-grant",
+            pass: if path_enforced { Some(code != 0) } else { None },
+            note,
+        });
+    }
+
     // ===== Linux-specific scenarios (10–16) =====
 
     // 10. no grant on outside/ → read is Denied (Landlock enforcement check).

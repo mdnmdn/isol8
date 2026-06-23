@@ -10,8 +10,8 @@ use windows::Win32::System::Memory::{
     VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
 };
 use windows::Win32::System::Threading::{
-    CreateRemoteThread, GetExitCodeThread, ResumeThread, WaitForSingleObject, INFINITE,
-    LPTHREAD_START_ROUTINE,
+    CreateRemoteThread, GetExitCodeThread, ResumeThread, TerminateProcess, WaitForSingleObject,
+    INFINITE, LPTHREAD_START_ROUTINE,
 };
 
 use crate::error::{Error, Result};
@@ -76,6 +76,12 @@ pub fn stage_policy_and_dll(
     Ok((policy_path, dll_path))
 }
 
+fn abort_suspended_child(process: HANDLE) {
+    unsafe {
+        let _ = TerminateProcess(process, 1);
+    }
+}
+
 /// `LoadLibraryW` remote inject, then resume the primary thread.
 pub fn inject_dll_and_resume(process: HANDLE, thread: HANDLE, dll_path: &Path) -> Result<()> {
     let wide: Vec<u16> = dll_path
@@ -95,11 +101,17 @@ pub fn inject_dll_and_resume(process: HANDLE, thread: HANDLE, dll_path: &Path) -
         );
 
         if remote.is_null() {
+            abort_suspended_child(process);
             return Err(Error::Message("VirtualAllocEx failed".into()));
         }
 
-        WriteProcessMemory(process, remote, wide.as_ptr() as *const c_void, size, None)
-            .map_err(|e| Error::Message(format!("WriteProcessMemory: {e}")))?;
+        if let Err(e) =
+            WriteProcessMemory(process, remote, wide.as_ptr() as *const c_void, size, None)
+        {
+            let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
+            abort_suspended_child(process);
+            return Err(Error::Message(format!("WriteProcessMemory: {e}")));
+        }
 
         let kernel32 = GetModuleHandleW(windows::core::w!("kernel32.dll"))
             .map_err(|e| Error::Message(format!("GetModuleHandleW(kernel32): {e}")))?;
@@ -110,18 +122,30 @@ pub fn inject_dll_and_resume(process: HANDLE, thread: HANDLE, dll_path: &Path) -
             unsafe extern "system" fn() -> isize,
             unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
         >(load_lib));
-        let remote_thread = CreateRemoteThread(process, None, 0, start, Some(remote), 0, None)
-            .map_err(|e| Error::Message(format!("CreateRemoteThread(LoadLibraryW): {e}")))?;
+        let remote_thread = match CreateRemoteThread(process, None, 0, start, Some(remote), 0, None)
+        {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
+                abort_suspended_child(process);
+                return Err(Error::Message(format!("CreateRemoteThread(LoadLibraryW): {e}")));
+            }
+        };
 
         let _ = WaitForSingleObject(remote_thread, INFINITE);
 
         let mut exit_code = 0u32;
-        GetExitCodeThread(remote_thread, &mut exit_code)
-            .map_err(|e| Error::Message(format!("GetExitCodeThread: {e}")))?;
+        if let Err(e) = GetExitCodeThread(remote_thread, &mut exit_code) {
+            let _ = CloseHandle(remote_thread);
+            let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
+            abort_suspended_child(process);
+            return Err(Error::Message(format!("GetExitCodeThread: {e}")));
+        }
         let _ = CloseHandle(remote_thread);
         let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
 
         if exit_code == 0 {
+            abort_suspended_child(process);
             return Err(Error::Message(format!(
                 "LoadLibraryW failed for {}",
                 dll_path.display()
@@ -129,6 +153,7 @@ pub fn inject_dll_and_resume(process: HANDLE, thread: HANDLE, dll_path: &Path) -
         }
 
         if ResumeThread(thread) == u32::MAX {
+            abort_suspended_child(process);
             return Err(Error::Message("ResumeThread failed".into()));
         }
         let _ = CloseHandle(thread);

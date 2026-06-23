@@ -54,6 +54,13 @@ user-mode hooking — bypassable by determined code, not kernel-grade.
 2. `CreateProcessW` with `CREATE_SUSPENDED` and inline `ISOL8_PATH_POLICY` env.
 3. Remote `LoadLibraryW` inject `isol8-winhook.dll`.
 4. Resume thread; child hooks file APIs before main runs.
+5. **Child propagation:** the hook DLL detours `kernelbase!CreateProcessInternalW`
+   (the real sink behind `CreateProcessW`) and `CreateProcessA`. Every descendant is
+   created suspended, receives the same hook
+   DLL via remote `LoadLibraryW`, then resumes — so agents that spawn shells,
+   compilers, or other subprocesses stay confined. Fail-closed: injection failure
+   terminates the child and makes the create call fail. Policy travels via inherited
+   `ISOL8_PATH_POLICY` env (no re-serialization per generation).
 
 AppContainer is skipped in hook mode because it blocks `LoadLibraryW` before the
 hook can arm (see approach doc §3).
@@ -109,7 +116,9 @@ When `isol8-winhook.dll` is present:
 - Profile path grants are serialized to JSON and passed via `ISOL8_PATH_POLICY`.
 - The hook DLL denies-by-default and allows only matching grants (longest-prefix wins).
 - `ro` grants allow read opens; `rw` allows read and write.
-- Known gaps: memory-mapped I/O, `CopyFile`, registry, unhooked syscalls — see approach doc.
+- Known gaps: 8.3 short names, junctions/symlinks, memory-mapped I/O, `CopyFile`,
+  registry, direct `NtCreateUserProcess` (bypassing hooked `CreateProcess*`) — see
+  approach doc. `..` path components are fail-closed (denied).
 
 ### AppContainer mode — documentary
 
@@ -138,7 +147,7 @@ AppContainer model does not provide per-path ro/rw APIs like Seatbelt or Landloc
 
 - AppContainer launch path (review blockers fixed)
 - Hook DLL path enforcement
-- Field tests scenarios 01–07 (with hook DLL)
+- Field tests scenarios 01–07 and 10 grandchild propagation (with hook DLL)
 - GitHub Release packages `isol8.exe` + `isol8-winhook.dll`
 
 **Planned (Phase 5+):**
