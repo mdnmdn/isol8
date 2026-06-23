@@ -6,13 +6,16 @@ of the filesystem, a sanitized environment, an optional replaceable `$HOME`, and
 tiered network confinement.
 
 It generalizes the macOS `sandbox-exec` (Seatbelt) model to **Linux** (Landlock +
-namespaces), **WSL2**, and **Windows** (deferred). Primary targets: Linux and macOS.
+namespaces), **WSL2**, and **Windows** (hybrid hook + AppContainer). Primary targets:
+Linux and macOS.
 
-> **Status: Phase 1 — macOS + Linux MVP working.** Path access, HOME replacement, env
-> sanitization, ~70 embedded Safehouse-derived profiles, conditional filters,
-> config file + auto-profile selection, and policy introspection are implemented.
-> **Enforcement works on macOS** via Seatbelt and **on Linux** via Landlock (WSL2
-> kernel 5.15 verified). Network tiers and Windows backend are deferred.
+> **Status: Phase 1 — macOS, Linux, and Windows path/env MVP working.** Path access,
+> HOME replacement, env sanitization, ~70 embedded Safehouse-derived profiles,
+> conditional filters, config file + auto-profile selection, and policy introspection
+> are implemented. **Enforcement works on macOS** via Seatbelt, **on Linux** via
+> Landlock (WSL2 kernel 5.15 verified), and **on Windows** via `isol8-winhook.dll`
+> (user-mode path hooks; shipped in `windows-x64.zip` releases). Network tiers
+> are deferred.
 
 > Primary inspiration: the macOS [Agent Safehouse](https://github.com/eugene1g/agent-safehouse)
 > project, whose composable profile model `isol8` generalizes cross-platform.
@@ -99,9 +102,15 @@ Environment overrides: `ISOL8_PROFILE`, `ISOL8_PROFILE_PATH`, `ISOL8_ADD_DIRS_RW
 ```sh
 cargo build
 cargo test
-just ci          # fmt + clippy + build + test
-just field-test  # real sandbox checks (macOS)
+just ci                  # fmt + clippy + build + test
+just field-test          # real sandbox checks (macOS/Linux)
+just field-test-windows  # Windows: hook DLL + field tests
 ```
+
+**Windows releases** ship `isol8.exe` and `isol8-winhook.dll` together
+(`windows-x64.zip` on GitHub Releases). For local dev, copy the DLL beside the
+binary after `just build-winhook`. See [`_docs/testing-strategies.md`](_docs/testing-strategies.md)
+§5.1 for MinGW prerequisites.
 
 
 

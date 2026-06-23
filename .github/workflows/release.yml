@@ -39,14 +39,22 @@ jobs:
             arch: arm64
             target: aarch64-apple-darwin
             runner: macos-latest
-          # - os: windows
-          #   arch: x64
-          #   target: x86_64-pc-windows-msvc
-          #   runner: windows-latest
+          - os: windows
+            arch: x64
+            target: x86_64-pc-windows-gnu
+            runner: windows-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install MinGW (Windows)
+        if: matrix.os == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msys2: ucrt64
+          install: mingw-w64-ucrt-x86_64-gcc
+          path-type: inherit
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -54,17 +62,16 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p isol8
+          if [[ "${{ matrix.os }}" == "windows" ]]; then
+            cargo build --release --target ${{ matrix.target }} -p isol8-winhook
+          fi
         env:
           ISOL8_VERSION: ${{ github.ref_name }}
 
       - name: Package
-        run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/isol8 dist/
-          cd dist
-          zip ../${{ matrix.os }}-${{ matrix.arch }}.zip isol8
-          cd ..
+        run: bash _devops/scripts/package-release.sh ${{ matrix.target }} ${{ matrix.os }} ${{ matrix.arch }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

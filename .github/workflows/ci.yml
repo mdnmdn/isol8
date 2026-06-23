@@ -25,7 +25,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy -- -D warnings
+      - run: cargo clippy --workspace --exclude isol8-winhook -- -D warnings
 
   test:
     name: Test

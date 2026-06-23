@@ -1,3 +1,8 @@
+[workspace]
+members = [".", "crates/isol8-path-policy", "crates/isol8-winhook"]
+default-members = ["."]
+resolver = "2"
+
 [package]
 name = "isol8"
 version = "0.2.4"
@@ -20,6 +25,10 @@ required-features = ["cli"]
 name = "isol8-field-test"
 path = "src/bin/isol8-field-test.rs"
 
+[[bin]]
+name = "isol8-probe"
+path = "src/bin/isol8-probe.rs"
+
 [features]
 default = ["cli"]
 # The CLI binary's arg parsing + YAML config; an embedder using only the engine API
@@ -33,6 +42,8 @@ toml = "0.8"
 serde_yaml = { version = "0.9", optional = true }
 anyhow = "1"
 thiserror = "1"
+isol8-path-policy = { path = "crates/isol8-path-policy" }
+serde_json = "1"
 
 [build-dependencies]
 # build.rs only walks profiles/; no extra deps needed.
@@ -49,6 +60,9 @@ windows = { version = "0.62", features = [
   "Win32_Security",
   "Win32_Security_Isolation",
   "Win32_System_Threading",
+  "Win32_System_Memory",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_LibraryLoader",
 ] }
 
 # networking (Phase 3): add proxy/pasta orchestration crates then

@@ -6,9 +6,10 @@
 //!   → SECURITY_CAPABILITIES + PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES
 //!   → CreateProcessW with EXTENDED_STARTUPINFO_PRESENT.
 //!
-//! Path grants from profiles are **documentary only** (R2 is partial on Windows in Phase 5);
-//! AppContainer gives deny-by-default + capability-gated libraries, not fine-grained ACLs
-//! unless the caller separately ACLs objects for the derived package SID.
+//! Path grants are enforced via the hybrid model when `isol8-winhook.dll` is present:
+//! AppContainer (Tier 1) + user-mode `CreateFileW` hooking (see
+//! `_docs/inbox/windows-policy-approach.md`). Without the hook DLL, path grants are
+//! documentary only.
 //!
 //! TODO(Phase 5+): Tier 2 elevated, Tier 3 Job+LowIL, resource limits, WFP net.
 
@@ -30,14 +31,17 @@ use windows::Win32::Security::{
 };
 use windows::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
-    UpdateProcThreadAttribute, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT,
-    LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    STARTUPINFOEXW,
+    UpdateProcThreadAttribute, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW,
 };
 
+use super::windows_hook::{hook_dll_available, inject_dll_and_resume};
+use super::windows_policy::path_policy_from_profile;
 use super::Backend;
 use crate::home::expand_windows_vars;
 use crate::profile::{Profile, WindowsCapability};
+use isol8_path_policy::PathPolicy;
 
 pub struct WindowsBackend;
 
@@ -84,8 +88,7 @@ impl Backend for WindowsBackend {
                 .unwrap_or(&Vec::new()),
         );
 
-        // launch now returns a live SandboxChild (non-blocking)
-        let child = launch_appcontainer(&caps, env, cmd);
+        let child = launch_appcontainer(&caps, env, cmd, profile);
         free_capability_sids(&caps);
         child
     }
@@ -96,6 +99,74 @@ impl Backend for WindowsBackend {
 }
 
 fn launch_appcontainer(
+    caps: &[SID_AND_ATTRIBUTES],
+    env: &HashMap<String, String>,
+    cmd: &[String],
+    profile: &Profile,
+) -> Result<SandboxChild> {
+    if let Some(dll) = hook_dll_available() {
+        return launch_with_hook(&dll, env, cmd, profile);
+    }
+    launch_appcontainer_only(caps, env, cmd)
+}
+
+/// Hook-first launch: suspended child at normal integrity, inject `isol8-winhook.dll`,
+/// then resume. Path grants are enforced by the hook; AppContainer is skipped because
+/// it blocks `LoadLibraryW` before the hook can initialize (see approach doc §3).
+fn launch_with_hook(
+    hook_dll: &std::path::Path,
+    env: &HashMap<String, String>,
+    cmd: &[String],
+    profile: &Profile,
+) -> Result<SandboxChild> {
+    let policy = path_policy_from_profile(profile);
+    let mut child_env = env.clone();
+    child_env.insert(
+        PathPolicy::ENV_VAR.to_string(),
+        policy
+            .to_json()
+            .map_err(|e| Error::Message(e.to_string()))?,
+    );
+
+    let cmd_line = build_quoted_command_line(cmd);
+    let mut cmd_wide: Vec<u16> = cmd_line.encode_utf16().chain(std::iter::once(0)).collect();
+    let app_wide: Option<Vec<u16>> = std::path::Path::new(&cmd[0])
+        .is_absolute()
+        .then(|| cmd[0].encode_utf16().chain(std::iter::once(0)).collect());
+    let env_block = build_env_block(&child_env);
+
+    let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
+    si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+
+    let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    let creation_flags = CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
+    let app_name = app_wide
+        .as_ref()
+        .map(|w| PCWSTR(w.as_ptr()))
+        .unwrap_or(PCWSTR(std::ptr::null()));
+
+    unsafe {
+        CreateProcessW(
+            app_name,
+            Some(PWSTR(cmd_wide.as_mut_ptr())),
+            None,
+            None,
+            false,
+            creation_flags,
+            Some(env_block.as_ptr() as *const c_void),
+            PCWSTR(std::ptr::null()),
+            &si.StartupInfo,
+            &mut pi,
+        )
+        .map_err(|e| Error::Message(format!("CreateProcessW (hook mode) failed: {e}")))?;
+    }
+
+    inject_dll_and_resume(pi.hProcess, pi.hThread, hook_dll)?;
+
+    Ok(SandboxChild::windows(pi.dwProcessId, pi.hProcess, None))
+}
+
+fn launch_appcontainer_only(
     caps: &[SID_AND_ATTRIBUTES],
     env: &HashMap<String, String>,
     cmd: &[String],
@@ -363,19 +434,29 @@ fn free_capability_sids(caps: &[SID_AND_ATTRIBUTES]) {
 }
 
 pub fn render_policy(profile: &Profile) -> String {
+    let hook = hook_dll_available();
     let mut out = String::new();
-    out.push_str("-- Windows AppContainer policy (Tier 1) --\n");
-    out.push_str("  Mechanism: AppContainer + SECURITY_CAPABILITIES (no admin)\n");
+    out.push_str("-- Windows hybrid policy (AppContainer + hook DLL) --\n");
+    out.push_str("  Tier 1: AppContainer + SECURITY_CAPABILITIES (no admin)\n");
+    if hook.is_some() {
+        out.push_str("  Tier 1b: isol8-winhook.dll — CreateFileW path grants ENFORCED in child\n");
+        out.push_str(
+            "  Hook mode: normal user token + suspended inject (AppContainer skipped — it blocks\n",
+        );
+        out.push_str(
+            "  LoadLibrary before the hook can arm). Policy JSON is passed inline via ISOL8_PATH_POLICY.\n",
+        );
+    } else {
+        out.push_str("  Hook DLL: NOT FOUND (isol8-winhook.dll next to isol8 binary)\n");
+        out.push_str(
+            "  Path grants below are DOCUMENTARY ONLY until the hook DLL is built and deployed.\n",
+        );
+        out.push_str(
+            "  Build: cargo build -p isol8-winhook --release && copy DLL beside isol8.exe\n",
+        );
+    }
     out.push_str(
         "  Deny-by-default for most named objects, IPC, devices, and WinRT outside granted caps.\n",
-    );
-    out.push_str("  NOTE: filesystem path grants below are DOCUMENTARY ONLY and NOT ENFORCED.\n");
-    out.push_str("        AppContainer does not support Seatbelt/Landlock-style per-path ro/rw.\n");
-    out.push_str(
-        "        To actually protect paths you must separately grant the derived package SID\n",
-    );
-    out.push_str(
-        "        via icacls (defeats the policy-only model) or move tools under %ProgramFiles%.\n",
     );
     if let Some(w) = &profile.windows {
         if !w.capabilities.is_empty() {
@@ -389,7 +470,11 @@ pub fn render_policy(profile: &Profile) -> String {
     } else {
         out.push_str("  Granted capabilities: (none)\n");
     }
-    out.push_str("  Path grants (DOCUMENTARY / NOT ENFORCED):\n");
+    if hook.is_some() {
+        out.push_str("  Path grants (ENFORCED via hook DLL):\n");
+    } else {
+        out.push_str("  Path grants (DOCUMENTARY / NOT ENFORCED):\n");
+    }
     if profile.paths.is_empty() {
         out.push_str("    (none)\n");
     } else {
@@ -403,6 +488,18 @@ pub fn render_policy(profile: &Profile) -> String {
         }
     }
     out
+}
+
+/// Delete a named AppContainer profile (best-effort).
+/// Called by SandboxChild::wait / kill after the child has exited.
+#[allow(dead_code)] // called via re-export from sandbox under cfg(windows)
+pub(crate) fn delete_app_container_profile(name: &str) -> Result<()> {
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        // Ignore failure — profile may already be gone or still referenced briefly.
+        let _ = DeleteAppContainerProfile(PCWSTR(wide.as_ptr()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -421,13 +518,7 @@ mod tests {
         env.insert("B".into(), "2".into());
         env.insert("A".into(), "1".into());
         let block = build_env_block(&env);
-        let s = String::from_utf16(
-            &block[..block.len().saturating_sub(1)]
-                .iter()
-                .copied()
-                .collect::<Vec<_>>(),
-        )
-        .unwrap();
+        let s = String::from_utf16(&block[..block.len().saturating_sub(1)]).unwrap();
         assert!(s.starts_with("A=1\0B=2"));
     }
 
@@ -452,16 +543,4 @@ mod tests {
         ]);
         assert_eq!(line, "\"C:\\Program Files\\isol8.exe\" --flag \"a b\"");
     }
-}
-
-/// Delete a named AppContainer profile (best-effort).
-/// Called by SandboxChild::wait / kill after the child has exited.
-#[allow(dead_code)] // called via re-export from sandbox under cfg(windows)
-pub(crate) fn delete_app_container_profile(name: &str) -> Result<()> {
-    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe {
-        // Ignore failure — profile may already be gone or still referenced briefly.
-        let _ = DeleteAppContainerProfile(PCWSTR(wide.as_ptr()));
-    }
-    Ok(())
 }

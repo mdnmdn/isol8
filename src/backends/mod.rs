@@ -10,6 +10,16 @@ mod linux;
 pub(crate) mod macos;
 #[cfg(windows)]
 pub(crate) mod windows;
+#[cfg(windows)]
+mod windows_hook;
+#[cfg(windows)]
+mod windows_policy;
+
+/// Whether path grants are enforced on Windows (requires `isol8-winhook.dll` beside the binary).
+#[cfg(windows)]
+pub fn path_enforcement_available() -> bool {
+    windows_hook::hook_dll_available().is_some()
+}
 
 /// A platform sandbox implementation. Renders the merged `Profile` into the
 /// OS-native policy (Landlock ruleset, Seatbelt text, …) and execs the command.

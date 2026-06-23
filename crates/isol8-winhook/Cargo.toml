@@ -1,0 +1,19 @@
+[package]
+name = "isol8-winhook"
+version = "0.1.0"
+edition = "2021"
+description = "isol8 Windows user-mode hook DLL (CreateFileW path policy enforcement)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+isol8-path-policy = { path = "../isol8-path-policy" }
+minhook = "0.9.0"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemServices",
+] }

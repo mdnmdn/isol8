@@ -7,7 +7,7 @@ for AI coding agents and CLI tools. It wraps an arbitrary command so it runs
 unprivileged with a deny-by-default, restricted view of the filesystem, a sanitized environment, a
 replaceable `$HOME`, and (later) tiered network confinement. It generalizes the
 macOS `sandbox-exec` (Seatbelt) model to Linux (Landlock + namespaces), WSL2, and
-Windows (deferred). **Primary targets: Linux and macOS.**
+Windows (hybrid AppContainer + hook DLL for R2). **Primary targets: Linux and macOS.**
 
 Primary inspiration: the macOS **Agent Safehouse** project
 (<https://github.com/eugene1g/agent-safehouse>), whose composable profile model
@@ -119,11 +119,13 @@ enforced on macOS via Seatbelt and on Linux via Landlock:
 - **config** — `isol8.toml`/`isol8.yaml` (cwd, `ISOL8_CONFIG_PATH`, or `~/.config/isol8/`),
   `ISOL8_*` env overrides, `isol8 init`. Defaults: `base` + OS system-runtime; `auto_profiles`
   selects agent layers by executable name (e.g. `claude` → `agents/claude-code`).
-- **Windows backend (Phase 1)** — token-based AppContainer (`DuplicateTokenEx` +
-  `SetTokenInformation(TokenAppContainerSid, TokenCapabilities)` +
-  `CreateProcessAsUserW`). Supports 12 capability SIDs. Tiers 2–3 deferred.
-  `%VAR%` expansion for path grants. System profile with `%SYSTEMROOT%`,
-  `%TEMP%` etc. embedded. Compiles on `x86_64-pc-windows-msvc`.
+- **Windows backend (Phase 1)** — hybrid model: **hook mode** (Tier 1b) when
+  `isol8-winhook.dll` is beside the binary — suspended `CreateProcessW`, inject DLL,
+  enforce path grants via `CreateFile*` / `NtCreateFile` hooks (`crates/isol8-winhook`,
+  `crates/isol8-path-policy`). **AppContainer mode** (Tier 1) when the DLL is absent —
+  `CreateAppContainerProfile` + `SECURITY_CAPABILITIES` + `CreateProcessW`; path grants
+  documentary only. 12 capability SIDs; `%VAR%` expansion; `windows/system-runtime`
+  profile. See `_docs/inbox/windows-policy-approach.md` and `_docs/windows-support.md`.
 - **CLI** — direct `isol8 CMD` (no `run`); `--show-policies` (layer stack tagged
   explicit/auto/required) / `--show-profiles`; `--no-seed`, `--env-pass`, `--set-env`;
   meta commands `@init`, `@profiles-list`, `@profiles-show`, `@diag`; `--profile-path`.
@@ -132,19 +134,21 @@ enforced on macOS via Seatbelt and on Linux via Landlock:
 - **profiles** — Safehouse port embedded; `macos-system` / `linux-system` are backward-compat
   aliases. `isol8 echo hi` works without `--profile` when config defaults apply.
 - **tests** — unit + integration (`cargo test`) and a real-sandbox field-test binary
-  (`just field-test`, scenarios 1–9 cross-platform, 10–16 Linux-specific) prove the OS
-  actually enforces the policy.
+  (`just field-test` / `just field-test-windows`, scenarios 1–9 cross-platform,
+  10–16 Linux-specific) prove the OS actually enforces the policy. Windows path
+  scenarios require `isol8-winhook.dll` + `isol8-probe` (`just build-windows-test-deps`);
+  `tests/windows_spawn.rs` covers ro-seed read.
 
-**Not yet:** `--env-file`, resource limits, and network tiers are unstarted. The
-Windows (AppContainer) backend is an early draft — it compiles and wires through
-the pipeline but does not yet enforce (see `_docs/wip/windows-review.md`).
-Known gaps: macOS `git`/`cargo` need extra developer-tool paths beyond `macos-system`.
+**Not yet:** `--env-file`, resource limits, and network tiers are unstarted.
+Windows hook mode is bypassable user-mode enforcement; simultaneous AppContainer +
+hook is blocked (loader policy). Known gaps: macOS `git`/`cargo` need extra
+developer-tool paths beyond `macos-system`.
 
 ## Roadmap
 
 1. **Phase 1** — Core path + HOME MVP (Linux Landlock + macOS Seatbelt + Windows
-   AppContainer T1); profile parser/merger; minimal env sanitization; opt-in scratch
-   home. **(macOS + Windows done; Linux pending)**
+   hook T1b / AppContainer T1); profile parser/merger; minimal env sanitization;
+   opt-in scratch home. **(macOS + Linux + Windows path/env working)**
 2. **Phase 2** — Full R3 env features, resource limits, `--dry-run` policy dump,
    WSL2 testing, docs.
 3. **Phase 3** — Network tiers N1→N2 (pasta)→N3 (helper + nftables); DNS/IPv6/MITM.
@@ -195,7 +199,9 @@ How to work in this repo. These are not suggestions.
 ```sh
 cargo build
 cargo test
-just field-test          # real-sandbox field tests (macOS)
+just field-test          # real-sandbox field tests (macOS/Linux)
+just field-test-windows  # Windows: builds hook DLL + probe, runs field tests
+just build-winhook       # Windows: build isol8-winhook.dll beside isol8.exe
 
 # run with defaults (base + macos/system-runtime) and auto agent profiles:
 isol8 --add-dirs-rw /my/project -- /bin/sh -c 'echo hi'
@@ -240,5 +246,6 @@ let dry = isol8::Sandbox::new().profile("base").dry_run(["node", "x"])?;
 | [`_docs/project-description.md`](_docs/project-description.md) | Full requirements |
 | [`_docs/testing-strategies.md`](_docs/testing-strategies.md) | Unit + field tests |
 | [`_docs/macos-support.md`](_docs/macos-support.md) | macOS Seatbelt backend: SBPL rendering, capabilities, `@diag`, limits |
-| [`_docs/windows-support.md`](_docs/windows-support.md) | Windows AppContainer backend (draft): state, blockers, roadmap |
+| [`_docs/windows-support.md`](_docs/windows-support.md) | Windows hybrid backend: hook + AppContainer, enforcement, roadmap |
+| [`_docs/inbox/windows-policy-approach.md`](_docs/inbox/windows-policy-approach.md) | Hybrid hook design, build, limitations |
 | [`AGENTS.md`](AGENTS.md) | Guide for contributors and agents |
