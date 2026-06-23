@@ -2,12 +2,12 @@
 name = "isol8"
 version = "0.2.5"
 edition = "2021"
-licence = "MIT"
+license = "MIT"
 repository = "https://github.com/mdnmdn/isol8"
 description = "Lightweight cross-platform isolation sandbox for AI coding agents and CLI tools with custom policies"
 default-run = "isol8"
 build = "build.rs"
-author = "Marco De Nittis"
+authors = ["Marco De Nittis"]
 
 [lib]
 name = "isol8"
