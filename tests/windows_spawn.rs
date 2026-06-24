@@ -127,10 +127,10 @@ fn grandchild_inherits_hook_policy() {
 
     let root = std::env::temp_dir().join(format!("isol8-gc-{}", std::process::id()));
     let home = root.join("home");
-    let outside = root
-        .parent()
-        .unwrap_or(&root)
-        .join(format!("outside-{}", root.file_name().unwrap().to_string_lossy()));
+    let outside = root.parent().unwrap_or(&root).join(format!(
+        "outside-{}",
+        root.file_name().unwrap().to_string_lossy()
+    ));
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&outside).unwrap();
     fs::write(outside.join("secret.txt"), "secret\n").unwrap();
@@ -159,7 +159,10 @@ fn grandchild_inherits_hook_policy() {
         .spawn(&profile, &env, &cmd)
         .and_then(|mut child| child.wait())
         .expect("spawn");
-    assert_ne!(code, 0, "grandchild read outside grant should be denied, got {code}");
+    assert_ne!(
+        code, 0,
+        "grandchild read outside grant should be denied, got {code}"
+    );
     let _ = fs::remove_dir_all(&root);
     let _ = fs::remove_dir_all(&outside);
 }

@@ -19,7 +19,12 @@ use isol8_path_policy::PathPolicy;
 
 const HOOK_DLL_NAME: &str = "isol8-winhook.dll";
 
-/// Paths to search for the hook DLL (next to isol8 binary, then cwd).
+/// Paths to search for the hook DLL (next to the isol8 binary only).
+///
+/// The search is intentionally restricted to the binary's own directory tree.
+/// A bare filename fallback (CWD search) is omitted on purpose: it would allow
+/// an attacker to place a malicious `isol8-winhook.dll` in any directory the
+/// user navigates to and have it injected into every sandboxed child.
 pub fn hook_dll_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
@@ -34,7 +39,6 @@ pub fn hook_dll_search_paths() -> Vec<PathBuf> {
             dir = d.parent();
         }
     }
-    paths.push(PathBuf::from(HOOK_DLL_NAME));
     paths
 }
 
@@ -128,7 +132,9 @@ pub fn inject_dll_and_resume(process: HANDLE, thread: HANDLE, dll_path: &Path) -
             Err(e) => {
                 let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
                 abort_suspended_child(process);
-                return Err(Error::Message(format!("CreateRemoteThread(LoadLibraryW): {e}")));
+                return Err(Error::Message(format!(
+                    "CreateRemoteThread(LoadLibraryW): {e}"
+                )));
             }
         };
 
@@ -168,5 +174,21 @@ mod tests {
     #[test]
     fn hook_dll_name_is_stable() {
         assert_eq!(HOOK_DLL_NAME, "isol8-winhook.dll");
+    }
+
+    #[test]
+    fn hook_dll_search_paths_are_all_absolute() {
+        // C2 regression: hook_dll_search_paths() must never return a bare filename.
+        // A bare filename causes Windows to search the current working directory first,
+        // enabling trivial DLL hijacking by placing a malicious dll in any directory
+        // the user navigates to.
+        let paths = hook_dll_search_paths();
+        for p in &paths {
+            assert!(
+                p.is_absolute(),
+                "hook_dll_search_paths() returned a non-absolute path: {:?}",
+                p
+            );
+        }
     }
 }

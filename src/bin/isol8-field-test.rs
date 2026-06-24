@@ -474,21 +474,13 @@ fn main() {
     {
         let (code, note) = if path_enforced {
             let secret = format!("{out}\\secret.txt");
-            let argv = [
-                probe_exe(),
-                "spawn".into(),
-                "read".into(),
-                secret,
-            ];
+            let argv = [probe_exe(), "spawn".into(), "read".into(), secret];
             let p = profile_with(vec![], &root);
             let cmd: Vec<&str> = argv.iter().map(String::as_str).collect();
             let c = run(&p, &home, &cmd);
             (c, "grandchild read outside grant must fail")
         } else {
-            (
-                -1,
-                "isol8-winhook.dll not found beside binary",
-            )
+            (-1, "isol8-winhook.dll not found beside binary")
         };
         results.push(Outcome {
             name: "10 grandchild-deny-outside-grant",
@@ -617,6 +609,44 @@ fn main() {
             name: "16 linux-env-path-home-present",
             pass: Some(code == 0),
             note: "",
+        });
+    }
+
+    // 17. C1 regression — zero explicit grants must not silently bypass Landlock.
+    //
+    // Before the C1 fix, apply_landlock([]) returned Ok(()) without calling
+    // restrict_self(). A profile with zero Subpath grants left the process fully
+    // unconfined, so reading outside/secret.txt would succeed.
+    //
+    // After the fix, restrict_self() is always called. With zero explicit grants,
+    // the only Landlock rule is the auto-grant for the binary's parent directory
+    // (added by confine_executable). Everything else — including outside/ — is
+    // denied by the Landlock deny-by-default policy.
+    #[cfg(target_os = "linux")]
+    {
+        let p = Profile {
+            requires: vec![],
+            filter: None,
+            policies: vec![],
+            paths: vec![], // zero explicit grants — confine_executable adds binary only
+            env: HashMap::new(),
+            home_replace: None,
+            rewrite: None,
+            macos: None,
+            windows: None,
+        };
+        // Try to read outside/secret.txt. The command must fail:
+        // either because sh/cat cannot load system libs (most systems) or because
+        // Landlock denies the read of outside/ (all cases after C1 fix).
+        let code = run(
+            &p,
+            &home,
+            &["/bin/sh", "-c", &format!("/bin/cat {out}/secret.txt")],
+        );
+        results.push(Outcome {
+            name: "17 linux-zero-grant-deny-all",
+            pass: Some(code != 0),
+            note: "C1 regression: zero-grant profile must not silently bypass Landlock",
         });
     }
 

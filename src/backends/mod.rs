@@ -21,6 +21,12 @@ pub fn path_enforcement_available() -> bool {
     windows_hook::hook_dll_available().is_some()
 }
 
+/// On non-Windows platforms path enforcement is handled by Landlock/Seatbelt, not this function.
+#[cfg(not(windows))]
+pub fn path_enforcement_available() -> bool {
+    false
+}
+
 /// A platform sandbox implementation. Renders the merged `Profile` into the
 /// OS-native policy (Landlock ruleset, Seatbelt text, …) and execs the command.
 pub trait Backend {

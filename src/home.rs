@@ -193,6 +193,14 @@ pub fn seed(home: &EffectiveHome) -> Result<()> {
     for entry in &home.seed {
         // Seed entries are real-home-relative `~/...` references.
         let rel = entry.strip_prefix("~/").unwrap_or(entry);
+
+        // Reject absolute paths and `..` components — either would escape real_home.
+        if Path::new(rel).is_absolute() || rel.split('/').any(|c| c == "..") {
+            return Err(Error::Profile(format!(
+                "seed entry escapes home boundary: {entry}"
+            )));
+        }
+
         let src = real.join(rel);
         if !src.exists() {
             continue; // best-effort
@@ -208,8 +216,16 @@ pub fn seed(home: &EffectiveHome) -> Result<()> {
 }
 
 /// Recursively copy `src` to `dst`, marking copied files read-only.
+///
+/// Symlinks are skipped silently at every level of recursion. Following them
+/// would allow a `~/.gitconfig -> /etc/shadow` style link to copy files from
+/// outside the home tree into the scratch environment.
 fn copy_readonly(src: &Path, dst: &Path) -> Result<()> {
     let meta = std::fs::symlink_metadata(src)?;
+    if meta.file_type().is_symlink() {
+        // Never follow symlinks during seeding — they can point outside $HOME.
+        return Ok(());
+    }
     if meta.is_dir() {
         std::fs::create_dir_all(dst)?;
         for entry in std::fs::read_dir(src)? {
@@ -489,6 +505,79 @@ mod tests {
 
         let copied = scratch.join(".gitconfig");
         assert_eq!(std::fs::read(&copied).unwrap(), b"first");
+
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn seed_rejects_dotdot_traversal() {
+        let tmp =
+            std::env::temp_dir().join(format!("isol8-test-seed-dotdot-{}", std::process::id()));
+        let real = tmp.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", &real);
+
+        // A seed entry with `..` must be rejected, not followed.
+        let home = EffectiveHome {
+            path: tmp.join("scratch"),
+            seed: vec!["~/../../../etc/passwd".into()],
+        };
+        assert!(
+            seed(&home).is_err(),
+            "seed with .. traversal must return an error"
+        );
+
+        // Also reject a bare absolute path.
+        let home2 = EffectiveHome {
+            path: tmp.join("scratch2"),
+            seed: vec!["/etc/passwd".into()],
+        };
+        assert!(
+            seed(&home2).is_err(),
+            "seed with absolute path must return an error"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn seed_skips_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = std::env::temp_dir().join(format!("isol8-test-seed-sym-{}", std::process::id()));
+        let real = tmp.join("real");
+        let outside = tmp.join("outside.txt");
+        let scratch = tmp.join("scratch");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(&outside, b"secret").unwrap();
+        // Create a symlink inside real home that points outside it.
+        symlink(&outside, real.join(".sneaky")).unwrap();
+
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", &real);
+
+        let home = EffectiveHome {
+            path: scratch.clone(),
+            seed: vec!["~/.sneaky".into()],
+        };
+        seed(&home).unwrap(); // must succeed (symlinks are silently skipped)
+
+        // The symlink target must NOT have been copied into the scratch home.
+        assert!(
+            !scratch.join(".sneaky").exists(),
+            "symlink target must not be seeded into scratch home"
+        );
 
         match prev {
             Some(v) => std::env::set_var("HOME", v),
