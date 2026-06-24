@@ -528,3 +528,42 @@ Remaining open items, by priority:
 5. **M5/M6** — Block `@diag` inside sandbox; harden nesting marker
 6. **H2** — Implement DLL Authenticode verification or resource-embed the DLL
 7. **H3** — Hook `NtCreateUserProcess` for complete grandchild coverage
+
+---
+
+## Test Coverage Status
+
+### Fixed findings — tests in place
+
+| Finding | Code fix | Unit/regression test | Field test |
+|---------|----------|----------------------|------------|
+| **C1** Empty Landlock ruleset bypasses enforcement | `src/backends/linux.rs` — removed early-return before `restrict_self()` | `backends::linux::tests::build_rules_empty_profile` (build side); field scenario 17 (enforcement side) | Scenario **17** `linux-zero-grant-deny-all` (`src/bin/isol8-field-test.rs`) |
+| **C2** Windows DLL hijacking via CWD | `src/backends/windows_hook.rs` — removed bare-filename fallback | `backends::windows_hook::tests::hook_dll_search_paths_are_all_absolute` | — (no meaningful field test possible without a real malicious DLL) |
+| **C3a** Seed `..` traversal | `src/home.rs` — rejects `..`/absolute in `seed()` | `home::tests::seed_rejects_dotdot_traversal` | — |
+| **C3b** Seed follows symlinks | `src/home.rs` — `copy_readonly()` skips symlinks at all depths | `home::tests::seed_skips_symlinks` | — |
+
+### Open findings — tests needed when fixed
+
+When each of the following findings is addressed, a test of the indicated kind should ship alongside the fix:
+
+| Finding | Suggested test kind | What to verify |
+|---------|---------------------|----------------|
+| **H1** Raw SBPL injection | Unit (macOS backend) | A profile with `raw = "(allow file-read* (subpath /))"` must not grant unrestricted read; the field should be validated or sanitized |
+| **H2** No DLL code signing | Unit (Windows) | `inject_dll_and_resume` must fail or warn if the DLL is not Authenticode-signed |
+| **H3** `NtCreateUserProcess` bypass | Field (Windows, scenario 18) | A confined process that calls `NtCreateUserProcess` directly must not spawn an unhooked grandchild |
+| **H4** RO grants include Execute | Unit (Linux backend) | `Access::Ro` flags for a non-executable path should not include `Execute` (or document the deliberate choice) |
+| **H5** Symlink over-grant in Landlock | Unit (Linux backend) | A symlink to outside the intended grant tree should not receive a Landlock rule for its target |
+| **H6** `no_new_privs` before Landlock | Unit (Linux backend) | Verify call order: `apply_landlock` must succeed before `set_no_new_privs` is called |
+| **H7** `BestEffort` silently drops rights | Unit (Linux backend) | After `restrict_self()`, warn or fail when `RulesetStatus::PartiallyEnforced` — add a test that triggers partial enforcement on a mock ABI version |
+| **H8** `/proc` exposes `environ`/maps | Integration (profile) | `linux/system-runtime` profile should not grant the full `/proc` subtree; test that `/proc/self/environ` is inaccessible in a confined process |
+| **H9/H10** Seed TOCTOU race | Unit (home.rs) | Use `O_NOFOLLOW`-style atomic checks; verify the race window is closed |
+| **H11** `--profile-path` shadows builtin | Unit (cli) | Loading a profile-path TOML named `base.toml` should emit a warning |
+| **H12** Auto-profile basename exploit | Unit (filter + sandbox) | When `ISOL8_SANDBOXED` is set, `resolve_auto_profiles` must return no additional layers |
+| **H13** CWD `isol8.toml` overrides policy | Integration | Loading from CWD should log a warning; `--no-cwd-config` should skip it entirely |
+| **M2** Policy block union over-grants | Unit (filter) | A `[[policies]]` block on a lower layer cannot widen an `Access::None` set by a higher layer |
+| **M3** Non-Subpath grants silently no-op on Linux | Unit (Linux backend) | A Literal-match grant on Linux must produce a warning or error, not silently vanish |
+| **M5** `@diag` leaks policy to agent | Unit (cli/diag) | Running `@diag` with `ISOL8_SANDBOXED` set must return an error |
+| **M6** `ISOL8_SANDBOXED` marker evadable | Integration (Linux) | A field scenario that unsets `ISOL8_SANDBOXED` and re-invokes isol8 must be blocked by the platform-level marker (once implemented) |
+| **M9** Windows 8.3 short names bypass | Unit (isol8-path-policy) | `C:\PROGRA~1\app\secret.txt` must be denied when only `C:\Program Files\app\safe.txt` is granted |
+| **M10** Handle inheritance bypass | Unit (Windows hook) | `confine_created_process` must set `bInheritHandles = FALSE` regardless of the child's request |
+| **M12** Memory-mapped I/O not hooked | Unit (isol8-winhook) | `CreateFileMappingW` with write access on an ro-granted file must be denied |

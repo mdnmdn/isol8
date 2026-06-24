@@ -175,4 +175,20 @@ mod tests {
     fn hook_dll_name_is_stable() {
         assert_eq!(HOOK_DLL_NAME, "isol8-winhook.dll");
     }
+
+    #[test]
+    fn hook_dll_search_paths_are_all_absolute() {
+        // C2 regression: hook_dll_search_paths() must never return a bare filename.
+        // A bare filename causes Windows to search the current working directory first,
+        // enabling trivial DLL hijacking by placing a malicious dll in any directory
+        // the user navigates to.
+        let paths = hook_dll_search_paths();
+        for p in &paths {
+            assert!(
+                p.is_absolute(),
+                "hook_dll_search_paths() returned a non-absolute path: {:?}",
+                p
+            );
+        }
+    }
 }

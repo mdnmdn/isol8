@@ -15,6 +15,9 @@ enforces it.
 > scenario **10** verifies hook policy propagates to **grandchild** processes
 > spawned by the confined child.
 > Linux-specific scenarios **10–16** compile only on Linux.
+> Scenario **17** (Linux only) is a regression test for finding C1: a zero-explicit-grant
+> profile must still enforce deny-all via Landlock (the former early-return bug would
+> silently skip `restrict_self()` and leave the process unconfined).
 > See [`AGENTS.md`](../AGENTS.md).
 
 ---
@@ -60,6 +63,10 @@ Standard `cargo test`. Keep them deterministic and platform-independent:
   existing read-only copy doesn't error and keeps the first snapshot; `--no-seed`
   clears every layer's seed list for the run. (`src/home.rs::seed_is_first_creation_only`,
   `no_seed_clears_seed_list`)
+- **Seed security (C3)** — seed entries with `..` path components or absolute paths are
+  rejected (`src/home.rs::seed_rejects_dotdot_traversal`); symlinks at any depth of
+  recursion are silently skipped, preventing follow-through to targets outside `$HOME`
+  (`src/home.rs::seed_skips_symlinks`).
 - **`#HOME` token** — expands to the **real** home before `~` expansion, so a grant
   survives an active `--home`/`home_replace`; with no replacement it coincides with
   `~`. (`src/home.rs::expand_grant_real_home_token`)
@@ -140,6 +147,7 @@ so behaviour matches normal config defaults.
 | `backends::windows` | `quoted_command_line_joins_args` | Space-containing paths quoted |
 | `backends::windows_policy` | `ro_seed_overrides_parent_rw`, `seed_data_txt_readable_with_ro_grant` | JSON path policy deny-first merge |
 | `backends::windows_hook` | `hook_dll_name_is_stable` | DLL discovery name is `isol8-winhook.dll` |
+| `backends::windows_hook` | `hook_dll_search_paths_are_all_absolute` | **C2 regression**: search paths never include a bare filename (no CWD search) |
 | `isol8-path-policy` | `dotdot_traversal_is_denied` | `..` in path → deny (fail-closed) |
 | `isol8-path-policy` | `unc_grant_is_case_insensitive` | UNC grants match case-insensitively |
 | `isol8-path-policy` | `prefix_rank_uses_normalized_grant_length` | Longest-prefix uses normalized grant length |
@@ -198,6 +206,7 @@ leave nothing behind (cleaned on exit; `--keep` to inspect failures).
 | 8 | (N0, future) | TCP connect to a public host | **SKIP** | **SKIP** |
 | 9 | `rewrite` ensure-arg (Unix) / AppContainer spawn (Windows) | injected arg creates file / `cmd.exe /c exit 0` | **Allowed** (rewrite) | **Allowed** (spawn smoke test) |
 | 10 | (none) | grandchild read outside grant (`isol8-probe spawn read <outside>/secret.txt`) | — | **Denied** (hook reinject on `CreateProcess*`) |
+| 17 *(Linux only)* | zero explicit grants | read a file in `outside/` | **Denied** (Landlock deny-all, or library load failure) | — |
 
 On Unix, scenario 9 builds an ad-hoc layer with a `rewrite`, applies it via
 `profile::apply_rewrite`, and confirms the injected argument reached the executed
