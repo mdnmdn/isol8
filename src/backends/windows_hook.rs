@@ -128,7 +128,9 @@ pub fn inject_dll_and_resume(process: HANDLE, thread: HANDLE, dll_path: &Path) -
             Err(e) => {
                 let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
                 abort_suspended_child(process);
-                return Err(Error::Message(format!("CreateRemoteThread(LoadLibraryW): {e}")));
+                return Err(Error::Message(format!(
+                    "CreateRemoteThread(LoadLibraryW): {e}"
+                )));
             }
         };
 

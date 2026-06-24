@@ -191,10 +191,7 @@ mod tests {
             GrantAccess::Rw,
             GrantMatch::Subpath,
         )]);
-        assert!(!p.allows(
-            r"C:\workspace\..\Windows\System32\config\SAM",
-            false
-        ));
+        assert!(!p.allows(r"C:\workspace\..\Windows\System32\config\SAM", false));
     }
 
     #[test]

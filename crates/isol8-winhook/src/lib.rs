@@ -100,8 +100,7 @@ static ORIGINAL_FIND_W: OnceLock<FindFirstFileWFn> = OnceLock::new();
 static ORIGINAL_FIND_A: OnceLock<FindFirstFileAFn> = OnceLock::new();
 static ORIGINAL_NT: OnceLock<NtCreateFileFn> = OnceLock::new();
 static ORIGINAL_CREATE_PROCESS_A: OnceLock<CreateProcessAFn> = OnceLock::new();
-static ORIGINAL_CREATE_PROCESS_INTERNAL_W: OnceLock<CreateProcessInternalWFn> =
-    OnceLock::new();
+static ORIGINAL_CREATE_PROCESS_INTERNAL_W: OnceLock<CreateProcessInternalWFn> = OnceLock::new();
 static HOOK_DLL_PATH: OnceLock<String> = OnceLock::new();
 
 type CreateProcessAFn = unsafe extern "system" fn(
@@ -251,10 +250,7 @@ fn install_hooks() -> Result<(), ()> {
         if kernelbase.is_null() {
             return Err(());
         }
-        let internal = GetProcAddress(
-            kernelbase,
-            c"CreateProcessInternalW".as_ptr() as *const u8,
-        );
+        let internal = GetProcAddress(kernelbase, c"CreateProcessInternalW".as_ptr() as *const u8);
         let Some(internal) = internal else {
             return Err(());
         };
@@ -280,10 +276,7 @@ fn inject_hook_dll(process: HANDLE, thread: HANDLE, resume: bool) -> bool {
         let _ = unsafe { TerminateProcess(process, 1) };
         return false;
     };
-    let wide: Vec<u16> = dll_path
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
+    let wide: Vec<u16> = dll_path.encode_utf16().chain(std::iter::once(0)).collect();
     let size = wide.len() * std::mem::size_of::<u16>();
 
     unsafe {

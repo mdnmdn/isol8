@@ -474,21 +474,13 @@ fn main() {
     {
         let (code, note) = if path_enforced {
             let secret = format!("{out}\\secret.txt");
-            let argv = [
-                probe_exe(),
-                "spawn".into(),
-                "read".into(),
-                secret,
-            ];
+            let argv = [probe_exe(), "spawn".into(), "read".into(), secret];
             let p = profile_with(vec![], &root);
             let cmd: Vec<&str> = argv.iter().map(String::as_str).collect();
             let c = run(&p, &home, &cmd);
             (c, "grandchild read outside grant must fail")
         } else {
-            (
-                -1,
-                "isol8-winhook.dll not found beside binary",
-            )
+            (-1, "isol8-winhook.dll not found beside binary")
         };
         results.push(Outcome {
             name: "10 grandchild-deny-outside-grant",
