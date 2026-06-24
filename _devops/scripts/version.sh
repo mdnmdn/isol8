@@ -57,7 +57,7 @@ cmd_bump() {
 
   echo "running lint..."
   cargo fmt --all -- --check
-  cargo clippy --all-targets --all-features -- -D warnings
+  cargo clippy --workspace --exclude isol8-winhook --all-features -- -D warnings
 
   echo "running tests..."
   cargo test

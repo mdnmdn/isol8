@@ -20,8 +20,10 @@
 > - `cli.rs` is now `src/cli/{mod,config,diag}.rs`, gated behind the default-on `cli`
 >   feature; `src/main.rs` is a thin shim calling `isol8::cli::main()`.
 > - A `src/lib.rs` re-exports the public API; `tests/` share the crate.
-> - `home.rs`, `env.rs`, `backends/{macos,linux}.rs`, and the `isol8-field-test` bin
->   are real; `net/`, `caps.rs`, and the N3 helper are still future.
+> - `home.rs`, `env.rs`, `backends/{macos,linux,windows}.rs` (+ `windows_hook`,
+>   `windows_policy`), `crates/{isol8-path-policy,isol8-winhook}`, and the
+>   `isol8-field-test` / `isol8-probe` bins are real; `net/`, `caps.rs`, and the
+>   N3 helper are still future.
 >
 > Companion to the requirements in [`project-description.md`](./project-description.md).
 > Section refs (R1–R6, N0–N3, §7) point there.
@@ -32,8 +34,14 @@
 
 ```
 isol8/
-├── Cargo.toml                  # workspace-less single crate; main bin (cli feature) + net helper bin
+├── Cargo.toml                  # workspace root; default-members = ["."] (isol8 only)
+├── crates/
+│   ├── isol8-path-policy/      # deny-first path matching + JSON (engine + hook DLL)
+│   └── isol8-winhook/          # Windows cdylib: CreateFile* / NtCreateFile hooks
 ├── build.rs                    # walks profiles/**/*.toml → OUT_DIR/profiles_embedded.rs
+├── _devops/scripts/
+│   ├── version.sh              # release bump + tag verify
+│   └── package-release.sh      # platform zip assembly (incl. isol8-winhook.dll on Windows)
 ├── AGENTS.md
 ├── _docs/
 │   ├── project-description.md  # requirements + ecosystem research
@@ -45,6 +53,7 @@ isol8/
 │   ├── linux-system.toml       # backward-compat alias → linux/system-runtime
 │   ├── macos/system-runtime.toml
 │   ├── linux/system-runtime.toml
+│   ├── windows/system-runtime.toml
 │   ├── toolchains/rust.toml
 │   ├── integrations/git.toml
 │   ├── agents/claude-code.toml
@@ -71,12 +80,15 @@ isol8/
 │   │   ├── mod.rs              # Backend trait (spawn→SandboxChild, render_policy), select()
 │   │   ├── linux.rs            # Landlock ruleset, PR_SET_NO_NEW_PRIVS, waitpid-based SandboxChild
 │   │   ├── macos.rs            # Seatbelt policy text + sandbox-exec, Child-based SandboxChild
-│   │   └── windows.rs          # AppContainer + Job Objects (Phase 5, stub)
+│   │   ├── windows.rs          # Hybrid: hook-mode spawn or AppContainer Tier 1
+│   │   ├── windows_hook.rs     # isol8-winhook.dll discovery + LoadLibraryW inject
+│   │   └── windows_policy.rs   # Profile → PathPolicy JSON for hook DLL
 │   ├── net/                    # (Phase 3, not started)
 │   └── caps.rs                 # (Phase 3, not started)
 ├── src/bin/
 │   ├── isol8-net-helper.rs     # (Phase 3) privileged N3 helper
-│   └── isol8-field-test.rs     # real-sandbox field tests
+│   ├── isol8-field-test.rs     # real-sandbox field tests
+│   └── isol8-probe.rs          # Windows file read/write probe (field tests)
 └── tests/
     ├── profile_merge.rs        # deny-first merge + inheritance
     ├── profile_path.rs         # profile-path overlay + auto-profile selection
@@ -338,8 +350,13 @@ pub fn probe() -> Caps;                   // feeds R5.7 tier auto-select + error
 - `backends/macos.rs` — `MacosBackend`. Generate Seatbelt policy text
   (`(deny default)`, `(allow file-read* (subpath …))`, `(allow file-write* …)`,
   metadata via `file-read-metadata`) and invoke `/usr/bin/sandbox-exec -p <policy>`.
-- `backends/windows.rs` — `WindowsBackend` (Phase 5). AppContainer SID + per-object
-  ACLs, Job Objects for limits, env block construction. Stubbed until then.
+- `backends/windows.rs` — `WindowsBackend`. Hook mode (suspended inject +
+  `ISOL8_PATH_POLICY`) when `isol8-winhook.dll` is present; else AppContainer
+  `CreateProcessW` + capability SIDs. Env block + MSDN command quoting.
+- `backends/windows_hook.rs` — DLL search (exe dir + parents), remote inject.
+- `backends/windows_policy.rs` — merged `Profile` → `isol8_path_policy::PathPolicy`.
+- `crates/isol8-path-policy` — deny-first path matching + JSON serde (engine + DLL).
+- `crates/isol8-winhook` — Windows-only `cdylib`; MinHook file API detours.
 
 ### `net/` — R5 (Phase 3)
 

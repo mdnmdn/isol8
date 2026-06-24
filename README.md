@@ -6,18 +6,63 @@ of the filesystem, a sanitized environment, an optional replaceable `$HOME`, and
 tiered network confinement.
 
 It generalizes the macOS `sandbox-exec` (Seatbelt) model to **Linux** (Landlock +
-namespaces), **WSL2**, and **Windows** (deferred). Primary targets: Linux and macOS.
+namespaces), **WSL2**, and **Windows** (hybrid hook + AppContainer). Primary targets:
+Linux and macOS.
 
-> **Status: Phase 1 — macOS + Linux MVP working.** Path access, HOME replacement, env
-> sanitization, ~70 embedded Safehouse-derived profiles, conditional filters,
-> config file + auto-profile selection, and policy introspection are implemented.
-> **Enforcement works on macOS** via Seatbelt and **on Linux** via Landlock (WSL2
-> kernel 5.15 verified). Network tiers and Windows backend are deferred.
+> **Status: Phase 1 — macOS, Linux, and Windows path/env MVP working.** Path access,
+> HOME replacement, env sanitization, ~70 embedded Safehouse-derived profiles,
+> conditional filters, config file + auto-profile selection, and policy introspection
+> are implemented. **Enforcement works on macOS** via Seatbelt, **on Linux** via
+> Landlock (WSL2 kernel 5.15 verified), and **on Windows** via `isol8-winhook.dll`
+> (user-mode path hooks; shipped in `windows-x64.zip` releases). Network tiers
+> are deferred.
 
 > Primary inspiration: the macOS [Agent Safehouse](https://github.com/eugene1g/agent-safehouse)
 > project, whose composable profile model `isol8` generalizes cross-platform.
 
 Full usage: [`_docs/instructions.md`](_docs/instructions.md).
+
+## Installation
+
+### macOS / Linux
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mdnmdn/isol8/main/install.sh | bash
+```
+
+Or download a release zip from [GitHub Releases](https://github.com/mdnmdn/isol8/releases)
+and place `isol8` on your `PATH`.
+
+Options: `./install.sh --help`, `--version 0.2.4`, `--install-dir ~/.local/bin`.
+
+### Windows
+
+Download `windows-x64.zip` from [GitHub Releases](https://github.com/mdnmdn/isol8/releases)
+and extract **both** `isol8.exe` and `isol8-winhook.dll` into the same folder, or use
+the PowerShell installer (installs both files; path enforcement requires the DLL):
+
+```powershell
+# From a clone of this repo (bypass local script policy if needed):
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+
+# Or one-liner (review the script first if you prefer):
+irm https://raw.githubusercontent.com/mdnmdn/isol8/main/install.ps1 | iex
+```
+
+Options:
+
+```powershell
+.\install.ps1 -Version 0.2.4
+.\install.ps1 -InstallDir "$env:LOCALAPPDATA\Programs\isol8"
+.\install.ps1 -Help
+```
+
+Default install location: `%USERPROFILE%\.local\bin`. If that directory is not on your
+user `PATH`, the script prints the command to add it. Restart the terminal after updating
+`PATH`.
+
+> **Note:** `install.sh` is Unix-only. On Windows use `install.ps1` or manual extraction
+> from `windows-x64.zip`.
 
 ## What it does
 
@@ -99,9 +144,15 @@ Environment overrides: `ISOL8_PROFILE`, `ISOL8_PROFILE_PATH`, `ISOL8_ADD_DIRS_RW
 ```sh
 cargo build
 cargo test
-just ci          # fmt + clippy + build + test
-just field-test  # real sandbox checks (macOS)
+just ci                  # fmt + clippy + build + test
+just field-test          # real sandbox checks (macOS/Linux)
+just field-test-windows  # Windows: hook DLL + field tests
 ```
+
+**Windows releases** ship `isol8.exe` and `isol8-winhook.dll` together
+(`windows-x64.zip` on GitHub Releases). For local dev, copy the DLL beside the
+binary after `just build-winhook`. See [`_docs/testing-strategies.md`](_docs/testing-strategies.md)
+§5.1 for MinGW prerequisites.
 
 
 

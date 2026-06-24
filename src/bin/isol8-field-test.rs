@@ -3,10 +3,10 @@
 //! temp dir, runs a probe command through the real backend, and asserts the
 //! observed effect (see _docs/testing-strategies.md §3).
 //!
-//! macOS (Seatbelt) and Linux (Landlock) enforce all path scenarios. Windows runs
-//! the env scenarios; path scenarios SKIP (ACL-level enforcement deferred — see
-//! _docs/wip/windows-review.md). Linux-specific scenarios (10–16) compile in only
-//! on Linux.
+//! macOS (Seatbelt) and Linux (Landlock) enforce all path scenarios. Windows enforces
+//! path scenarios when `isol8-winhook.dll` is present (hybrid AppContainer + hook;
+//! see `_docs/inbox/windows-policy-approach.md`). Without the hook DLL, Windows path
+//! scenarios SKIP. Linux-specific scenarios (10–16) compile in only on Linux.
 //!
 //! Exit 0 if every scenario passes (skips allowed), 1 on any failure.
 //! Temp dirs removed on exit unless `--keep`.
@@ -20,7 +20,6 @@ use isol8::backends;
 use isol8::env::build_minimal;
 use isol8::profile::{
     apply_rewrite, Access, Capability, MacosExtra, MatchKind, PathGrant, Profile, Rewrite,
-    WindowsCapability, WindowsExtra,
 };
 use isol8::resolve::confine_executable;
 
@@ -64,13 +63,69 @@ fn system_base() -> Vec<PathGrant> {
                 grant("/proc", Ro, Subpath),
             ]
         }
+        "windows" => {
+            use Access::Ro;
+            use MatchKind::Subpath;
+            let sysroot = std::env::var("SYSTEMROOT").unwrap_or_else(|_| "C:\\Windows".to_string());
+            // Do NOT grant all of %TEMP% — outside/ is a sibling under the temp parent and
+            // must stay outside any base grant (same invariant as Linux field tests).
+            vec![grant(&sysroot, Ro, Subpath)]
+        }
         _ => vec![],
     }
 }
 
+fn probe_exe() -> String {
+    let path = std::env::current_exe()
+        .expect("current_exe")
+        .parent()
+        .expect("exe parent dir")
+        .join("isol8-probe.exe");
+    assert!(
+        path.is_file(),
+        "isol8-probe.exe not found at {}; run `cargo build --bin isol8-probe`",
+        path.display()
+    );
+    path.to_string_lossy().into_owned()
+}
+
+/// Platform-specific probe command fragments for path scenarios.
+fn probe_read(path: &str) -> Vec<String> {
+    if std::env::consts::OS == "windows" {
+        vec![probe_exe(), "read".into(), path.into()]
+    } else {
+        vec!["/bin/sh".into(), "-c".into(), format!("/bin/cat {path}")]
+    }
+}
+
+fn probe_write(path: &str) -> Vec<String> {
+    if std::env::consts::OS == "windows" {
+        vec![probe_exe(), "write".into(), path.into()]
+    } else {
+        vec!["/bin/sh".into(), "-c".into(), format!("echo hi > {path}")]
+    }
+}
+
+fn probe_list_dir(path: &str) -> Vec<String> {
+    if std::env::consts::OS == "windows" {
+        let marker = format!("{path}\\.isol8-ft-probe");
+        vec![probe_exe(), "read".into(), marker]
+    } else {
+        vec!["/bin/sh".into(), "-c".into(), format!("/bin/ls {path}")]
+    }
+}
+
 /// A profile with the platform system base + scenario-specific grants.
-fn profile_with(extra: Vec<PathGrant>) -> Profile {
+fn profile_with(extra: Vec<PathGrant>, root: &Path) -> Profile {
     let mut paths = system_base();
+    if std::env::consts::OS == "windows" {
+        // Grant only this run's scratch tree, not all of %TEMP%.
+        paths.push(grant(
+            root.to_str().expect("scratch root is valid UTF-8"),
+            Access::Rw,
+            MatchKind::Subpath,
+        ));
+    }
     paths.extend(extra);
     let (macos, windows) = match std::env::consts::OS {
         "macos" => (
@@ -80,12 +135,8 @@ fn profile_with(extra: Vec<PathGrant>) -> Profile {
             }),
             None,
         ),
-        "windows" => (
-            None,
-            Some(WindowsExtra {
-                capabilities: vec![WindowsCapability::InternetClient],
-            }),
-        ),
+        // Hook mode (Tier 1b) does not use AppContainer; skip windows capabilities here.
+        "windows" => (None, None),
         _ => (None, None),
     };
     Profile {
@@ -165,6 +216,10 @@ fn main() {
                 "/Users".into()
             }
         });
+    if platform == "windows" {
+        let marker = std::path::Path::new(&real_home).join(".isol8-ft-probe");
+        let _ = fs::write(&marker, "probe\n");
+    }
 
     println!(
         "isol8 field tests — platform: {platform}   home: {}\n",
@@ -173,24 +228,31 @@ fn main() {
 
     let mut results = Vec::new();
 
-    // Path scenarios need ACL-level enforcement. macOS (Seatbelt) and Linux
-    // (Landlock) do it; Windows AppContainer would need ACL modification (deferred).
-    let path_enforced = matches!(platform, "macos" | "linux");
+    // Path scenarios need OS-level enforcement. macOS/Linux use Seatbelt/Landlock;
+    // Windows uses the hybrid hook DLL when deployed beside the binary.
+    let path_enforced = matches!(platform, "macos" | "linux")
+        || (platform == "windows" && backends::path_enforcement_available());
 
     // ===== Cross-platform scenarios (1–9) =====
 
     // 1. no grant on outside/ → read is Denied.
     {
-        let p = profile_with(vec![]);
+        let p = profile_with(vec![], &root);
         let (code, note) = if path_enforced {
-            let c = run(
-                &p,
-                &home,
-                &["/bin/sh", "-c", &format!("/bin/cat {out}/secret.txt")],
-            );
+            let secret = format!("{out}\\secret.txt");
+            let argv = probe_read(&secret);
+            let cmd: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let c = run(&p, &home, &cmd);
             (c, "")
         } else {
-            (-1, "path enforcement not available on this platform")
+            (
+                -1,
+                if platform == "windows" {
+                    "isol8-winhook.dll not found beside binary"
+                } else {
+                    "path enforcement not available on this platform"
+                },
+            )
         };
         results.push(Outcome {
             name: "01 deny-read-outside-grant",
@@ -200,16 +262,27 @@ fn main() {
     }
     // 2. rw on workspace → write is Allowed.
     {
-        let p = profile_with(vec![grant(ws, Access::Rw, MatchKind::Subpath)]);
+        let p = profile_with(vec![grant(ws, Access::Rw, MatchKind::Subpath)], &root);
         let (code, wrote, note) = if path_enforced {
-            let c = run(
-                &p,
-                &home,
-                &["/bin/sh", "-c", &format!("echo hi > {ws}/out.txt")],
-            );
+            let out_file = if platform == "windows" {
+                format!("{ws}\\out.txt")
+            } else {
+                format!("{ws}/out.txt")
+            };
+            let argv = probe_write(&out_file);
+            let cmd: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let c = run(&p, &home, &cmd);
             (c, workspace.join("out.txt").exists(), "")
         } else {
-            (-1, false, "path enforcement not available on this platform")
+            (
+                -1,
+                false,
+                if platform == "windows" {
+                    "isol8-winhook.dll not found beside binary"
+                } else {
+                    "path enforcement not available on this platform"
+                },
+            )
         };
         results.push(Outcome {
             name: "02 rw-workspace-write",
@@ -223,16 +296,27 @@ fn main() {
     }
     // 3. ro on seed → write is Denied.
     {
-        let p = profile_with(vec![grant(sd, Access::Ro, MatchKind::Subpath)]);
+        let p = profile_with(vec![grant(sd, Access::Ro, MatchKind::Subpath)], &root);
         let (code, blocked, note) = if path_enforced {
-            let c = run(
-                &p,
-                &home,
-                &["/bin/sh", "-c", &format!("echo hi > {sd}/x.txt")],
-            );
+            let target = if platform == "windows" {
+                format!("{sd}\\x.txt")
+            } else {
+                format!("{sd}/x.txt")
+            };
+            let argv = probe_write(&target);
+            let cmd: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let c = run(&p, &home, &cmd);
             (c, !seed.join("x.txt").exists(), "")
         } else {
-            (-1, false, "path enforcement not available on this platform")
+            (
+                -1,
+                false,
+                if platform == "windows" {
+                    "isol8-winhook.dll not found beside binary"
+                } else {
+                    "path enforcement not available on this platform"
+                },
+            )
         };
         results.push(Outcome {
             name: "03 ro-seed-write-denied",
@@ -246,13 +330,12 @@ fn main() {
     }
     // 4. ro on seed → read is Allowed.
     {
-        let p = profile_with(vec![grant(sd, Access::Ro, MatchKind::Subpath)]);
+        let p = profile_with(vec![grant(sd, Access::Ro, MatchKind::Subpath)], &root);
         let (code, note) = if path_enforced {
-            let c = run(
-                &p,
-                &home,
-                &["/bin/sh", "-c", &format!("/bin/cat {sd}/data.txt")],
-            );
+            let target = format!("{sd}/data.txt");
+            let argv = probe_read(&target);
+            let cmd: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let c = run(&p, &home, &cmd);
             (c, "")
         } else {
             (-1, "path enforcement not available on this platform")
@@ -265,16 +348,21 @@ fn main() {
     }
     // 5. scratch HOME → real home is unreadable.
     {
-        let p = profile_with(vec![]);
+        let p = profile_with(vec![], &root);
         let (code, note) = if path_enforced {
-            let c = run(
-                &p,
-                &home,
-                &["/bin/sh", "-c", &format!("/bin/ls {real_home}")],
-            );
+            let argv = probe_list_dir(&real_home);
+            let cmd: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let c = run(&p, &home, &cmd);
             (c, "")
         } else {
-            (-1, "path enforcement not available on this platform")
+            (
+                -1,
+                if platform == "windows" {
+                    "isol8-winhook.dll not found beside binary"
+                } else {
+                    "path enforcement not available on this platform"
+                },
+            )
         };
         results.push(Outcome {
             name: "05 real-home-denied",
@@ -285,7 +373,7 @@ fn main() {
     // 6. env allowlist → non-allowlisted var is absent.
     {
         let (code, note) = if platform == "windows" {
-            let p = profile_with(vec![]);
+            let p = profile_with(vec![], &root);
             let code = run(
                 &p,
                 &home,
@@ -297,7 +385,7 @@ fn main() {
             );
             (code, "")
         } else {
-            let p = profile_with(vec![]);
+            let p = profile_with(vec![], &root);
             let c = run(
                 &p,
                 &home,
@@ -314,7 +402,7 @@ fn main() {
     // 7. env allowlist → PATH and HOME are present.
     {
         let (code, note) = if platform == "windows" {
-            let p = profile_with(vec![]);
+            let p = profile_with(vec![], &root);
             let c = run(
                 &p,
                 &home,
@@ -322,7 +410,7 @@ fn main() {
             );
             (c, "")
         } else {
-            let p = profile_with(vec![]);
+            let p = profile_with(vec![], &root);
             let c = run(
                 &p,
                 &home,
@@ -349,11 +437,11 @@ fn main() {
     // 9. command rewrite (Unix) or AppContainer spawn smoke test (Windows).
     {
         let (code, injected_made, note) = if platform == "windows" {
-            let p = profile_with(vec![]);
+            let p = profile_with(vec![], &root);
             let c = run(&p, &home, &["cmd.exe", "/c", "exit 0"]);
             (c, c == 0, "AppContainer CreateProcessW smoke test")
         } else if path_enforced {
-            let mut p = profile_with(vec![grant(ws, Access::Rw, MatchKind::Subpath)]);
+            let mut p = profile_with(vec![grant(ws, Access::Rw, MatchKind::Subpath)], &root);
             let injected = format!("{ws}/injected.txt");
             p.rewrite = Some(Rewrite {
                 ensure_args: vec![injected.clone()],
@@ -381,6 +469,34 @@ fn main() {
         });
     }
 
+    // 10. grandchild subprocess inherits hook policy (Windows hook mode only).
+    #[cfg(target_os = "windows")]
+    {
+        let (code, note) = if path_enforced {
+            let secret = format!("{out}\\secret.txt");
+            let argv = [
+                probe_exe(),
+                "spawn".into(),
+                "read".into(),
+                secret,
+            ];
+            let p = profile_with(vec![], &root);
+            let cmd: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let c = run(&p, &home, &cmd);
+            (c, "grandchild read outside grant must fail")
+        } else {
+            (
+                -1,
+                "isol8-winhook.dll not found beside binary",
+            )
+        };
+        results.push(Outcome {
+            name: "10 grandchild-deny-outside-grant",
+            pass: if path_enforced { Some(code != 0) } else { None },
+            note,
+        });
+    }
+
     // ===== Linux-specific scenarios (10–16) =====
 
     // 10. no grant on outside/ → read is Denied (Landlock enforcement check).
@@ -388,7 +504,7 @@ fn main() {
     //     path that Unix DAC would allow (world-readable temp dir).
     #[cfg(target_os = "linux")]
     {
-        let p = profile_with(vec![]);
+        let p = profile_with(vec![], &root);
         let code = run(
             &p,
             &home,
@@ -404,7 +520,7 @@ fn main() {
     // 11. rw on workspace → write succeeds (Landlock rw enforcement).
     #[cfg(target_os = "linux")]
     {
-        let p = profile_with(vec![grant(ws, Access::Rw, MatchKind::Subpath)]);
+        let p = profile_with(vec![grant(ws, Access::Rw, MatchKind::Subpath)], &root);
         let code = run(
             &p,
             &home,
@@ -421,7 +537,7 @@ fn main() {
     // 12. ro on seed → write is Denied (Landlock ro enforcement).
     #[cfg(target_os = "linux")]
     {
-        let p = profile_with(vec![grant(sd, Access::Ro, MatchKind::Subpath)]);
+        let p = profile_with(vec![grant(sd, Access::Ro, MatchKind::Subpath)], &root);
         let code = run(
             &p,
             &home,
@@ -438,7 +554,7 @@ fn main() {
     // 13. ro on seed → read is Allowed.
     #[cfg(target_os = "linux")]
     {
-        let p = profile_with(vec![grant(sd, Access::Ro, MatchKind::Subpath)]);
+        let p = profile_with(vec![grant(sd, Access::Ro, MatchKind::Subpath)], &root);
         let code = run(
             &p,
             &home,
@@ -455,7 +571,7 @@ fn main() {
     //     Before the fix, metadata ancestor rules would expose the real home.
     #[cfg(target_os = "linux")]
     {
-        let p = profile_with(vec![]); // no home grant
+        let p = profile_with(vec![], &root); // no home grant
         let code = run(
             &p,
             &home,
@@ -471,7 +587,7 @@ fn main() {
     // 15. env allowlist → SECRET_TOKEN is absent.
     #[cfg(target_os = "linux")]
     {
-        let p = profile_with(vec![]);
+        let p = profile_with(vec![], &root);
         let code = run(
             &p,
             &home,
@@ -487,7 +603,7 @@ fn main() {
     // 16. env allowlist → PATH and HOME are present.
     #[cfg(target_os = "linux")]
     {
-        let p = profile_with(vec![]);
+        let p = profile_with(vec![], &root);
         let code = run(
             &p,
             &home,

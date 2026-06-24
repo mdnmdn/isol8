@@ -11,9 +11,24 @@ default:
 build:
     cargo build
 
+# Build the Windows hook DLL and copy it beside isol8.exe (hybrid path enforcement).
+build-winhook:
+    cargo build -p isol8-winhook
+    cp target/debug/isol8_winhook.dll target/debug/isol8-winhook.dll 2>/dev/null || cp target/debug/isol8-winhook.dll target/debug/
+
+# Windows field-test helpers (hook DLL + file probe binary).
+build-windows-test-deps: build-winhook
+    cargo build --bin isol8-probe
+
 # Release build.
 release:
     cargo build --release
+
+# Release build on Windows (isol8.exe + isol8-winhook.dll in target/release/).
+release-windows:
+    cargo build --release
+    cargo build --release -p isol8-winhook
+    cp target/release/isol8_winhook.dll target/release/isol8-winhook.dll
 
 # Run the binary (pass args: `just run --show-policies -- echo hi`).
 run *args:
@@ -26,6 +41,10 @@ test:
 # Field tests: real sandbox checks on an ad-hoc env/profile (see _docs/testing-strategies.md).
 # Pass --keep to retain the temp workspace.
 field-test *args:
+    cargo run --bin isol8-field-test -- {{args}}
+
+# Windows field tests with hook DLL deployed.
+field-test-windows *args: build-windows-test-deps
     cargo run --bin isol8-field-test -- {{args}}
 
 
@@ -41,7 +60,7 @@ fmt:
 # Lint: format check + clippy with warnings denied (the CI lint gate).
 lint:
     cargo fmt --all -- --check
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --exclude isol8-winhook --all-features -- -D warnings
 
 # Type-check without building artifacts.
 check:
@@ -49,7 +68,7 @@ check:
 
 # Full pre-commit gate: everything CI runs.
 ci: fmt-check
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --exclude isol8-winhook --all-features -- -D warnings
     cargo build
     cargo test
 
