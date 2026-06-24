@@ -19,7 +19,12 @@ use isol8_path_policy::PathPolicy;
 
 const HOOK_DLL_NAME: &str = "isol8-winhook.dll";
 
-/// Paths to search for the hook DLL (next to isol8 binary, then cwd).
+/// Paths to search for the hook DLL (next to the isol8 binary only).
+///
+/// The search is intentionally restricted to the binary's own directory tree.
+/// A bare filename fallback (CWD search) is omitted on purpose: it would allow
+/// an attacker to place a malicious `isol8-winhook.dll` in any directory the
+/// user navigates to and have it injected into every sandboxed child.
 pub fn hook_dll_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
@@ -34,7 +39,6 @@ pub fn hook_dll_search_paths() -> Vec<PathBuf> {
             dir = d.parent();
         }
     }
-    paths.push(PathBuf::from(HOOK_DLL_NAME));
     paths
 }
 

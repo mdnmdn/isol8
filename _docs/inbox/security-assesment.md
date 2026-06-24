@@ -1,6 +1,7 @@
 # isol8 Security Assessment
 
 **Date:** 2026-06-24  
+**Last updated:** 2026-06-24 (C1, C2, C3 fixed)  
 **Scope:** Full codebase — profile/policy engine, env/home isolation, Linux Landlock backend, macOS Seatbelt backend, Windows hook/AppContainer backend, CLI surface  
 **Method:** Static analysis across four parallel review tracks (core policy, Linux backend, macOS/Windows backend, CLI threat model)  
 **Branch:** `claude/clippy-windows-pr-fixes-8g80p8`
@@ -11,11 +12,11 @@
 
 isol8 is a deny-by-default sandbox whose core invariants are sound: the profile merge correctly implements deny-first precedence, TOML structures use `deny_unknown_fields` throughout, and the environment allowlist is conservative. The macOS and Linux backends enforce policy at the OS level with no obvious bypass of the main execution path.
 
-However, three **Critical** issues and multiple **High** issues require attention before this tool can be considered production-grade for security-sensitive deployments:
+Three **Critical** issues were identified and have since been fixed (see C1–C3 below). Multiple **High** issues remain open and require attention before this tool can be considered production-grade for security-sensitive deployments:
 
-1. On **Linux**, an empty profile silently bypasses Landlock — the process runs with `PR_SET_NO_NEW_PRIVS` but no filesystem restriction.
-2. On **Windows**, the hook DLL search path includes the current working directory, enabling trivial DLL hijacking.
-3. In the **profile/home** engine, seed entries accept `..` path components that can traverse outside the home boundary.
+1. ~~On **Linux**, an empty profile silently bypasses Landlock — the process runs with `PR_SET_NO_NEW_PRIVS` but no filesystem restriction.~~ **Fixed.**
+2. ~~On **Windows**, the hook DLL search path includes the current working directory, enabling trivial DLL hijacking.~~ **Fixed.**
+3. ~~In the **profile/home** engine, seed entries accept `..` path components that can traverse outside the home boundary.~~ **Fixed.**
 
 A summary risk table is at the end of this document.
 
@@ -27,45 +28,55 @@ A summary risk table is at the end of this document.
 
 ---
 
-#### C1 — Empty Landlock Ruleset Silently Bypasses Enforcement
+#### C1 — Empty Landlock Ruleset Silently Bypasses Enforcement ✅ Fixed
 **File:** `src/backends/linux.rs:237–238`  
-**CWE:** CWE-284 (Improper Access Control)
+**CWE:** CWE-284 (Improper Access Control)  
+**Status:** Fixed in `claude/clippy-windows-pr-fixes-8g80p8`
 
-When `rules.is_empty()`, `apply_landlock()` returns `Ok(())` without calling `restrict_self()`. The child process executes with `PR_SET_NO_NEW_PRIVS` set but zero Landlock rules — full filesystem access. A profile with no path grants (all implicit denies) appears to run inside a sandbox but does not.
+When `rules.is_empty()`, `apply_landlock()` returned `Ok(())` without calling `restrict_self()`. The child process executed with `PR_SET_NO_NEW_PRIVS` set but zero Landlock rules — full filesystem access. A profile with no path grants appeared to run inside a sandbox but did not.
 
 **Impact:** Complete bypass of Linux filesystem confinement for any profile that resolves to zero path grants.
 
-**Fix:** Either (a) require at least one rule and return an error if none exist, or (b) unconditionally create and apply a minimal Landlock ruleset even with no `PathBeneath` rules, ensuring `restrict_self()` is always called when Landlock is available.
+**Fix applied:** Removed the early-return guard. A ruleset with `handled_accesses` but no `PathBeneath` rules enforces deny-all for those access types — exactly the correct behaviour. `restrict_self()` is now always called when Landlock is available.
 
 ---
 
-#### C2 — Windows Hook DLL Hijacking via CWD Search
+#### C2 — Windows Hook DLL Hijacking via CWD Search ✅ Fixed
 **File:** `src/backends/windows_hook.rs:37, 44–48`  
-**CWE:** CWE-427 (Uncontrolled Search Path Element)
+**CWE:** CWE-427 (Uncontrolled Search Path Element)  
+**Status:** Fixed in `claude/clippy-windows-pr-fixes-8g80p8`
 
-The DLL resolution falls back to `PathBuf::from(HOOK_DLL_NAME)` — a bare filename with no path component — which causes Windows to search the current working directory first. An attacker who places a malicious `isol8-winhook.dll` in any directory the user navigates to can cause it to be injected into every sandboxed child, gaining full control of the hook layer.
+The DLL resolution fell back to `PathBuf::from(HOOK_DLL_NAME)` — a bare filename with no path component — causing Windows to search the current working directory first. An attacker who placed a malicious `isol8-winhook.dll` in any directory the user navigated to would have it injected into every sandboxed child, gaining full control of the hook layer.
 
 **Impact:** Complete sandbox bypass on Windows; the attacker's DLL replaces the path policy with permissive grants and can exfiltrate data or escalate privileges.
 
-**Fix:** Remove the bare-filename fallback entirely. Resolve the DLL exclusively relative to the isol8 binary's own directory (`GetModuleFileNameW`). Additionally, verify the DLL's Authenticode signature before injection, or embed the DLL as a binary resource inside the isol8 binary to eliminate the external-file attack surface.
+**Fix applied:** The bare-filename `paths.push(PathBuf::from(HOOK_DLL_NAME))` fallback was removed from `hook_dll_search_paths()`. The search is now restricted exclusively to the binary's own directory tree (up to 3 parent levels). Note: Authenticode verification (H2) remains open as a defence-in-depth measure.
 
 ---
 
-#### C3 — Seed Path `..` Traversal Outside Home Boundary
+#### C3 — Seed Path `..` Traversal Outside Home Boundary ✅ Fixed
 **File:** `src/home.rs:191–207`  
-**CWE:** CWE-22 (Path Traversal)
+**CWE:** CWE-22 (Path Traversal)  
+**Status:** Fixed in `claude/clippy-windows-pr-fixes-8g80p8`
 
-The `seed()` function expands seed entries against the real home and copies them into the scratch home without validating that the resulting path stays within the home tree. A profile that includes `seed = ["~/../../../etc/passwd"]` (or an equivalent relative traversal) causes `copy_readonly()` to read a file outside `$HOME`.
+The `seed()` function expanded seed entries against the real home and copied them into the scratch home without validating that the path stayed within the home tree. A profile with `seed = ["~/../../../etc/passwd"]` caused `copy_readonly()` to read a file outside `$HOME`.
 
-**Impact:** A crafted or attacker-controlled profile can exfiltrate arbitrary files from the host filesystem into the confined environment, violating deny-by-default.
+Additionally, `copy_readonly()` only checked for symlinks at the top level. During recursive directory traversal, nested symlinks (e.g. `~/.gitconfig -> /etc/shadow`) were followed by `std::fs::copy`, leaking files from outside the home.
 
-**Fix:** After tilde expansion, validate that every seed path's canonical form has the real home as a prefix:
+**Impact:** A crafted or attacker-controlled profile could exfiltrate arbitrary host files into the confined environment, violating deny-by-default.
+
+**Fix applied (two-part):**
+
+1. `seed()` now rejects any entry that contains `..` path components or is an absolute path before joining with the real home:
 ```rust
-let abs = real_home.join(&entry);
-if !abs.starts_with(real_home) {
-    return Err(Error::Profile(format!("seed entry escapes home: {entry}")));
+if Path::new(rel).is_absolute() || rel.split('/').any(|c| c == "..") {
+    return Err(Error::Profile(format!("seed entry escapes home boundary: {entry}")));
 }
 ```
+
+2. `copy_readonly()` now checks `meta.file_type().is_symlink()` at every level of recursion and silently skips symlinks, preventing any follow-through to targets outside the home.
+
+Two regression tests were added: `seed_rejects_dotdot_traversal` and `seed_skips_symlinks`.
 
 ---
 
@@ -463,9 +474,9 @@ A `--profile-path` TOML file named `base.toml` silently replaces the built-in `b
 
 | ID | Title | Severity | Platform | Status |
 |----|-------|----------|----------|--------|
-| C1 | Empty Landlock ruleset bypasses enforcement | **Critical** | Linux | Open |
-| C2 | Windows hook DLL hijacking via CWD | **Critical** | Windows | Open |
-| C3 | Seed `..` path traversal outside home | **Critical** | All | Open |
+| C1 | Empty Landlock ruleset bypasses enforcement | **Critical** | Linux | ✅ Fixed |
+| C2 | Windows hook DLL hijacking via CWD | **Critical** | Windows | ✅ Fixed |
+| C3 | Seed `..` path traversal outside home | **Critical** | All | ✅ Fixed |
 | H1 | Raw SBPL passthrough injection | High | macOS | Open |
 | H2 | No DLL code signing / integrity check | High | Windows | Open |
 | H3 | `NtCreateUserProcess` grandchild escape | High | Windows | Open |
@@ -506,13 +517,14 @@ A `--profile-path` TOML file named `base.toml` silently replaces the built-in `b
 
 ## Recommended Priority Order
 
-1. **C1** — Fix empty-ruleset Landlock bypass (one-liner guard before `Ok(())`)
-2. **C3** — Validate seed entries are within home boundary (prefix check)
-3. **C2** — Remove bare-filename DLL fallback; require binary-relative absolute path
-4. **H9/H10** — Reject symlinks in seed copy at all recursion levels
-5. **H1** — Remove or strictly gate the SBPL `raw` field
-6. **H12 + H13** — Disable auto-profile inside sandbox; warn on CWD config load
-7. **H11** — Add warning when `--profile-path` shadows a built-in layer
-8. **M5/M6** — Block `@diag` inside sandbox; harden nesting marker
-9. **H2** — Implement DLL Authenticode verification or resource-embed the DLL
-10. **H3** — Hook `NtCreateUserProcess` for complete grandchild coverage
+**Fixed:** C1, C2, C3 (and the symlink component of H9/H10 in `copy_readonly`).
+
+Remaining open items, by priority:
+
+1. **H9/H10** — Seed TOCTOU race (the `..` check is fixed; the race between `exists()` and `copy()` remains — combine with the symlink fix already applied)
+2. **H1** — Remove or strictly gate the SBPL `raw` field
+3. **H12 + H13** — Disable auto-profile inside sandbox; warn on CWD config load
+4. **H11** — Add warning when `--profile-path` shadows a built-in layer
+5. **M5/M6** — Block `@diag` inside sandbox; harden nesting marker
+6. **H2** — Implement DLL Authenticode verification or resource-embed the DLL
+7. **H3** — Hook `NtCreateUserProcess` for complete grandchild coverage

@@ -234,9 +234,10 @@ fn probe_landlock_abi() -> String {
 
 /// Apply Landlock rules to the current process.
 fn apply_landlock(rules: &[LandlockRule]) -> Result<()> {
-    if rules.is_empty() {
-        return Ok(()); // no rules — nothing to restrict
-    }
+    // Do NOT short-circuit on empty rules. A ruleset with handled_accesses but no
+    // PathBeneath rules enforces deny-all for those access types, which is exactly
+    // the correct behaviour for a profile with zero path grants. Returning early
+    // here would silently skip restrict_self() and leave the process fully unrestricted.
 
     // Always handle a comprehensive set of rights. This ensures deny-by-default
     // for rights that are not granted by any rule in this profile (e.g. a "ro"
