@@ -99,7 +99,7 @@ The backend follows the documented Tier 1 flow:
 
 Review blockers #1–#4 from `_docs/wip/windows-review.md` are addressed in the
 current tree. **Full enforcement on a real Windows host is still recommended**
-before production use (run `cargo run --bin isol8-field-test`).
+before production use (run `cargo run --features field-test --bin isol8-field-test`).
 
 ### 3.2 Capability SIDs (12 supported)
 
@@ -325,5 +325,5 @@ cargo test
 isol8 --show-policies cmd /c echo hi   # inspect the documentary policy output
 ```
 
-Run `cargo run --bin isol8-field-test` on a Windows host to verify AppContainer
+Run `cargo run --features field-test --bin isol8-field-test` on a Windows host to verify AppContainer
 spawn and env scenarios. Path scenarios remain skipped (R2 documentary only).

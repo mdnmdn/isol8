@@ -26,7 +26,7 @@ test:
 # Field tests: real sandbox checks on an ad-hoc env/profile (see _docs/testing-strategies.md).
 # Pass --keep to retain the temp workspace.
 field-test *args:
-    cargo run --bin isol8-field-test -- {{args}}
+    cargo run --features field-test --bin isol8-field-test -- {{args}}
 
 
 local-publish:

@@ -19,15 +19,19 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 # Real-sandbox field tests (see _docs/testing-strategies.md §3). Run: `just field-test`.
+# Dev/testing only — gated behind a non-default feature so `cargo install` skips it.
 [[bin]]
 name = "isol8-field-test"
 path = "src/bin/isol8-field-test.rs"
+required-features = ["field-test"]
 
 [features]
 default = ["cli"]
 # The CLI binary's arg parsing + YAML config; an embedder using only the engine API
 # can drop these with `default-features = false`.
 cli = ["dep:clap", "dep:serde_yaml"]
+# Builds the dev-only isol8-field-test binary; excluded from `cargo install`.
+field-test = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"], optional = true }

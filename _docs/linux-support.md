@@ -202,7 +202,7 @@ Linux-specific scenarios in `src/bin/isol8-field-test.rs`:
 Cross-platform scenarios 1–9 also enforce on Linux (deny-by-default, rw/ro
 tests, env allowlist, command rewrite).
 
-Run: `cargo build --bin isol8-field-test && ./target/debug/isol8-field-test`
+Run: `cargo build --features field-test --bin isol8-field-test && ./target/debug/isol8-field-test`
 
 ---
 

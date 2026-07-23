@@ -151,6 +151,10 @@ profile** and an **ad-hoc scratch HOME** under the OS temp dir, runs a probe
 command through the real sandbox, and asserts the observed effect. It prints a
 human-readable table and exits non-zero if any scenario fails.
 
+It is **dev/testing only**: gated behind the non-default `field-test` cargo
+feature, so `cargo install` ships just the `isol8` binary. Build/run it with
+`--features field-test` (or `just field-test`, which passes the flag).
+
 Each run calls `confine_executable` before spawn (matching the real CLI pipeline).
 
 ### 3.1 Shape of a scenario
@@ -289,7 +293,7 @@ The default Rust toolchain on Windows is often `x86_64-pc-windows-gnu`. You need
 winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT
 # Add mingw64\bin to PATH, then:
 cargo test
-cargo run --bin isol8-field-test
+cargo run --features field-test --bin isol8-field-test
 ```
 
 Alternative: `x86_64-pc-windows-msvc` with **Visual Studio Build Tools** + Windows
