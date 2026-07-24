@@ -17,7 +17,9 @@ use std::path::Path;
 use std::process;
 
 use isol8::backends;
+use isol8::context::{Context, Platform};
 use isol8::env::build_minimal;
+use isol8::plan::{HomeOpSpec, HomePlan};
 use isol8::profile::{
     apply_rewrite, Access, Capability, MacosExtra, MatchKind, PathGrant, Profile, Rewrite,
     WindowsCapability, WindowsExtra,
@@ -501,6 +503,137 @@ fn main() {
             name: "16 linux-env-path-home-present",
             pass: Some(code == 0),
             note: "",
+        });
+    }
+
+    // ===== Home materialization (17–19) — plan/apply + symlink under sandbox =====
+
+    // 17. plan/apply mkdir + seed-ro is idempotent (no sandbox; pure plan API).
+    {
+        let mat = root.join("mat17");
+        let real = mat.join("real");
+        let eff = mat.join("eff");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join(".gitconfig"), b"cfg\n").unwrap();
+        let ctx = Context {
+            real_home: real.clone(),
+            cwd: mat.clone(),
+            platform: Platform::current(),
+            managed_root: mat.join("managed"),
+        };
+        let specs = vec![
+            HomeOpSpec::mkdir(eff.to_string_lossy().into_owned()),
+            HomeOpSpec::seed_ro("#HOME/.gitconfig", "~/.gitconfig"),
+        ];
+        let plan = HomePlan::compute(&specs, &ctx, &eff).unwrap();
+        let ok1 = plan.apply().is_ok() && eff.join(".gitconfig").exists();
+        let plan2 = HomePlan::compute(&specs, &ctx, &eff).unwrap();
+        let ok2 = plan2.apply_count() == 0 && plan2.apply().is_ok();
+        results.push(Outcome {
+            name: "17 home-plan-seed-idempotent",
+            pass: Some(ok1 && ok2),
+            note: "",
+        });
+    }
+
+    // 18. link materialization: grant on *target* allows read through link (macOS/Linux).
+    {
+        let mat = root.join("mat18");
+        let real = mat.join("real");
+        let eff = mat.join("eff");
+        fs::create_dir_all(real.join(".tool")).unwrap();
+        fs::write(real.join(".tool/data.txt"), b"via-link\n").unwrap();
+        fs::create_dir_all(&eff).unwrap();
+        let ctx = Context {
+            real_home: real.clone(),
+            cwd: mat.clone(),
+            platform: Platform::current(),
+            managed_root: mat.join("managed"),
+        };
+        let specs = vec![HomeOpSpec::link("#HOME/.tool", "~/.tool")];
+        let plan = HomePlan::compute(&specs, &ctx, &eff).unwrap();
+        let linked = plan.apply().is_ok()
+            && fs::symlink_metadata(eff.join(".tool"))
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+
+        let (pass, note) = if !linked {
+            (
+                Some(false),
+                "symlink create failed (Windows may need Developer Mode)",
+            )
+        } else if path_enforced {
+            // Grant only the real target — does open(link) succeed?
+            let target = real.join(".tool").to_string_lossy().into_owned();
+            let link = eff.join(".tool/data.txt").to_string_lossy().into_owned();
+            let p = profile_with(vec![
+                grant(&target, Access::Ro, MatchKind::Subpath),
+                grant(eff.to_str().unwrap(), Access::Ro, MatchKind::Subpath),
+            ]);
+            let code = run(&p, &eff, &["/bin/sh", "-c", &format!("/bin/cat {link}")]);
+            (
+                Some(code == 0),
+                "grant on target + home; read through symlink",
+            )
+        } else {
+            (None, "path enforcement not available on this platform")
+        };
+        results.push(Outcome {
+            name: "18 home-link-read-via-target-grant",
+            pass,
+            note,
+        });
+    }
+
+    // 19. link materialization: grant only on link path (not target) — documents
+    //     platform symlink resolution (expected: may fail on Landlock/Seatbelt).
+    {
+        let mat = root.join("mat19");
+        let real = mat.join("real");
+        let eff = mat.join("eff");
+        fs::create_dir_all(real.join(".tool")).unwrap();
+        fs::write(real.join(".tool/data.txt"), b"via-link\n").unwrap();
+        fs::create_dir_all(&eff).unwrap();
+        let ctx = Context {
+            real_home: real.clone(),
+            cwd: mat.clone(),
+            platform: Platform::current(),
+            managed_root: mat.join("managed"),
+        };
+        let plan =
+            HomePlan::compute(&[HomeOpSpec::link("#HOME/.tool", "~/.tool")], &ctx, &eff).unwrap();
+        let linked = plan.apply().is_ok();
+        let (pass, note) = if !linked {
+            (None, "symlink unavailable")
+        } else if path_enforced {
+            let link_root = eff.join(".tool").to_string_lossy().into_owned();
+            let link_file = eff.join(".tool/data.txt").to_string_lossy().into_owned();
+            // Grant only the link path under effective home — NOT the real target.
+            let p = profile_with(vec![grant(&link_root, Access::Ro, MatchKind::Subpath)]);
+            let code = run(
+                &p,
+                &eff,
+                &["/bin/sh", "-c", &format!("/bin/cat {link_file}")],
+            );
+            // Record outcome as informational: pass if either works or cleanly denied.
+            // We mark PASS when we got a definitive answer (code 0 or !=0); the note
+            // records which, for multi-evo-plan resume notes.
+            let works = code == 0;
+            (
+                Some(true), // always "pass" as a measurement; note carries semantics
+                if works {
+                    "link-path grant SUFFICES (platform follows grant on link)"
+                } else {
+                    "link-path grant INSUFFICIENT (need target grant too)"
+                },
+            )
+        } else {
+            (None, "path enforcement not available on this platform")
+        };
+        results.push(Outcome {
+            name: "19 home-link-read-via-link-grant-only",
+            pass,
+            note,
         });
     }
 

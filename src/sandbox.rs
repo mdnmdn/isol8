@@ -37,9 +37,20 @@ pub struct Spec {
     /// Grant the auto-added cwd read-only instead of read-write.
     pub cwd_ro: bool,
     /// Replacement `$HOME` (overrides any profile `home_replace`).
+    /// Accepts `~…`, absolute paths, or `@managed/<id>`.
     pub home: Option<String>,
+    /// When true and [`Spec::home`] is unset, create a temporary scratch home
+    /// (cage `home = "ephemeral"`, or equivalent embedder request).
+    pub ephemeral_home: bool,
     /// Skip seeding real-home files into the (replacement) home.
     pub no_seed: bool,
+    /// Extra home materialization ops (link/mkdir/seed-ro/copy). Applied after
+    /// profile seed-ro entries. Recipe strategies also append here during resolve.
+    pub home_ops: Vec<crate::plan::HomeOpSpec>,
+    /// Toolchain recipe selections (`id` + strategy) from cage or embedder.
+    pub toolchains: Vec<crate::recipe::ToolchainChoice>,
+    /// Extra recipe directories / TOML files (later-wins over builtins).
+    pub recipe_paths: Vec<String>,
     /// Host env vars to pass through by name (highest precedence after `set_env`).
     pub env_pass: Vec<String>,
     /// Explicit `K=V` env entries (highest precedence).
@@ -277,10 +288,16 @@ pub struct DryRun {
     pub policy: String,
     /// A human label for `policy` (e.g. "generated Seatbelt policy (SBPL)").
     pub policy_label: &'static str,
+    /// Home materialization plan (not applied on dry-run).
+    pub home_plan: crate::plan::HomePlan,
+    /// Effective `$HOME` path for the run.
+    pub home_path: std::path::PathBuf,
+    /// Recipes applied for this run (`id`, strategy label).
+    pub recipes: Vec<(String, String)>,
 }
 
 /// Resolve the effective policy for `spec` and render the OS-native policy text,
-/// without spawning. Pure data — no printing.
+/// without spawning. Pure data — no printing; does **not** apply the home plan.
 pub fn dry_run(spec: &Spec) -> Result<DryRun> {
     let eff = crate::resolve::effective_policy(spec)?;
     let policy = crate::backends::select().render_policy(&eff.profile);
@@ -297,6 +314,9 @@ pub fn dry_run(spec: &Spec) -> Result<DryRun> {
         cmd: eff.cmd,
         policy,
         policy_label,
+        home_plan: eff.home.plan.clone(),
+        home_path: eff.home.path.clone(),
+        recipes: eff.recipes.clone(),
     })
 }
 
@@ -307,6 +327,33 @@ pub fn ensure_not_nested() -> Result<()> {
         return Err(Error::NestedSandbox);
     }
     Ok(())
+}
+
+/// Captured stdout/stderr from a confined run ([`run_captured`]).
+#[derive(Debug, Clone)]
+pub struct CapturedRun {
+    /// Process exit code (0 = success).
+    pub code: i32,
+    /// Captured stdout (UTF-8 lossy).
+    pub stdout: String,
+    /// Captured stderr (UTF-8 lossy).
+    pub stderr: String,
+}
+
+/// Resolve policy, materialize home, confine the executable, run to completion,
+/// and capture stdout/stderr. Used by `@cage verify`.
+pub fn run_captured(spec: Spec) -> Result<CapturedRun> {
+    ensure_not_nested()?;
+    let mut eff = crate::resolve::effective_policy(&spec)?;
+    crate::home::materialize(&eff.home)?;
+    crate::resolve::confine_executable(&mut eff.profile, &mut eff.cmd)?;
+    let output = crate::backends::select().output(&eff.profile, &eff.env, &eff.cmd)?;
+    let code = output.status.code().unwrap_or(1);
+    Ok(CapturedRun {
+        code,
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
 }
 
 /// Ergonomic builder over [`Spec`] for embedding isol8.
@@ -375,9 +422,40 @@ impl Sandbox {
         self
     }
 
-    /// Replace `$HOME` for the confined process.
+    /// Replace `$HOME` for the confined process (`~…`, absolute, or `@managed/<id>`).
     pub fn home(mut self, path: impl Into<String>) -> Self {
         self.spec.home = Some(path.into());
+        self
+    }
+
+    /// Use a temporary scratch home when [`Sandbox::home`] is unset.
+    pub fn ephemeral_home(mut self) -> Self {
+        self.spec.ephemeral_home = true;
+        self
+    }
+
+    /// Append a home materialization op (link / mkdir / seed-ro / copy).
+    pub fn home_op(mut self, op: crate::plan::HomeOpSpec) -> Self {
+        self.spec.home_ops.push(op);
+        self
+    }
+
+    /// Select a toolchain recipe strategy (repeatable).
+    pub fn toolchain(
+        mut self,
+        id: impl Into<String>,
+        strategy: crate::recipe::StrategyName,
+    ) -> Self {
+        self.spec.toolchains.push(crate::recipe::ToolchainChoice {
+            id: crate::recipe::normalize_recipe_id(&id.into()),
+            strategy,
+        });
+        self
+    }
+
+    /// Extra recipe path (file or directory overlay).
+    pub fn recipe_path(mut self, path: impl Into<String>) -> Self {
+        self.spec.recipe_paths.push(path.into());
         self
     }
 
@@ -410,7 +488,7 @@ impl Sandbox {
         ensure_not_nested()?;
         let spec = self.spec_with(cmd);
         let mut eff = crate::resolve::effective_policy(&spec)?;
-        crate::home::seed(&eff.home)?;
+        crate::home::materialize(&eff.home)?;
         crate::resolve::confine_executable(&mut eff.profile, &mut eff.cmd)?;
         crate::backends::select().spawn(&eff.profile, &eff.env, &eff.cmd)
     }

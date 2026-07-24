@@ -388,12 +388,32 @@ These building blocks mean the core path features (R2 + R4) can be delivered wit
 - HOME replacement via multiple env vars + registry considerations (best-effort).
 - Profile rendering to ACLs + caps (more verbose than text policies).
 
+### Evolution track: cages, recipes, registry, analyze (post-0.2.x)
+
+Parallel to network/Windows work. Design:
+[`inbox/evo-repo.md`](./inbox/evo-repo.md). Multiphase execution plan (compile/lint
+gate per phase, resume notes):
+[`wip/multi-evo-plan.md`](./wip/multi-evo-plan.md).
+
+Summary of planned deliverables (order fixed by the plan):
+
+1. **Cages** — named local selection (`--cage` / `-c`) → existing `Spec`
+2. **Home materialization** — plan/apply (`link` / `mkdir` / `seed-ro` / `copy`) + injectable `Context`
+3. **Recipes + strategies** — `share` / `link` / `isolate` per toolchain
+4. **Detect + verify** — read-only probes; smoke tests inside the cage
+5. **`--analyze`** — denials → recipe suggestions (Windows, then macOS; Linux deferred)
+6. **Registry** — git/http/local sources, offline cache, lockfile, trust
+7. **Wizard** — `@cage new/edit` over working machinery
+8. **Crate split** — `isol8-core` / `isol8-registry` / `isol8-cli` after boundaries stabilize
+
+Does **not** replace R1–R6 enforcement; compiles into `Spec` + `effective_policy`.
+
 ### Long-term / Future Ideas
 - Kernel-level eBPF integration for even finer observability/enforcement (optional, privileged).
 - Integration with container runtimes (Podman/Docker rootless profiles generated from isol8 profiles).
 - WebAssembly Component Model or WASI preview for language-agnostic tool sandboxing.
 - Formal verification or model checking of profile merging logic.
-- Community profile repository (curated safe layers for popular toolchains and AI agent frameworks).
+- Community profile repository (curated safe layers for popular toolchains and AI agent frameworks) — partially covered by the evolution-track registry.
 
 ---
 

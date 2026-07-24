@@ -22,6 +22,11 @@
 > - A `src/lib.rs` re-exports the public API; `tests/` share the crate.
 > - `home.rs`, `env.rs`, `backends/{macos,linux}.rs`, and the `isol8-field-test` bin
 >   are real; `net/`, `caps.rs`, and the N3 helper are still future.
+> - **Evolution track:** Phases 1–3 landed — cages, Context/HomePlan, and
+>   **recipes/strategies** (`src/recipe.rs`, embedded `recipes/**/*.toml`). Still
+>   open: macOS/Linux live observe (Phases 6/10), registry, wizard. Sequencing:
+>   [`wip/multi-evo-plan.md`](./wip/multi-evo-plan.md) (design:
+>   [`inbox/evo-repo.md`](./inbox/evo-repo.md)).
 >
 > Companion to the requirements in [`project-description.md`](./project-description.md).
 > Section refs (R1–R6, N0–N3, §7) point there.
@@ -39,6 +44,7 @@ isol8/
 │   ├── project-description.md  # requirements + ecosystem research
 │   ├── profile-model.md        # on-disk schema, merge, filters
 │   └── project-structure.md    # this file
+├── recipes/                    # built-in recipes (nvm/cargo/maven), embedded at build time
 ├── profiles/                   # built-in TOML layers (~70), embedded at build time
 │   ├── base.toml
 │   ├── macos-system.toml       # backward-compat alias → macos/system-runtime
@@ -64,8 +70,12 @@ isol8/
 │   ├── filter.rs               # ProfileFilter matching, apply_layer_filter, policies fold
 │   ├── resolve.rs              # effective_policy(&Spec) shared by run + policies show
 │   ├── profile.rs              # Profile, Policy, LayerRegistry, merge, resolve_requires
+│   ├── cage.rs                 # Cage selection → Spec overlay (Phase 1 evolution)
+│   ├── context.rs              # Injectable Context (real_home, cwd, platform, managed_root)
+│   ├── plan.rs                 # HomePlan plan/apply (link/mkdir/seed-ro/copy)
+│   ├── recipe.rs               # Recipe registry + strategy compile (Phase 3)
 │   ├── env.rs                  # sanitized environment construction (HOME first)
-│   ├── home.rs                 # R4 effective-home resolution + seeding
+│   ├── home.rs                 # R4 effective-home resolution + plan wiring
 │   ├── spawn.rs                # (target) cross-platform child exec — not split out yet
 │   ├── backends/
 │   │   ├── mod.rs              # Backend trait (spawn→SandboxChild, render_policy), select()
@@ -99,12 +109,17 @@ namespace. The main binary never needs root.
 
 ```
 cli::Cli::parse()  [feature = "cli"]
-   │  Spec { profiles, profile_paths, auto_profiles, add_dirs_rw/ro, home, … cmd }
+   │  ProfileOpts { cage, profiles, profile_paths, auto_profiles, add_dirs_rw/ro, home, … }
    ▼
 cli::config::load()                      ── isol8.toml/yaml (cwd, ISOL8_CONFIG_PATH,
-   │  Config { default_profiles, auto_profiles, profile_paths, … }   or ~/.config/isol8/)
+   │  Config { default_profiles, auto_profiles, profile_paths, cage, … }   or ~/.config/isol8/)
    ▼
-config::apply_to_spec() + apply_env_overrides()   ── precedence: defaults < config < ISOL8_* < CLI
+cage::resolve + apply_cage_to_opts()     ── --cage / ISOL8_CAGE / config cage / .isol8 discovery
+   │  fills empty opts fields only (CLI already set wins)
+   ▼
+config::apply_to_run() + apply_env_overrides()   ── remaining empties + ISOL8_* overrides
+   ▼
+ProfileOpts::into_spec() → Spec { …, ephemeral_home, cmd }
    ▼
 resolve::effective_policy(&Spec)          ← also called directly by Sandbox::run/spawn/dry_run
    │
@@ -117,19 +132,23 @@ resolve::effective_policy(&Spec)          ← also called directly by Sandbox::r
    ├─ profile::resolve_requires()           ── transitive requires, cycle detect, dedup
    ├─ filter::apply_layer_filter() per layer   ── skip grants when os/arch/executable mismatch;
    │     fold matching [[policies]] into layer
-   ├─ home::resolve(&spec, &layers)        ── R4: effective $HOME FIRST (default: real home; replacement opt-in);
-   │                                          --no-seed clears the seed list
+   ├─ Context::from_environment()          ── real_home, cwd, platform, managed_root
+   ├─ recipe::RecipeRegistry::load + compile_all(spec.toolchains)
+   │                                          → home_ops + path grants + env
+   ├─ home::resolve(&spec+recipe_ops, …)   ── R4: effective $HOME FIRST; @managed/<id>;
+   │                                          HomePlan (mkdir + seed-ro + recipe/spec ops)
    ├─ profile::load_merged()               ── ~ + #HOME expansion, --add-dirs-* override layer, merge
+   │                                          + recipe path grants + expanded recipe env
    └─ env::build_minimal()                 ── R3.1 allowlist, HOME first, then --env-pass / --set-env
-   │  EffectivePolicy { layer_names: Vec<(name, LayerOrigin)>, profile, env, home }
+   │  EffectivePolicy { layer_names, profile, env, home, recipes }
    ▼
 backends::select()
    │
    ├── dry_run / --show-policies ?
-   │     sandbox::dry_run(&Spec) → DryRun { layer_names, profile, env, cmd, policy, policy_label }
+   │     sandbox::dry_run(&Spec) → DryRun { …, home_plan, home_path }  (plan NOT applied)
    │     cli: print_dry_run(&DryRun) ; return
    ▼
-home::seed(&effective.home)              ── R4.4 read-only seed into scratch home (first-creation-only)
+home::materialize(&effective.home)       ── HomePlan::apply (seed-ro / link / mkdir / copy)
    ▼
 resolve::confine_executable(&mut profile, &mut cmd)
                                          ── exec path only: resolve cmd[0] on host PATH

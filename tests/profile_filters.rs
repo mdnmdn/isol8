@@ -35,11 +35,18 @@ fn select_names(run: &Spec) -> Vec<String> {
     profile::select_layer_names(run, &registry, &ctx).unwrap()
 }
 
+/// Grants in the **effective** policy — deliberately via `resolve::effective_policy`
+/// rather than a layer-level helper. These assertions used to run against a helper
+/// that applied filters correctly while the real pipeline did not, so they passed
+/// while OS- and executable-filtered layers leaked into every enforced policy.
+/// Any test about what a filter does must observe what the backend actually gets.
 fn layer_paths(run: &Spec) -> Vec<String> {
-    profile::resolved_layers(run)
+    resolve::effective_policy(run)
         .unwrap()
+        .profile
+        .paths
         .into_iter()
-        .flat_map(|l| l.paths.into_iter().map(|g| g.path))
+        .map(|g| g.path)
         .collect()
 }
 
@@ -209,19 +216,123 @@ fn os_layer_filter_clears_paths_on_mismatch_but_keeps_requires() {
         },
         vec!["echo".into(), "hi".into()],
     );
-    let layers = profile::resolved_layers(&run).unwrap();
-    let filtered = layers
-        .last()
-        .expect("base + explicit layer should yield a two-layer stack");
+    let effective = resolve::effective_policy(&run).unwrap();
+    let granted: Vec<String> = effective
+        .profile
+        .paths
+        .iter()
+        .map(|g| g.path.clone())
+        .collect();
 
+    // Every grant unique to the foreign-OS layer must be absent from the merged
+    // policy. Comparing against the unfiltered builtin (rather than a hardcoded
+    // path) keeps this honest if the builtin layer's contents change.
+    let base_paths: Vec<String> = registry
+        .get("base")
+        .expect("builtin base layer")
+        .paths
+        .iter()
+        .map(|g| g.path.clone())
+        .collect();
+    for grant in &builtin.paths {
+        if base_paths.contains(&grant.path) {
+            continue; // also granted by base; not attributable to the filtered layer
+        }
+        assert!(
+            !granted.contains(&grant.path),
+            "OS-mismatched layer leaked {:?} into the effective policy; got {granted:?}",
+            grant.path
+        );
+    }
+
+    // The layer shell must survive so `requires` still resolves and ordering holds.
     assert!(
-        filtered.paths.is_empty(),
-        "OS-mismatched layer must clear paths; got {:?}",
-        filtered.paths
+        effective
+            .layer_names
+            .iter()
+            .any(|(n, _)| n == mismatch_layer),
+        "filtered layer must stay in the stack for ordering; got {:?}",
+        effective.layer_names
     );
-    assert_eq!(
-        filtered.requires, builtin.requires,
-        "requires must survive layer filter so deps still resolve"
+}
+
+#[test]
+fn os_filtered_layer_contributes_no_grants_to_effective_policy() {
+    // Regression: `apply_layer_filter` was only reachable from a helper that no
+    // live caller used, so a `filter = { os = [...] }` layer contributed its
+    // grants on every platform. A Windows-only rw grant reached the macOS
+    // Seatbelt policy and the Linux Landlock ruleset alike.
+    let foreign = match std::env::consts::OS {
+        "windows" => "linux",
+        _ => "windows",
+    };
+    let overlay = TempOverlay::new(
+        "os-filter-leak",
+        &format!(
+            r#"
+filter = {{ os = ["{foreign}"] }}
+paths = [{{ path = "/isol8-test-foreign-os-grant", access = "rw" }}]
+"#
+        ),
+    );
+    let run = cli::run_from(
+        ProfileOpts {
+            profiles: vec!["base".into(), "overlay".into()],
+            profile_paths: vec![overlay.path()],
+            ..Default::default()
+        },
+        vec!["echo".into(), "hi".into()],
+    );
+
+    let paths = layer_paths(&run);
+    assert!(
+        !has_grant(&paths, "/isol8-test-foreign-os-grant"),
+        "layer filtered to os={foreign:?} must contribute nothing on {}; got {paths:?}",
+        std::env::consts::OS
+    );
+}
+
+#[test]
+fn rewrite_from_non_matching_layer_does_not_reach_command() {
+    // Regression: the same missing filter step let a layer's `rewrite` apply to
+    // any command. Naming three agent layers injected all three auto-approve
+    // flags into an unrelated binary — silently disabling other tools' own
+    // confirmation prompts.
+    let overlay = TempOverlay::new(
+        "rewrite-leak",
+        r#"
+filter = { executables = ["definitely-not-echo"] }
+rewrite = { ensure_args = ["--isol8-test-should-not-appear"] }
+"#,
+    );
+    let run = cli::run_from(
+        ProfileOpts {
+            profiles: vec!["base".into(), "overlay".into()],
+            profile_paths: vec![overlay.path()],
+            ..Default::default()
+        },
+        vec!["echo".into(), "hi".into()],
+    );
+
+    let cmd = resolve::effective_policy(&run).unwrap().cmd;
+    assert!(
+        !cmd.iter().any(|a| a == "--isol8-test-should-not-appear"),
+        "rewrite from an executable-filtered layer must not reach an unrelated command; got {cmd:?}"
+    );
+
+    // ...and still applies when the filter *does* match.
+    let matching = cli::run_from(
+        ProfileOpts {
+            profiles: vec!["base".into(), "overlay".into()],
+            profile_paths: vec![overlay.path()],
+            ..Default::default()
+        },
+        vec!["definitely-not-echo".into()],
+    );
+    let cmd = resolve::effective_policy(&matching).unwrap().cmd;
+    assert!(
+        cmd.iter().any(|a| a == "--isol8-test-should-not-appear"),
+        "rewrite must still apply to the matching executable; got {cmd:?}"
     );
 }
 

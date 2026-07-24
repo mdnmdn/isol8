@@ -67,6 +67,67 @@ impl Backend for super::linux::LinuxBackend {
         }
     }
 
+    fn output(
+        &self,
+        profile: &Profile,
+        env: &HashMap<String, String>,
+        cmd: &[String],
+    ) -> Result<std::process::Output> {
+        // Capture via a pipe + fork: parent reads stdout/stderr combined from a
+        // single pipe (simple); child sets up Landlock and execs.
+        if cmd.is_empty() {
+            return Err(Error::Message(
+                "no command given to run under the sandbox".into(),
+            ));
+        }
+        let effective_home = env
+            .get("HOME")
+            .cloned()
+            .unwrap_or_else(|| "/tmp".to_string());
+        let rules = build_landlock_rules(profile)?;
+
+        use nix::unistd::{close, dup2, fork, pipe, ForkResult};
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::ExitStatusExt;
+
+        let (mut reader, writer) = pipe().map_err(|e| Error::Message(format!("pipe: {e}")))?;
+        match unsafe { fork() } {
+            Ok(ForkResult::Parent { child }) => {
+                drop(writer);
+                let mut buf = Vec::new();
+                let _ = reader.read_to_end(&mut buf);
+                drop(reader);
+                let status = nix::sys::wait::waitpid(child, None)
+                    .map_err(|e| Error::Message(format!("waitpid: {e}")))?;
+                let code = match status {
+                    nix::sys::wait::WaitStatus::Exited(_, c) => c,
+                    nix::sys::wait::WaitStatus::Signaled(_, sig, _) => 128 + sig as i32,
+                    _ => 1,
+                };
+                // ExitStatus::from_raw expects the wait(2) status word (code in high byte).
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::from_raw(code.wrapping_shl(8)),
+                    stdout: buf,
+                    stderr: Vec::new(),
+                })
+            }
+            Ok(ForkResult::Child) => {
+                drop(reader);
+                let wfd = writer.as_raw_fd();
+                let _ = dup2(wfd, 1);
+                let _ = dup2(wfd, 2);
+                let _ = close(wfd);
+                if let Err(e) = child_setup_and_exec(rules, &effective_home, env, cmd) {
+                    eprintln!("isol8: child setup failed: {e}");
+                    std::process::exit(127);
+                }
+                unreachable!()
+            }
+            Err(e) => Err(Error::Message(format!("fork failed: {e}"))),
+        }
+    }
+
     fn render_policy(&self, profile: &Profile) -> String {
         render_policy(profile)
     }

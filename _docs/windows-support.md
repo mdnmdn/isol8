@@ -29,6 +29,22 @@ This document covers:
 **Primary targets remain macOS and Linux.** The Windows backend is provided for
 completeness and future development; it is not part of the Phase 1 MVP.
 
+### Analyze mode (`--analyze`)
+
+Phase 5 of the evolution track lands the **shared** denial → recipe-suggestion
+engine (`src/analyze.rs`) and `isol8 --analyze`. On Windows, **live path denials
+are not produced yet**: profile path grants remain documentary, and there is no
+shipping `isol8-winhook` writing denials.
+
+| Input | Status |
+|-------|--------|
+| NDJSON feed (`ISOL8_ANALYZE_FEED` or `$TMP/isol8-analyze-<pid>.ndjson`) | Supported — exercises the shared layer |
+| Live user-mode path hook | **Not wired** — parent already looks for the per-pid NDJSON path |
+
+When a hook lands, surface that **user-mode hooks are non-exhaustive**. Do not
+treat Windows `--analyze` as proof of filesystem confinement until R2 or an
+equivalent observer exists.
+
 ---
 
 ## 2. Intended architecture

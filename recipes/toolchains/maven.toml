@@ -1,0 +1,31 @@
+# Apache Maven local repository (warm cache under share)
+schema = 1
+id = "toolchains/maven"
+kind = "recipe"
+filter = { os = ["macos", "linux", "windows"] }
+summary = "Maven local repository (~/.m2)"
+default_strategy = "share"
+
+[detect]
+probe = { path = "~/.m2" }
+
+[verify]
+cmd = "mvn --version"
+
+[strategies.share]
+home = [{ kind = "link", from = "#HOME/.m2", to = "~/.m2" }]
+paths = [{ path = "#HOME/.m2", access = "rw" }]
+env = { MAVEN_USER_HOME = "~/.m2" }
+
+[strategies.link]
+home = [{ kind = "link", from = "#HOME/.m2", to = "~/.m2" }]
+paths = [
+  { path = "#HOME/.m2", access = "ro" },
+  { path = "#HOME/.m2/repository", access = "ro" },
+]
+env = { MAVEN_USER_HOME = "~/.m2" }
+
+[strategies.isolate]
+home = [{ kind = "mkdir", path = "~/.m2" }]
+paths = [{ path = "~/.m2", access = "rw" }]
+env = { MAVEN_USER_HOME = "~/.m2" }

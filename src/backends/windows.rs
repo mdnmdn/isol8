@@ -95,6 +95,16 @@ impl Backend for WindowsBackend {
     }
 }
 
+/// Path where a future `isol8-winhook` would append NDJSON denials for `--analyze`.
+///
+/// Phase 5: path-policy enforcement is still documentary on AppContainer; the hook
+/// is **not** installed. The parent still looks for this file after spawn so the
+/// shared analyzer can be exercised with a hand-written feed (or later hook).
+#[allow(dead_code)]
+pub fn analyze_denial_log_path(pid: u32) -> std::path::PathBuf {
+    crate::analyze::default_denial_log_path(pid)
+}
+
 fn launch_appcontainer(
     caps: &[SID_AND_ATTRIBUTES],
     env: &HashMap<String, String>,

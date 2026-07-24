@@ -1,0 +1,35 @@
+# Node Version Manager — recipe (strategies + materialization + grants)
+schema = 1
+id = "toolchains/nvm"
+kind = "recipe"
+filter = { os = ["macos", "linux"] }
+summary = "Node Version Manager"
+default_strategy = "link"
+
+[detect]
+probe = { path = "~/.nvm" }
+version = "nvm --version"
+
+[verify]
+cmd = "node --version"
+expect = "^v\\d+"
+
+# link: read installed toolchains from the real home; writable alias overlay.
+# Path grants target #HOME (real) so Seatbelt/Landlock can follow the symlink.
+[strategies.link]
+home = [{ kind = "link", from = "#HOME/.nvm", to = "~/.nvm" }]
+paths = [
+  { path = "#HOME/.nvm", access = "ro" },
+  { path = "#HOME/.nvm/alias", access = "rw" },
+]
+env = { NVM_DIR = "~/.nvm" }
+
+[strategies.share]
+home = [{ kind = "link", from = "#HOME/.nvm", to = "~/.nvm" }]
+paths = [{ path = "#HOME/.nvm", access = "rw" }]
+env = { NVM_DIR = "~/.nvm" }
+
+[strategies.isolate]
+home = [{ kind = "mkdir", path = "~/.nvm" }]
+paths = [{ path = "~/.nvm", access = "rw" }]
+env = { NVM_DIR = "~/.nvm" }

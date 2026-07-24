@@ -50,7 +50,7 @@ mod macos {
         if eff.cmd.is_empty() {
             bail!("@diag needs a command (e.g. isol8 @diag node --version)");
         }
-        crate::home::seed(&eff.home)?;
+        crate::home::materialize(&eff.home)?;
         resolve::confine_executable(&mut eff.profile, &mut eff.cmd)?;
 
         let base = render_policy(&eff.profile);

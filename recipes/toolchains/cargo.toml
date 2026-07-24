@@ -1,0 +1,48 @@
+# Rust cargo / rustup toolchain state under a replaced home
+schema = 1
+id = "toolchains/cargo"
+kind = "recipe"
+filter = { os = ["macos", "linux"] }
+summary = "Rust cargo + rustup"
+default_strategy = "link"
+
+[detect]
+probe = { path = "~/.cargo" }
+
+[verify]
+cmd = "cargo --version"
+
+[strategies.link]
+home = [
+  { kind = "link", from = "#HOME/.cargo", to = "~/.cargo" },
+  { kind = "link", from = "#HOME/.rustup", to = "~/.rustup" },
+]
+paths = [
+  { path = "#HOME/.cargo", access = "ro" },
+  { path = "#HOME/.cargo/registry", access = "ro" },
+  { path = "#HOME/.cargo/.package-cache", access = "rw" },
+  { path = "#HOME/.rustup", access = "ro" },
+]
+env = { CARGO_HOME = "~/.cargo", RUSTUP_HOME = "~/.rustup" }
+
+[strategies.share]
+home = [
+  { kind = "link", from = "#HOME/.cargo", to = "~/.cargo" },
+  { kind = "link", from = "#HOME/.rustup", to = "~/.rustup" },
+]
+paths = [
+  { path = "#HOME/.cargo", access = "rw" },
+  { path = "#HOME/.rustup", access = "rw" },
+]
+env = { CARGO_HOME = "~/.cargo", RUSTUP_HOME = "~/.rustup" }
+
+[strategies.isolate]
+home = [
+  { kind = "mkdir", path = "~/.cargo" },
+  { kind = "mkdir", path = "~/.rustup" },
+]
+paths = [
+  { path = "~/.cargo", access = "rw" },
+  { path = "~/.rustup", access = "rw" },
+]
+env = { CARGO_HOME = "~/.cargo", RUSTUP_HOME = "~/.rustup" }

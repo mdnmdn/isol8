@@ -25,6 +25,9 @@ a confined program name:
 isol8 @<meta-command> [OPTIONS] [ARGS]...
 ```
 
+Common meta commands: `@init`, `@profiles-list`, `@profiles-show`, `@cage`, `@diag`,
+`@version`.
+
 ---
 
 ## Quick examples
@@ -37,6 +40,7 @@ Uses your config defaults (`base` + OS system-runtime) unless you override them:
 isol8 echo hello
 isol8 --add-dirs-rw "$PWD" -- make build
 isol8 --profile toolchains/rust -- cargo test
+isol8 -c work -- echo hi          # named cage (see Cages below)
 ```
 
 ### Inspect policy without running anything
@@ -350,6 +354,163 @@ match isol8::Sandbox::new().run(["x"]) {
 Key variants: `CommandNotFound(String)`, `InvalidEnv(String)`, `NestedSandbox`,
 `UnsupportedOs(&'static str)`, `PolicyRejected(String)`, `Profile(String)`,
 `Io(io::Error)`, `Toml(toml::de::Error)`, `Message(String)`.
+
+---
+
+## Cages (named selection units)
+
+A **cage** is a local, named isolation unit: home mode + profile list + path dirs.
+It is a *selection* layer — it fills `Spec` fields; it is not itself a profile layer.
+See [`wip/multi-evo-plan.md`](./wip/multi-evo-plan.md) Phase 1 and
+[`inbox/evo-repo.md`](./inbox/evo-repo.md) §3.
+
+```sh
+# create a cage file under ~/.config/isol8/cages/
+isol8 @cage new work --home inherit
+isol8 @cage list
+isol8 @cage show work
+
+# run with an explicit cage (short: -c)
+isol8 -c work --show-policies -- echo hi
+isol8 --cage work claude
+```
+
+**Cage file** (`~/.config/isol8/cages/work.toml` or `./.isol8/cages/work.toml`):
+
+```toml
+schema = 1
+name = "work"
+home = "inherit"          # inherit | ephemeral | @managed/<id> | /path/to/home
+profiles = []             # empty → config default_profiles; non-empty replaces them
+# [[dirs]]
+# path = "~/work/acme"
+# access = "rw"
+```
+
+**Home modes**
+
+| Value | Meaning |
+|-------|---------|
+| `inherit` | Real `$HOME` (default isol8 behaviour) |
+| `ephemeral` | Fresh temp dir per run |
+| `@managed/<id>` | Durable isol8-managed dir under the platform data dir (`~/.local/share/isol8/homes/<id>` on Unix) |
+| absolute / `~/…` | Explicit replacement path |
+
+**Which cage is selected** (first match):
+
+1. `ISOL8_CAGE`
+2. `--cage` / `-c`
+3. `cage = "…"` in `isol8.toml`
+4. `./.isol8/cage.toml` (walk up to git root)
+5. `~/.config/isol8/cages/default.toml`
+
+**Precedence:** existing CLI flags (`--profile`, `--home`, `--add-dirs-*`) override
+the cage. Config defaults fill whatever is still empty after the cage.
+
+### Home materialization (plan / apply)
+
+Profile seeds and library `Spec.home_ops` are planned without side effects, then
+applied only on real spawn (not on `--show-policies`). Dry-run prints the plan:
+
+```text
+-- home --
+  path = /tmp/scratch
+  materialization plan:
+    [apply] mkdir /tmp/scratch
+    [apply] seed-ro /Users/you/.gitconfig -> /tmp/scratch/.gitconfig
+```
+
+Ops (via `Sandbox::home_op` / `HomeOpSpec`): `link`, `mkdir`, `seed-ro`, `copy`.
+Tokens: `~` (effective home), `#HOME` (real home), `@managed/<id>`.
+
+**Symlink tip (macOS/Linux):** a grant on the *link path alone* is not enough to
+read through a symlink into the real home — also grant the **target** (`#HOME/…`).
+
+### Toolchain recipes
+
+Cage files can select recipes (see [`recipes.md`](./recipes.md)):
+
+```toml
+[toolchains.nvm]
+strategy = "link"      # share | link | isolate
+
+[toolchains.cargo]
+strategy = "link"
+```
+
+```sh
+isol8 -c work --show-policies -- node --version
+# shows -- recipes -- and materialization plan (links into real ~/.nvm, etc.)
+```
+
+Built-ins: `toolchains/nvm`, `toolchains/cargo`, `toolchains/maven` (under
+`recipes/`). User overlays: `~/.config/isol8/recipes/`.
+
+### `@cage detect` — discover toolchains (read-only)
+
+Lists every **platform-matching** recipe and whether its probe path exists on the
+host. Optional `detect.version` runs **on the host** (not confined) when the probe
+hits. No home materialization, no sandbox spawn.
+
+```sh
+isol8 @cage detect
+# Detected in ~:
+#   ✓ cargo        /Users/you/.cargo
+#   ✓ nvm          /Users/you/.nvm
+#   · maven        /Users/you/.m2  not found
+```
+
+### `@cage verify` — smoke-test a cage
+
+Materializes the cage home (same plan/apply path as a real run), then runs each
+selected recipe’s `verify.cmd` **inside** the sandbox. Optional `verify.expect`
+must match stdout.
+
+```sh
+isol8 @cage verify work
+#   ✓ home             materialized …
+#   ✓ nvm          [link] exit 0 → v22.3.0
+#   ✗ maven        [share] exit 1 → …
+```
+
+Cage resolution matches normal runs (name arg, discovery, or default). Recipes
+without `verify.cmd` are skipped. Builtin and local recipes may run version/verify
+commands; remote registry sources (Phase 7) will need an explicit trust gate.
+
+### `--analyze` — denial → recipe suggestions
+
+Runs a command and maps **observed** path denials to recipe suggestions: collapsed
+roots, matching toolchains, and a flag when the fix is likely a **home link**.
+
+```sh
+isol8 --analyze -- node script.js
+isol8 -c work --analyze -- claude
+
+# Offline / CI: feed synthetic denials (one JSON object per line)
+ISOL8_ANALYZE_FEED=denials.ndjson isol8 --analyze -- echo hi
+```
+
+| Platform | Live observation | Offline NDJSON feed |
+|----------|------------------|---------------------|
+| Any (with feed) | — | Yes |
+| **macOS** | **Yes** — unified log (`log stream` + `log show`) | Yes |
+| Windows | Not yet (path hook not real; R2 documentary) | Yes |
+| Linux | Phase 10 (shadow mode) | Yes |
+
+```sh
+# macOS: live deny scrape + recipe suggestions
+isol8 --analyze --profile base --profile macos/system-runtime -- /bin/cat ~/.netrc
+
+# macOS only: Seatbelt (trace …) draft allow list (permissive — opt-in)
+isol8 --analyze --author --profile base --profile macos/system-runtime -- /bin/ls ~
+```
+
+On macOS, `--analyze` is complementary to `@diag`: `@diag` finds **launch** policy
+holes (SIGABRT); `--analyze` records **runtime** denials from the unified log.
+
+Reports *observed* denials only — not an audit of every access. Does not edit cages.
+
+**Not yet:** remote registry, interactive wizard — later evolution phases.
 
 ---
 

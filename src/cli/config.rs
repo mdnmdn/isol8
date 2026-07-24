@@ -17,6 +17,8 @@ pub struct Config {
     pub add_dirs_rw: Vec<String>,
     pub add_dirs_ro: Vec<String>,
     pub home: Option<String>,
+    /// Named cage to use when `--cage` / `ISOL8_CAGE` are unset.
+    pub cage: Option<String>,
     pub dry_run: bool,
 }
 
@@ -215,6 +217,7 @@ auto_profiles: {auto}
 profile_paths: []
 # profile_paths:
 #   - /path/to/extra-profiles
+# cage: work   # optional named cage (~/.config/isol8/cages/work.toml)
 add_dirs_rw: []
 add_dirs_ro: []
 "#,
@@ -227,6 +230,7 @@ default_profiles = {dp:?}
 auto_profiles = {auto}
 profile_paths = []
 # profile_paths = ["/path/to/extra-profiles", "/path/to/override.toml"]
+# cage = "work"  # optional named cage (~/.config/isol8/cages/work.toml)
 add_dirs_rw = []
 add_dirs_ro = []
 "#,

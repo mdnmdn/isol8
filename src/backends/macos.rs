@@ -32,7 +32,7 @@
 //!   emit `(allow file-read-metadata (literal "<ancestor>"))` for each ancestor.
 
 use std::collections::HashMap;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 
 use crate::error::{Error, Result};
 use crate::sandbox::SandboxChild;
@@ -108,6 +108,47 @@ impl Backend for MacosBackend {
         });
 
         Ok(SandboxChild::process(child, on_exit))
+    }
+
+    fn output(
+        &self,
+        profile: &Profile,
+        env: &HashMap<String, String>,
+        cmd: &[String],
+    ) -> Result<Output> {
+        if cmd.is_empty() {
+            return Err(Error::Message(
+                "no command given to run under the sandbox".into(),
+            ));
+        }
+        let policy = render_policy(profile);
+        let mut command = Command::new(SANDBOX_EXEC);
+        command.arg("-p").arg(&policy).args(cmd);
+        command.env_clear().envs(env);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let output = command.output().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Error::Message(format!(
+                    "{SANDBOX_EXEC} not found. Seatbelt is deprecated but present on \
+                     macOS 12+; isol8 requires it for the macOS backend."
+                ))
+            } else {
+                Error::Message(format!("failed to launch {SANDBOX_EXEC}: {e}"))
+            }
+        })?;
+        // Map sandbox-exec policy failures into typed errors (same as spawn/wait).
+        match output.status.code() {
+            Some(65) => Err(Error::PolicyRejected(format!(
+                "sandbox-exec rejected the generated Seatbelt policy (exit 65). \
+                 Generated policy:\n----\n{policy}\n----"
+            ))),
+            Some(134) => Err(Error::Message(
+                "the confined command aborted (exit 134 / SIGABRT). Nested sandbox \
+                 or missing '/' grant?"
+                    .into(),
+            )),
+            _ => Ok(output),
+        }
     }
 
     fn render_policy(&self, profile: &Profile) -> String {

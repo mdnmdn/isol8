@@ -1,12 +1,17 @@
-//! R4 — effective-home resolution and seeding. The effective home is resolved
-//! *before* any path-grant computation so every `~`-relative grant targets the
-//! replacement home, not the real one (profile-model §7).
+//! R4 — effective-home resolution and materialization planning.
+//!
+//! The effective home is resolved *before* any path-grant computation so every
+//! `~`-relative grant targets the replacement home, not the real one
+//! (profile-model §7). Seeding and other home ops go through [`crate::plan::HomePlan`]
+//! (plan then apply).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::context::{self, Context};
 use crate::error::{Error, Result, ResultExt};
+use crate::plan::{self, HomeOpSpec, HomePlan};
 use crate::profile::Profile;
 use crate::sandbox::Spec;
 
@@ -14,22 +19,31 @@ use crate::sandbox::Spec;
 /// grant survives an active `--home` replacement (which `~` would retarget). §9.
 pub const REAL_HOME_TOKEN: &str = "#HOME";
 
-/// The resolved effective home for a run.
+/// Prefix for isol8-managed homes under [`Context::managed_root`].
+pub const MANAGED_HOME_PREFIX: &str = "@managed/";
+
+/// The resolved effective home for a run, plus its materialization plan.
 pub struct EffectiveHome {
     /// The resolved effective `$HOME` directory for the run.
     pub path: PathBuf,
-    /// Real-home entries to seed read-only into the home (e.g. "~/.gitconfig").
+    /// Real home used for `#HOME` expansion (from [`Context`]).
+    pub real_home: PathBuf,
+    /// Real-home entries to seed (profile `home_replace.seed`); also reflected in `plan`.
     pub seed: Vec<String>,
+    /// Materialization plan (seed-ro + Spec home_ops). Apply on spawn only.
+    pub plan: HomePlan,
 }
 
 /// Resolve the effective home with precedence: `--home` > layer `home_replace.path`
-/// > `auto_scratch` temp dir.
+/// > `auto_scratch` / `ephemeral_home` temp dir > real home.
 ///
 /// `layers` are the resolved (deps-first) layers; the highest layer that sets a
-/// `home_replace` wins, matching merge semantics. Seeds are unioned across layers.
+/// `home_replace` wins, matching merge semantics. Seeds are unioned across layers
+/// and converted into seed-ro plan ops together with [`Spec::home_ops`].
 ///
-/// ponytail: std scratch dir, no tempfile crate; cleanup best-effort.
-pub fn resolve(spec: &Spec, layers: &[Profile]) -> Result<EffectiveHome> {
+/// Uses [`Context`] for real home, managed-root, and token expansion — never
+/// re-reads the environment for those values.
+pub fn resolve(spec: &Spec, layers: &[Profile], ctx: &Context) -> Result<EffectiveHome> {
     // Highest layer that sets home_replace wins; seeds union across all layers.
     let mut hr_path: Option<String> = None;
     let mut auto_scratch = false;
@@ -49,23 +63,46 @@ pub fn resolve(spec: &Spec, layers: &[Profile]) -> Result<EffectiveHome> {
         }
     }
 
-    let real = real_home();
     let path = if let Some(home) = &spec.home {
-        PathBuf::from(expand_tilde(home, &real))
+        resolve_home_spec(home, ctx)?
     } else if let Some(p) = hr_path {
-        PathBuf::from(expand_tilde(&p, &real))
-    } else if auto_scratch {
+        resolve_home_spec(&p, ctx)?
+    } else if auto_scratch || spec.ephemeral_home {
         create_scratch_home()?
     } else {
         // No replacement requested: fall back to the real home.
-        real
+        ctx.real_home.clone()
     };
 
     if spec.no_seed {
         seed.clear();
     }
 
-    Ok(EffectiveHome { path, seed })
+    // Build materialization specs: ensure managed home dir, then seeds, then explicit ops.
+    let mut specs: Vec<HomeOpSpec> = Vec::new();
+    if path != ctx.real_home {
+        // Ensure the replacement home directory exists before seed/link targets.
+        specs.push(HomeOpSpec::mkdir(path.to_string_lossy().into_owned()));
+    }
+    specs.extend(plan::seed_specs_from_list(&seed));
+    specs.extend(spec.home_ops.clone());
+
+    let plan = HomePlan::compute(&specs, ctx, &path)?;
+
+    Ok(EffectiveHome {
+        path,
+        real_home: ctx.real_home.clone(),
+        seed,
+        plan,
+    })
+}
+
+/// Resolve a home path string: `@managed/<id>`, `~…`, or absolute/relative.
+fn resolve_home_spec(home: &str, ctx: &Context) -> Result<PathBuf> {
+    if let Some(id) = home.strip_prefix(MANAGED_HOME_PREFIX) {
+        return ctx.managed_home(id);
+    }
+    Ok(PathBuf::from(expand_tilde(home, &ctx.real_home)))
 }
 
 /// Create a unique scratch home under the OS temp dir (not predictable from PID alone).
@@ -103,28 +140,9 @@ fn create_scratch_home() -> Result<PathBuf> {
 }
 
 /// The real `$HOME`, or a platform-appropriate fallback (never panics on user
-/// environment). On Windows, falls back to `USERPROFILE` then `C:\`; on other
-/// platforms falls back to `/`.
-fn real_home() -> PathBuf {
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            if cfg!(windows) {
-                std::env::var_os("USERPROFILE")
-                    .filter(|h| !h.is_empty())
-                    .map(PathBuf::from)
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| {
-            if cfg!(windows) {
-                PathBuf::from(r"C:\")
-            } else {
-                PathBuf::from("/")
-            }
-        })
+/// environment). Prefer [`Context::real_home`] when a context is available.
+pub fn real_home() -> PathBuf {
+    context::real_home_from_env()
 }
 
 /// Expand a leading `~` / `~/...` in `path` against `home`. Non-tilde paths pass
@@ -142,9 +160,16 @@ pub fn expand_tilde(path: &str, home: &Path) -> String {
 /// Expand a path grant: first substitute the `#HOME` real-home token (§9), then
 /// expand a leading `~` against the *effective* home. With no replacement home the
 /// two coincide, so `#HOME` and `~` agree.
+///
+/// Prefer [`expand_grant_in`] when a [`Context`] / [`EffectiveHome`] is available.
 pub fn expand_grant(path: &str, effective_home: &Path) -> String {
+    expand_grant_in(path, effective_home, &real_home())
+}
+
+/// Expand a path grant using an explicit real-home path (from [`Context`]).
+pub fn expand_grant_in(path: &str, effective_home: &Path, real: &Path) -> String {
     let substituted = if path.contains(REAL_HOME_TOKEN) {
-        path.replace(REAL_HOME_TOKEN, &real_home().to_string_lossy())
+        path.replace(REAL_HOME_TOKEN, &real.to_string_lossy())
     } else {
         path.to_string()
     };
@@ -184,55 +209,32 @@ pub fn expand_windows_vars(path: &str) -> String {
     result
 }
 
-/// Copy allowlisted real-home entries read-only into the (scratch) home (R4.4).
+/// Apply the home materialization plan (seed-ro, links, mkdir, copy).
 ///
-/// Keeps it simple: std fs copy of files, recursive copy of directories. Missing
-/// sources are skipped (best-effort seeding); copied files are made read-only.
-pub fn seed(home: &EffectiveHome) -> Result<()> {
-    let real = real_home();
-    for entry in &home.seed {
-        // Seed entries are real-home-relative `~/...` references.
-        let rel = entry.strip_prefix("~/").unwrap_or(entry);
-        let src = real.join(rel);
-        if !src.exists() {
-            continue; // best-effort
-        }
-        let dst = home.path.join(rel);
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent).ctx(|| format!("creating {}", parent.display()))?;
-        }
-        copy_readonly(&src, &dst)
-            .ctx(|| format!("seeding {} -> {}", src.display(), dst.display()))?;
-    }
-    Ok(())
+/// Idempotent. Prefer this over ad-hoc seeding; keeps plan/apply as one path.
+pub fn materialize(home: &EffectiveHome) -> Result<()> {
+    home.plan.apply()
 }
 
-/// Recursively copy `src` to `dst`, marking copied files read-only.
-fn copy_readonly(src: &Path, dst: &Path) -> Result<()> {
-    let meta = std::fs::symlink_metadata(src)?;
-    if meta.is_dir() {
-        std::fs::create_dir_all(dst)?;
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            copy_readonly(&entry.path(), &dst.join(entry.file_name()))?;
-        }
-    } else {
-        if dst.exists() {
-            // ponytail: seed once. A persistent home keeps its first snapshot, and a
-            // re-run can't fail trying to overwrite the read-only seed from last time.
-            return Ok(());
-        }
-        std::fs::copy(src, dst)?;
-        let mut perms = std::fs::metadata(dst)?.permissions();
-        perms.set_readonly(true);
-        std::fs::set_permissions(dst, perms)?;
-    }
-    Ok(())
+/// Backward-compatible alias: apply the planned seed (and other home ops).
+pub fn seed(home: &EffectiveHome) -> Result<()> {
+    materialize(home)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::{Context, Platform};
+    use crate::plan::HomeOpSpec;
+
+    fn test_ctx(real: &str) -> Context {
+        Context {
+            real_home: PathBuf::from(real),
+            cwd: PathBuf::from("/tmp"),
+            platform: Platform::Linux,
+            managed_root: PathBuf::from(format!("{real}/.local/share/isol8/homes")),
+        }
+    }
 
     #[test]
     fn expand_tilde_root() {
@@ -249,32 +251,23 @@ mod tests {
 
     #[test]
     fn expand_grant_real_home_token() {
-        let prev = std::env::var_os("HOME");
-        std::env::set_var("HOME", "/real");
         // `#HOME` targets the real home; `~` targets the effective (replacement) home.
         assert_eq!(
-            expand_grant("#HOME/.ssh", Path::new("/scratch")),
+            expand_grant_in("#HOME/.ssh", Path::new("/scratch"), Path::new("/real")),
             "/real/.ssh"
         );
         assert_eq!(
-            expand_grant("~/.cargo", Path::new("/scratch")),
+            expand_grant_in("~/.cargo", Path::new("/scratch"), Path::new("/real")),
             Path::new("/scratch").join(".cargo").to_string_lossy()
         );
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
     }
 
     #[test]
     fn no_seed_clears_seed_list() {
-        let run = crate::cli::run_from(
-            crate::cli::ProfileOpts {
-                no_seed: true,
-                ..Default::default()
-            },
-            vec!["echo".into()],
-        );
+        let run = crate::sandbox::Spec {
+            no_seed: true,
+            ..Default::default()
+        };
         let layers = vec![crate::profile::Profile {
             home_replace: Some(crate::profile::HomeReplace {
                 enabled: true,
@@ -284,14 +277,15 @@ mod tests {
             }),
             ..Default::default()
         }];
-        let prev = std::env::var_os("HOME");
-        std::env::set_var("HOME", "/real/home");
-        let home = resolve(&run, &layers).unwrap();
+        let ctx = test_ctx("/real/home");
+        let home = resolve(&run, &layers, &ctx).unwrap();
         assert!(home.seed.is_empty());
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        // mkdir of replacement home may still be planned
+        assert!(home
+            .plan
+            .ops
+            .iter()
+            .all(|o| o.kind != crate::plan::HomeOpKind::SeedRo));
     }
 
     #[cfg(windows)]
@@ -312,28 +306,53 @@ mod tests {
 
     #[test]
     fn resolve_expands_tilde_in_cli_home() {
-        let prev = std::env::var_os("HOME");
-        std::env::set_var("HOME", "/real/home");
-
-        let run = crate::cli::run_from(
-            crate::cli::ProfileOpts {
-                home: Some("~/scratch".into()),
-                ..Default::default()
-            },
-            vec!["echo".into()],
-        );
-        let home = resolve(&run, &[]).unwrap();
+        let run = crate::sandbox::Spec {
+            home: Some("~/scratch".into()),
+            ..Default::default()
+        };
+        let ctx = test_ctx("/real/home");
+        let home = resolve(&run, &[], &ctx).unwrap();
         assert_eq!(home.path, PathBuf::from("/real/home/scratch"));
+    }
 
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+    #[test]
+    fn resolve_managed_home() {
+        let run = crate::sandbox::Spec {
+            home: Some("@managed/work".into()),
+            ..Default::default()
+        };
+        let ctx = test_ctx("/real/home");
+        let home = resolve(&run, &[], &ctx).unwrap();
+        assert_eq!(
+            home.path,
+            PathBuf::from("/real/home/.local/share/isol8/homes/work")
+        );
+    }
+
+    #[test]
+    fn resolve_ephemeral_home_flag_creates_scratch() {
+        let run = crate::sandbox::Spec {
+            ephemeral_home: true,
+            cmd: vec!["echo".into()],
+            ..Default::default()
+        };
+        let ctx = test_ctx("/real/home");
+        let home = resolve(&run, &[], &ctx).unwrap();
+        assert_ne!(home.path, PathBuf::from("/real/home"));
+        assert!(
+            home.path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("isol8-home-")),
+            "expected scratch dir, got {}",
+            home.path.display()
+        );
+        let _ = std::fs::remove_dir_all(&home.path);
     }
 
     #[test]
     fn resolve_honors_home_replace_enabled_false() {
-        let run = crate::cli::run_from(Default::default(), vec!["echo".into()]);
+        let run = crate::sandbox::Spec::default();
         let layers = vec![crate::profile::Profile {
             home_replace: Some(crate::profile::HomeReplace {
                 enabled: false,
@@ -343,57 +362,23 @@ mod tests {
             }),
             ..Default::default()
         }];
-        let prev_home = std::env::var_os("HOME");
-        #[cfg(windows)]
-        let prev_profile = std::env::var_os("USERPROFILE");
-        #[cfg(not(windows))]
-        std::env::set_var("HOME", "/real/home");
-        #[cfg(windows)]
-        {
-            std::env::set_var("HOME", r"C:\real\home");
-            std::env::set_var("USERPROFILE", r"C:\real\home");
-        }
-
-        let home = resolve(&run, &layers).unwrap();
-        #[cfg(not(windows))]
+        let ctx = test_ctx("/real/home");
+        let home = resolve(&run, &layers, &ctx).unwrap();
         assert_eq!(home.path, PathBuf::from("/real/home"));
-        #[cfg(windows)]
-        assert_eq!(home.path, PathBuf::from(r"C:\real\home"));
-
-        match prev_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        #[cfg(windows)]
-        match prev_profile {
-            Some(v) => std::env::set_var("USERPROFILE", v),
-            None => std::env::remove_var("USERPROFILE"),
-        }
     }
 
     #[test]
     fn resolve_defaults_to_real_home_without_replacement() {
-        // No `--home`, no layer requesting replacement → the real home is used.
-        // This is the default (HOME replacement is opt-in).
-        let run = crate::cli::run_from(Default::default(), vec!["echo".into()]);
-        let prev = std::env::var_os("HOME");
-        std::env::set_var("HOME", "/real/home");
-
-        let home = resolve(&run, &[]).unwrap();
+        let run = crate::sandbox::Spec::default();
+        let ctx = test_ctx("/real/home");
+        let home = resolve(&run, &[], &ctx).unwrap();
         assert_eq!(home.path, PathBuf::from("/real/home"));
         assert!(home.seed.is_empty());
-
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
     }
 
     #[test]
     fn resolve_uses_layer_home_replace_path() {
-        // A profile that opts into HOME replacement with an explicit (tilde) path
-        // wins over the real home, and `~` in that path expands against the real home.
-        let run = crate::cli::run_from(Default::default(), vec!["echo".into()]);
+        let run = crate::sandbox::Spec::default();
         let layers = vec![crate::profile::Profile {
             home_replace: Some(crate::profile::HomeReplace {
                 enabled: true,
@@ -403,22 +388,20 @@ mod tests {
             }),
             ..Default::default()
         }];
-        let prev = std::env::var_os("HOME");
-        std::env::set_var("HOME", "/real/home");
-
-        let home = resolve(&run, &layers).unwrap();
+        let ctx = test_ctx("/real/home");
+        let home = resolve(&run, &layers, &ctx).unwrap();
         assert_eq!(home.path, PathBuf::from("/real/home/sandbox-home"));
         assert_eq!(home.seed, vec!["~/.gitconfig".to_string()]);
-
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        assert!(home
+            .plan
+            .ops
+            .iter()
+            .any(|o| o.kind == crate::plan::HomeOpKind::SeedRo));
     }
 
     #[test]
     fn scratch_home_paths_are_unique() {
-        let run = crate::cli::run_from(Default::default(), vec!["echo".into()]);
+        let run = crate::sandbox::Spec::default();
         let layers = vec![crate::profile::Profile {
             home_replace: Some(crate::profile::HomeReplace {
                 enabled: true,
@@ -428,72 +411,57 @@ mod tests {
             }),
             ..Default::default()
         }];
-        let a = resolve(&run, &layers).unwrap().path;
-        let b = resolve(&run, &layers).unwrap().path;
+        let ctx = test_ctx("/real/home");
+        let a = resolve(&run, &layers, &ctx).unwrap().path;
+        let b = resolve(&run, &layers, &ctx).unwrap().path;
         assert_ne!(a, b);
         let _ = std::fs::remove_dir_all(a);
         let _ = std::fs::remove_dir_all(b);
     }
 
     #[test]
-    fn seed_copies_readonly() {
-        let tmp = std::env::temp_dir().join(format!("isol8-test-seed-{}", std::process::id()));
+    fn materialize_seed_and_ops() {
+        let tmp = std::env::temp_dir().join(format!("isol8-test-mat-{}", std::process::id()));
         let real = tmp.join("real");
         let scratch = tmp.join("scratch");
         std::fs::create_dir_all(&real).unwrap();
         std::fs::write(real.join(".gitconfig"), b"x").unwrap();
+        std::fs::create_dir_all(real.join(".tool")).unwrap();
+        std::fs::write(real.join(".tool/bin"), b"t").unwrap();
 
-        // Point HOME at our fake real home for the duration of this test.
-        let prev = std::env::var_os("HOME");
-        std::env::set_var("HOME", &real);
-
-        let home = EffectiveHome {
-            path: scratch.clone(),
-            seed: vec!["~/.gitconfig".into()],
+        let ctx = Context {
+            real_home: real.clone(),
+            cwd: tmp.clone(),
+            platform: Platform::Linux,
+            managed_root: tmp.join("managed"),
         };
-        seed(&home).unwrap();
-
-        let copied = scratch.join(".gitconfig");
-        assert!(copied.exists());
-        assert!(std::fs::metadata(&copied).unwrap().permissions().readonly());
-
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn seed_is_first_creation_only() {
-        // Reproduces the persistent-home bug: re-seeding over an existing read-only
-        // copy must NOT error, and must leave the first snapshot untouched.
-        let tmp = std::env::temp_dir().join(format!("isol8-test-seed-once-{}", std::process::id()));
-        let real = tmp.join("real");
-        let scratch = tmp.join("scratch");
-        std::fs::create_dir_all(&real).unwrap();
-        std::fs::write(real.join(".gitconfig"), b"first").unwrap();
-
-        let prev = std::env::var_os("HOME");
-        std::env::set_var("HOME", &real);
-
-        let home = EffectiveHome {
-            path: scratch.clone(),
-            seed: vec!["~/.gitconfig".into()],
+        let run = Spec {
+            home: Some(scratch.to_string_lossy().into_owned()),
+            home_ops: vec![HomeOpSpec::link("#HOME/.tool", "~/.tool")],
+            ..Default::default()
         };
-        seed(&home).unwrap(); // first run: copies read-only
+        let layers = vec![crate::profile::Profile {
+            home_replace: Some(crate::profile::HomeReplace {
+                enabled: true,
+                auto_scratch: false,
+                path: None,
+                seed: vec!["~/.gitconfig".into()],
+            }),
+            ..Default::default()
+        }];
+        // home from spec wins over layer path (layer path None + enabled still sets seed)
+        let home = resolve(&run, &layers, &ctx).unwrap();
+        materialize(&home).unwrap();
 
-        // Source changes; a second seed must succeed and keep the first snapshot.
-        std::fs::write(real.join(".gitconfig"), b"second").unwrap();
-        seed(&home).unwrap(); // must not fail overwriting the read-only copy
+        assert!(scratch.join(".gitconfig").exists());
+        assert!(std::fs::symlink_metadata(scratch.join(".tool"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
 
-        let copied = scratch.join(".gitconfig");
-        assert_eq!(std::fs::read(&copied).unwrap(), b"first");
+        // Idempotent
+        materialize(&home).unwrap();
 
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

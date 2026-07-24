@@ -47,6 +47,14 @@ Modules (see spec §7):
 - `profile` — `Profile` / `PathGrant` / `Access` / `HomeReplace`, TOML (de)serialization,
   deny-first `merge`. **Drives everything.**
 - `env` — minimal sanitized environment construction (HOME first).
+- `cage` — named local isolation units: TOML load, discovery, overlay into Spec
+  fields (`--cage`/`-c`, `@cage`). Not a profile layer.
+- `context` — injectable ambient state (`real_home`, `cwd`, `platform`, `managed_root`).
+- `plan` — home materialization plan/apply (`link` / `mkdir` / `seed-ro` / `copy`).
+- `recipe` — toolchain recipes (`share`/`link`/`isolate` → grants + home ops + env).
+- `detect` — `@cage detect` probes and `@cage verify` in-sandbox smoke tests.
+- `analyze` — `--analyze` denials → recipe suggestions (NDJSON feed; shared layer).
+- `analyze_macos` — macOS unified-log scrape + optional Seatbelt `(trace …)` for `--author`.
 - `backends/{linux,macos,windows}` — render the merged profile into the OS-native
   policy (Landlock ruleset / Seatbelt text / AppContainer) and spawn the command.
   `Backend` trait: `spawn(...) -> Result<SandboxChild>` (non-blocking),
@@ -140,18 +148,27 @@ Windows (AppContainer) backend is an early draft — it compiles and wires throu
 the pipeline but does not yet enforce (see `_docs/wip/windows-review.md`).
 Known gaps: macOS `git`/`cargo` need extra developer-tool paths beyond `macos-system`.
 
+**Evolution track (post-0.2.x):** Phases 1–6 done — cages, Context/HomePlan, recipes,
+detect/verify, shared `--analyze`, and **macOS log scrape** (`src/analyze_macos.rs`).
+Still open: Linux shadow observe, Win path hook, registry, wizard —
+[`_docs/inbox/evo-repo.md`](_docs/inbox/evo-repo.md),
+[`_docs/wip/multi-evo-plan.md`](_docs/wip/multi-evo-plan.md).
+
 ## Roadmap
 
 1. **Phase 1** — Core path + HOME MVP (Linux Landlock + macOS Seatbelt + Windows
    AppContainer T1); profile parser/merger; minimal env sanitization; opt-in scratch
-   home. **(macOS + Windows done; Linux pending)**
+   home. **(macOS + Linux MVP done; Windows draft)**
 2. **Phase 2** — Full R3 env features, resource limits, `--dry-run` policy dump,
-   WSL2 testing, docs.
+   WSL2 testing, docs. *(partially done: dry-run, env-pass/set-env, WSL2 verified)*
 3. **Phase 3** — Network tiers N1→N2 (pasta)→N3 (helper + nftables); DNS/IPv6/MITM.
 4. **Phase 4** — Seccomp profiles, structured audit logs, integration test harness,
    hardening, hybrid isolation modes, packaging.
 5. **Phase 5** — Windows Job Objects + Low IL + WFP (Tiers 2–3), best-effort HOME,
    `--elevate`/`--no-elevate` flags.
+6. **Evolution (parallel track)** — cages → materialization → recipes → detect/verify
+   → analyze → registry → wizard → crate split. See
+   [`_docs/wip/multi-evo-plan.md`](_docs/wip/multi-evo-plan.md).
 
 ## Working directives
 
@@ -241,4 +258,7 @@ let dry = isol8::Sandbox::new().profile("base").dry_run(["node", "x"])?;
 | [`_docs/testing-strategies.md`](_docs/testing-strategies.md) | Unit + field tests |
 | [`_docs/macos-support.md`](_docs/macos-support.md) | macOS Seatbelt backend: SBPL rendering, capabilities, `@diag`, limits |
 | [`_docs/windows-support.md`](_docs/windows-support.md) | Windows AppContainer backend (draft): state, blockers, roadmap |
+| [`_docs/recipes.md`](_docs/recipes.md) | Recipe format, strategies, cage `[toolchains.*]` |
+| [`_docs/wip/multi-evo-plan.md`](_docs/wip/multi-evo-plan.md) | Post-0.2.x evolution: cages, recipes, registry, analyze, wizard |
+| [`_docs/inbox/evo-repo.md`](_docs/inbox/evo-repo.md) | Design proposal (source of truth for the evolution track) |
 | [`AGENTS.md`](AGENTS.md) | Guide for contributors and agents |

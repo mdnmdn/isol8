@@ -32,9 +32,20 @@ portable profile core plus conditional filters. Anything not listed as parsed wi
 | `network` block | **Not parsed yet** (Phase 3). Including `network` in a layer fails to load. |
 | Enforcement | **macOS** via Seatbelt. **Linux** via Landlock (deny-by-default, per-path ro/rw). |
 | Introspection | `isol8 profiles list|show|resolve`, `isol8 policies show`, `--dry-run` (layer stack + effective policy). |
+| Cages | **Phase 1 done** (`src/cage.rs`). Named selection unit (home mode + profile list + `[[dirs]]`). CLI: `--cage`/`-c`, `ISOL8_CAGE`, config `cage =`, `@cage list\|show\|new`. Compiles to Spec fields only — not a profile layer. Home modes: `inherit` / `ephemeral` / `@managed/<id>` / path. |
+| Context + HomePlan | **Phase 2 done** (`src/context.rs`, `src/plan.rs`). Injectable `Context`; materialization ops `link`/`mkdir`/`seed-ro`/`copy` via plan/apply; dry-run shows plan; spawn applies. Profile seeds become seed-ro ops. |
+| Recipes / strategies | **Phase 3 done** (`src/recipe.rs`, `recipes/**/*.toml`). Distinct document type; cage `[toolchains.*]` selects strategy; compiles to path grants + env + home ops. See [`recipes.md`](./recipes.md). |
+| Detect / verify | **Phase 4 done** (`src/detect.rs`). `@cage detect` (host probes); `@cage verify` (materialize + confined `verify.cmd`). |
+| `--analyze` | **Phases 5–6 done** (`src/analyze.rs` + `src/analyze_macos.rs`). NDJSON feed anywhere; live macOS unified-log scrape; Win hook / Linux shadow later. |
+| Registry | **Not implemented.** Sources stay: builtin embed → user config dir → `--profile-path`. External git/http + lockfile = plan Phase 7. |
 
 Examples below that include a `network` block illustrate the *target* schema; omit
 it to author a layer that loads today.
+
+**Profiles vs cages vs recipes (planned vocabulary):** a **profile** is a raw policy
+layer (this document). A **cage** is a local, switchable selection of profiles and
+home mode. A **recipe** is a shared toolchain package (detect + strategies + verify)
+distributed via a registry. Until the evolution track lands, only profiles exist.
 
 ---
 
@@ -263,11 +274,20 @@ auto-select) but do not alone trigger auto-selection.
 
 After `resolve_requires`, each layer passes through `apply_layer_filter(ctx)`:
 
-1. If layer `filter` is set and fails → clear `paths`, `env`, `home_replace`, `macos`,
-   `policies` (the layer shell remains for ordering; `requires` was already expanded).
+1. If layer `filter` is set and fails → clear `paths`, `env`, `home_replace`,
+   `rewrite`, `macos`, `windows`, `policies` (the layer shell remains for ordering;
+   `requires` was already expanded).
 2. Fold each `[[policies]]` entry whose `filter` matches into the layer's unconditional
    fields; drop non-matching policies.
 3. Feed filtered layers to `merge` (§6).
+
+This runs inside `resolve::effective_policy`, which is the **only** resolution
+pipeline — every caller (run, `--dry-run`, `--show-policies`, `@diag`, the library
+`Sandbox` API) goes through it. A previous `profile::load` helper duplicated the
+sequence and was the only caller of the filter step; because nothing called
+`profile::load`, filters applied to nothing while appearing to be handled. Do not
+add a second pipeline: assert filter behaviour through `effective_policy`, since a
+test against a helper cannot observe what the backend is actually given.
 
 Dependencies pulled via `requires` are **not** re-filtered by the parent's executable
 filter — only each layer's own `filter` / `policies` apply.

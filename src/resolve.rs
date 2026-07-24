@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::env;
 use crate::error::{Error, Result};
-use crate::filter::RunContext;
+use crate::filter::{self, RunContext};
 use crate::home::{self, EffectiveHome};
 use crate::profile::{self, Access, LayerRegistry, MatchKind, PathGrant, Profile};
 use crate::sandbox::Spec;
@@ -43,6 +43,8 @@ pub struct EffectivePolicy {
     pub home: EffectiveHome,
     /// The command after profile `rewrite` rules are applied (what actually runs).
     pub cmd: Vec<String>,
+    /// Applied recipe strategies (`id`, strategy label).
+    pub recipes: Vec<(String, String)>,
 }
 
 /// Resolve layer stack, home, merged profile, and env without spawning.
@@ -72,9 +74,55 @@ pub fn effective_policy(spec: &Spec) -> Result<EffectivePolicy> {
         })
         .collect();
 
-    let layers: Vec<Profile> = resolved.into_iter().map(|(_, p)| p).collect();
-    let effective_home = home::resolve(spec, &layers)?;
-    let merged = profile::load_merged(spec, &layers, &effective_home, &ctx)?;
+    // Apply each layer's own `filter` / `[[policies]]` before anything reads the
+    // layers. A non-matching layer keeps its shell (so ordering and provenance
+    // are unchanged) but contributes no grants, env, home policy or rewrite.
+    // This must happen here, in the one pipeline every caller uses — running it
+    // in a helper that only some callers reach is how it silently stopped
+    // applying at all.
+    let layers: Vec<Profile> = resolved
+        .into_iter()
+        .map(|(_, p)| filter::apply_layer_filter(p, &ctx))
+        .collect();
+    let ambient = crate::context::Context::from_environment()?;
+
+    // Compile recipes before home resolve so their home_ops enter the plan.
+    let recipe_reg = crate::recipe::RecipeRegistry::load(&spec.recipe_paths)?;
+    let contributions = recipe_reg.compile_all(&spec.toolchains, &ctx)?;
+    let recipes: Vec<(String, String)> = contributions
+        .iter()
+        .map(|c| (c.id.clone(), c.strategy.as_str().to_string()))
+        .collect();
+
+    let mut spec_for_home = spec.clone();
+    for c in &contributions {
+        spec_for_home.home_ops.extend(c.home_ops.iter().cloned());
+    }
+
+    let effective_home = home::resolve(&spec_for_home, &layers, &ambient)?;
+    let mut merged = profile::load_merged(spec, &layers, &effective_home, &ctx)?;
+
+    // Fold recipe path grants + env (token-expand env against Context + effective home).
+    for c in &contributions {
+        for g in &c.paths {
+            merged.paths.push(PathGrant {
+                path: home::expand_grant_in(
+                    &g.path,
+                    &effective_home.path,
+                    &effective_home.real_home,
+                ),
+                access: g.access,
+                r#match: g.r#match,
+            });
+        }
+        for (k, v) in &c.env {
+            let expanded =
+                crate::recipe::expand_env_value(v, &effective_home.real_home, &effective_home.path);
+            // Recipe env is a default (like profile env): do not clobber earlier keys.
+            merged.env.entry(k.clone()).or_insert(expanded);
+        }
+    }
+
     let set_env = parse_set_env(&spec.set_env)?;
     let env_map = env::build_minimal(&merged, &effective_home.path, &spec.env_pass, &set_env);
     let cmd = profile::apply_rewrite(&spec.cmd, &merged.rewrite);
@@ -84,6 +132,7 @@ pub fn effective_policy(spec: &Spec) -> Result<EffectivePolicy> {
         env: env_map,
         home: effective_home,
         cmd,
+        recipes,
     })
 }
 

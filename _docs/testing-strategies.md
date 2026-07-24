@@ -13,6 +13,7 @@ enforces it.
 > 09** enforce env + AppContainer spawn, scenarios **01–05** skip (R2 path grants
 > are documentary on AppContainer), scenario **08** skips until net tiers land.
 > Linux-specific scenarios **10–16** compile only on Linux.
+> Home materialization scenarios **17–19** (plan/apply + symlink grant semantics).
 > See [`AGENTS.md`](../AGENTS.md).
 
 ---
@@ -54,10 +55,12 @@ Standard `cargo test`. Keep them deterministic and platform-independent:
   it, with `~` expanded against the real home. (`src/home.rs`,
   `tests/profile_filters.rs::default_run_keeps_real_home`,
   `profile_home_replace_overrides_home`)
-- **Seeding & `--no-seed`** — seeding is **first-creation-only**: re-seeding over an
-  existing read-only copy doesn't error and keeps the first snapshot; `--no-seed`
-  clears every layer's seed list for the run. (`src/home.rs::seed_is_first_creation_only`,
+- **Seeding & `--no-seed`** — seeding is **first-creation-only** via `HomePlan`
+  seed-ro ops; re-apply keeps the first snapshot; `--no-seed` clears every layer's
+  seed list. (`src/plan.rs`, `src/home.rs::materialize_seed_and_ops`,
   `no_seed_clears_seed_list`)
+- **Home plan/apply** — `link` / `mkdir` / `seed-ro` / `copy` are computed then
+  applied; dry-run does not mutate. (`src/plan.rs`, field scenarios 17–19)
 - **`#HOME` token** — expands to the **real** home before `~` expansion, so a grant
   survives an active `--home`/`home_replace`; with no replacement it coincides with
   `~`. (`src/home.rs::expand_grant_real_home_token`)

@@ -304,6 +304,30 @@ to locate it automatically.
 
 ---
 
+## `--analyze` vs `@diag`
+
+| Tool | When | What it answers |
+|------|------|-----------------|
+| `@diag` | Process **aborts at launch** (SIGABRT / exit 134) | Which path grant is missing from the Seatbelt policy so the runtime can start |
+| `--analyze` | Process **runs** but hits runtime denials | Which paths were denied (unified log), collapsed roots, recipe suggestions |
+
+They are complementary: `@diag` is launch-time delta-debug of the policy; `--analyze`
+scrapes `Sandbox: … deny(…)` lines from the unified log while the command runs
+(`log stream` + `log show --last` fallback), then reuses the shared analysis layer
+(Phase 5). Optional `--author` injects Seatbelt `(trace "…")` (permissive) to dump
+paths actually touched — explicit opt-in only.
+
+```sh
+isol8 --analyze --profile base --profile macos/system-runtime -- /bin/cat ~/.ssh/id_rsa
+# Observed N denials …
+#   /Users/you/.ssh    1 r  → no match; add a grant …
+```
+
+Privacy: `log stream` / `log show` may require Full Disk Access for the terminal
+app on some macOS versions; if the stream is empty, use `ISOL8_ANALYZE_FEED`.
+
+---
+
 ## `isol8 @diag` — Launch-Abort Diagnoser
 
 A SIGABRT launch abort produces no output and no diagnostic message. `@diag` finds

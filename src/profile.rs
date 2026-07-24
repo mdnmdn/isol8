@@ -712,18 +712,6 @@ fn overrides_layer(spec: &Spec) -> Profile {
     }
 }
 
-/// Resolve selected layers (deps-first), applying filters. No merge or `~` expansion.
-pub fn resolved_layers(spec: &Spec) -> Result<Vec<Profile>> {
-    let registry = LayerRegistry::load(&spec.profile_paths)?;
-    let ctx = RunContext::from_cmd(&spec.cmd);
-    let names = select_layer_names(spec, &registry, &ctx)?;
-    let layers = resolve_requires(&names, &registry.profiles())?;
-    Ok(layers
-        .into_iter()
-        .map(|(_, l)| filter::apply_layer_filter(l, &ctx))
-        .collect())
-}
-
 /// Merge resolved layers + invocation overrides into one effective profile.
 pub fn load_merged(
     spec: &Spec,
@@ -736,7 +724,7 @@ pub fn load_merged(
         .cloned()
         .map(|mut layer| {
             for grant in &mut layer.paths {
-                grant.path = home::expand_grant(&grant.path, &home.path);
+                grant.path = home::expand_grant_in(&grant.path, &home.path, &home.real_home);
             }
             layer
         })
@@ -744,18 +732,19 @@ pub fn load_merged(
 
     let mut over = overrides_layer(spec);
     for grant in &mut over.paths {
-        grant.path = home::expand_grant(&grant.path, &home.path);
+        grant.path = home::expand_grant_in(&grant.path, &home.path, &home.real_home);
     }
     expanded.push(over);
     Ok(merge(&expanded))
 }
 
-/// Load profile layers, resolve inheritance, expand `~`, merge deny-first.
-pub fn load(spec: &Spec, home: &EffectiveHome) -> Result<Profile> {
-    let layers = resolved_layers(spec)?;
-    let ctx = RunContext::from_cmd(&spec.cmd);
-    load_merged(spec, &layers, home, &ctx)
-}
+// NOTE: a `load()` helper (select -> resolve_requires -> filter -> merge) used to
+// live here and had no callers. Its existence made the filter step look handled
+// while every live path went through `resolve::effective_policy`, which skipped
+// it — layer filters silently applied to nothing. There is now exactly one
+// resolution pipeline, in `resolve::effective_policy`. Do not reintroduce a
+// second one: a duplicate that drifts is indistinguishable from a correct one
+// until something leaks.
 
 /// Serialize a layer back to TOML for `profiles show`.
 pub fn format_layer(profile: &Profile) -> Result<String> {

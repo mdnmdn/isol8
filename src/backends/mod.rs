@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::process::Output;
 
 use crate::error::Result;
 use crate::profile::Profile;
@@ -25,9 +26,47 @@ pub trait Backend {
         cmd: &[String],
     ) -> Result<SandboxChild>;
 
+    /// Apply the policy, run `cmd` to completion, and capture stdout/stderr.
+    ///
+    /// Used by `@cage verify`. Default falls back to spawn+wait without body
+    /// capture (stdout/stderr empty); backends should override when possible.
+    fn output(
+        &self,
+        profile: &Profile,
+        env: &HashMap<String, String>,
+        cmd: &[String],
+    ) -> Result<Output> {
+        let mut child = self.spawn(profile, env, cmd)?;
+        let code = child.wait()?;
+        Ok(Output {
+            status: exit_status_from_code(code),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        })
+    }
+
     /// Render the merged profile into the OS-native policy text (Seatbelt SBPL,
     /// Landlock rules, …) for dry-run / introspection — no side effects.
     fn render_policy(&self, profile: &Profile) -> String;
+}
+
+fn exit_status_from_code(code: i32) -> std::process::ExitStatus {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(code)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::ExitStatusExt;
+        // Windows exit codes are u32; negative is unusual.
+        std::process::ExitStatus::from_raw(code as u32)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = code;
+        unreachable!("no exit status conversion on this platform")
+    }
 }
 
 /// Select the backend for the current OS.
