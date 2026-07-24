@@ -4,39 +4,45 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    // Workspace root: crates/isol8-core -> ../..
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("workspace root")
+        .to_path_buf();
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     emit_embedded(
-        &manifest_dir,
+        &workspace_root,
         &out_dir,
         "profiles",
         "profiles_embedded.rs",
         "BUILTIN_PROFILES",
-        "Built-in profile layers embedded at compile time, as `(name, toml_body)` pairs walked from `profiles/**/*.toml`.",
+        "Built-in profile layers embedded at compile time.",
     );
     emit_embedded(
-        &manifest_dir,
+        &workspace_root,
         &out_dir,
         "recipes",
         "recipes_embedded.rs",
         "BUILTIN_RECIPES",
-        "Built-in recipes embedded at compile time, as `(id, toml_body)` pairs walked from `recipes/**/*.toml`.",
+        "Built-in recipes embedded at compile time.",
     );
 }
 
 fn emit_embedded(
-    manifest_dir: &Path,
+    workspace_root: &Path,
     out_dir: &Path,
     tree: &str,
     out_name: &str,
     const_name: &str,
     doc: &str,
 ) {
-    let dir = manifest_dir.join(tree);
-    println!("cargo:rerun-if-changed={tree}");
+    let dir = workspace_root.join(tree);
+    println!("cargo:rerun-if-changed={}", dir.display());
 
     let mut entries: Vec<(String, String)> = Vec::new();
-    collect_toml(&dir, &dir, tree, &mut entries);
+    collect_toml(&dir, &dir, &mut entries);
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut code = format!(
@@ -44,11 +50,10 @@ fn emit_embedded(
          /// {doc}\n\
          pub const {const_name}: &[(&str, &str)] = &[\n"
     );
-    for (name, rel) in &entries {
-        let rel_unix = rel.replace('\\', "/");
-        code.push_str(&format!(
-            "    (\"{name}\", include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/{rel_unix}\"))),\n"
-        ));
+    for (name, body) in &entries {
+        // Embed body as a raw string; use many # to avoid conflicts.
+        let lit = format!("r##########\"{body}\"##########");
+        code.push_str(&format!("    (\"{name}\", {lit}),\n"));
     }
     code.push_str("];\n");
 
@@ -57,7 +62,7 @@ fn emit_embedded(
     });
 }
 
-fn collect_toml(base: &Path, dir: &Path, tree: &str, out: &mut Vec<(String, String)>) {
+fn collect_toml(base: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
     let read_dir = match fs::read_dir(dir) {
         Ok(d) => d,
         Err(_) => return,
@@ -65,12 +70,14 @@ fn collect_toml(base: &Path, dir: &Path, tree: &str, out: &mut Vec<(String, Stri
     for entry in read_dir.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_toml(base, &path, tree, out);
+            collect_toml(base, &path, out);
         } else if path.extension().and_then(|e| e.to_str()) == Some("toml") {
             let rel = path.strip_prefix(base).unwrap();
             let name = rel.with_extension("").to_string_lossy().replace('\\', "/");
-            let rel_manifest = Path::new(tree).join(rel);
-            out.push((name, rel_manifest.to_string_lossy().into_owned()));
+            let body = fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("read {}: {e}", path.display());
+            });
+            out.push((name, body));
         }
     }
 }

@@ -13,12 +13,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use toml_edit::{value, DocumentMut, Item, Table};
 
-use crate::error::{Error, Result, ResultExt};
-use crate::profile::Access;
-use crate::recipe::{
+use isol8_core::error::{Error, Result, ResultExt};
+use isol8_core::profile::Access;
+use isol8_core::recipe::{
     normalize_recipe_id, resolve_strategy, Recipe, RecipeRegistry, StrategyName, ToolchainChoice,
 };
-use crate::registry::{sha256_hex, ProfileSource};
+use isol8_registry::{sha256_hex, ProfileSource};
 
 /// Marker comment prefix for wizard-owned toolchain sections (evo-repo §3.3).
 pub const MANAGED_MARKER: &str = "isol8:managed";
@@ -107,11 +107,11 @@ pub fn normalize_home(cage_name: &str, home: &str) -> Result<String> {
         "ephemeral" => Ok("ephemeral".into()),
         "managed" => Ok(format!("@managed/{cage_name}")),
         other if other.starts_with("@managed/") => {
-            crate::cage::HomeMode::parse(other)?;
+            isol8_core::cage::HomeMode::parse(other)?;
             Ok(other.to_string())
         }
         other => {
-            crate::cage::HomeMode::parse(other)?;
+            isol8_core::cage::HomeMode::parse(other)?;
             Ok(other.to_string())
         }
     }
@@ -132,7 +132,7 @@ pub fn parse_tools_list(raw: &str, reg: Option<&RecipeRegistry>) -> Result<Vec<T
         let strategy = if let Some(s) = strat_opt {
             StrategyName::parse(s)?
         } else if let Some(reg) = reg {
-            match reg.resolve(&id, &crate::filter::RunContext::from_cmd(&[])) {
+            match reg.resolve(&id, &isol8_core::filter::RunContext::from_cmd(&[])) {
                 Ok(recipe) => default_strategy_for(recipe),
                 Err(_) => StrategyName::Link,
             }
@@ -191,7 +191,7 @@ pub fn tools_from_detect(
     reg: &RecipeRegistry,
     found_ids: &[String],
 ) -> Result<Vec<ToolchainChoice>> {
-    let ctx = crate::filter::RunContext::from_cmd(&[]);
+    let ctx = isol8_core::filter::RunContext::from_cmd(&[]);
     let mut out = Vec::new();
     for id in found_ids {
         let recipe = reg.resolve(id, &ctx)?;
@@ -257,12 +257,12 @@ fn resolve_bundle_path(spec: &str) -> Result<PathBuf> {
     };
 
     // Search offline registry roots' index files.
-    let registries = crate::registry::load_registries_from_config().unwrap_or_default();
-    let cache = crate::registry::default_cache_root();
-    let lock = crate::registry::Lockfile::load(&crate::registry::discover_lockfile_path())
+    let registries = isol8_registry::load_registries_from_config().unwrap_or_default();
+    let cache = isol8_registry::default_cache_root();
+    let lock = isol8_registry::Lockfile::load(&isol8_registry::discover_lockfile_path())
         .unwrap_or_default();
     for (name, rspec) in &registries {
-        if let Ok(src) = crate::registry::open_offline(name, rspec, &cache, &lock) {
+        if let Ok(src) = isol8_registry::open_offline(name, rspec, &cache, &lock) {
             if let Some(entry) = src.index().get(&id) {
                 let p = src.root().unwrap().join(&entry.file);
                 if p.is_file() {
@@ -445,7 +445,7 @@ pub struct CageStateEntry {
 
 /// Default path: `$XDG_CONFIG_HOME/isol8/state.toml` or `~/.config/isol8/state.toml`.
 pub fn state_path() -> PathBuf {
-    crate::cage::user_cages_dir()
+    isol8_core::cage::user_cages_dir()
         .map(|p| p.parent().unwrap_or(p.as_path()).join("state.toml"))
         .unwrap_or_else(|| PathBuf::from("isol8-state.toml"))
 }
@@ -553,7 +553,7 @@ fn dest_path(req: &WizardRequest) -> Result<PathBuf> {
     }
     let base = match &req.out_dir {
         Some(d) => d.clone(),
-        None => crate::cage::user_cages_dir().ok_or_else(|| {
+        None => isol8_core::cage::user_cages_dir().ok_or_else(|| {
             Error::Message(
                 "cannot determine cages dir (set HOME / XDG_CONFIG_HOME or pass --path)".into(),
             )
@@ -751,7 +751,7 @@ fn rewrite_managed(
 
 /// Format a short preview of effective rw grants outside replaced home (heuristic).
 pub fn preview_security_notes(tools: &[ToolchainChoice], reg: &RecipeRegistry) -> Vec<String> {
-    let ctx = crate::filter::RunContext::from_cmd(&[]);
+    let ctx = isol8_core::filter::RunContext::from_cmd(&[]);
     let mut notes = Vec::new();
     for tc in tools {
         let Ok(recipe) = reg.resolve(&tc.id, &ctx) else {
@@ -989,7 +989,7 @@ cargo = { strategy = "share" }
     #[test]
     fn default_strategy_uses_recipe_field() {
         let reg = RecipeRegistry::load(&[]).unwrap();
-        let ctx = crate::filter::RunContext::from_cmd(&[]);
+        let ctx = isol8_core::filter::RunContext::from_cmd(&[]);
         if let Ok(nvm) = reg.resolve("toolchains/nvm", &ctx) {
             let s = default_strategy_for(nvm);
             assert_eq!(s, StrategyName::Link); // nvm default_strategy = link

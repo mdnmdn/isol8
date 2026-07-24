@@ -1,0 +1,24 @@
+[package]
+name = "isol8-cli"
+version = "0.2.6"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/mdnmdn/isol8"
+description = "isol8 CLI library: meta-commands, wizard (binary is the root isol8 package)"
+authors = ["Marco De Nittis"]
+
+[lib]
+name = "isol8_cli"
+path = "src/lib.rs"
+
+[dependencies]
+isol8-core = { path = "../isol8-core", version = "0.2.6" }
+isol8-registry = { path = "../isol8-registry", version = "0.2.6" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+serde_yaml = "0.9"
+dialoguer = "0.11"
+anyhow = "1"
+serde_json = "1"
+toml_edit = "0.22"

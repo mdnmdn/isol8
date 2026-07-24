@@ -32,13 +32,14 @@ portable profile core plus conditional filters. Anything not listed as parsed wi
 | `network` block | **Not parsed yet** (project roadmap Phase 3). Including `network` in a layer fails to load. |
 | Enforcement | **macOS** via Seatbelt. **Linux** via Landlock (deny-by-default, per-path ro/rw). Windows AppContainer draft. |
 | Introspection | `@profiles-list` / `@profiles-show`, `--show-policies` / `--dry-run`, `--show-profiles` (layer stack + effective policy). |
-| Cages | **Done** (`src/cage.rs` + wizard). Named selection unit (home + profiles + `[[dirs]]` + `[toolchains.*]`). CLI: `--cage`/`-c`, `ISOL8_CAGE`, config `cage =`, `@cage list\|show\|new\|edit\|detect\|verify`. Compiles to Spec fields only — not a profile layer. Home modes: `inherit` / `ephemeral` / `@managed/<id>` / path. |
-| Context + HomePlan | **Done** (`src/context.rs`, `src/plan.rs`). Injectable `Context`; materialization ops `link`/`mkdir`/`seed-ro`/`copy` via plan/apply; dry-run shows plan; spawn applies. Profile seeds become seed-ro ops. |
-| Recipes / strategies | **Done** (`src/recipe.rs`, `recipes/**/*.toml`). Distinct document type; cage `[toolchains.*]` selects strategy; compiles to path grants + env + home ops. See [`recipes.md`](./recipes.md). |
-| Detect / verify | **Done** (`src/detect.rs`). `@cage detect` (host probes); `@cage verify` (materialize + confined `verify.cmd`). |
-| `--analyze` | **Done** (`src/analyze.rs` + `src/analyze_macos.rs`). NDJSON feed anywhere; live macOS unified-log scrape; Win hook / Linux shadow later. |
-| Registry | **Done** (`src/registry.rs`). Offline path/git sources via `[registries.*]`, cache + `isol8.lock`, `@registry list\|update\|install\|show\|verify`. Recipes also load from offline registry dirs. HTTP + signing deferred. See [`registry.md`](./registry.md). |
-| Cage wizard | **Done** (`src/wizard.rs`). `@cage new` / `@cage edit` with managed `[toolchains.*]`, drift via `state.toml`, offline bundles. |
+| Cages | **Done** (`isol8-core` `cage` + wizard). Named selection unit (home + profiles + `[[dirs]]` + `[toolchains.*]`). CLI: `--cage`/`-c`, `ISOL8_CAGE`, config `cage =`, `@cage list\|show\|new\|edit\|detect\|verify`. Compiles to Spec fields only — not a profile layer. Home modes: `inherit` / `ephemeral` / `@managed/<id>` / path. |
+| Context + HomePlan | **Done** (`isol8-core` `context`, `plan`). Injectable `Context`; materialization ops `link`/`mkdir`/`seed-ro`/`copy` via plan/apply; dry-run shows plan; spawn applies. Profile seeds become seed-ro ops. |
+| Recipes / strategies | **Done** (`isol8-core` `recipe`, workspace-root `recipes/**/*.toml`). Distinct document type; cage `[toolchains.*]` selects strategy; compiles to path grants + env + home ops. See [`recipes.md`](./recipes.md). |
+| Detect / verify | **Done** (`isol8-core` `detect`). `@cage detect` (host probes); `@cage verify` (materialize + confined `verify.cmd`). |
+| `--analyze` | **Done** (`isol8-core` `analyze` + `analyze_macos`). NDJSON feed anywhere; live macOS unified-log scrape; Win hook / Linux shadow later. |
+| Registry | **Done** (`isol8-registry`). Offline path/git sources via `[registries.*]`, cache + `isol8.lock`, `@registry list\|update\|install\|show\|verify`. Recipes also load from offline registry dirs (provider hook). HTTP + signing deferred. See [`registry.md`](./registry.md). |
+| Cage wizard | **Done** (`isol8-cli` `wizard`). `@cage new` / `@cage edit` with managed `[toolchains.*]`, drift via `state.toml`, offline bundles. |
+| Crate split | **Done** (Phase 9). Workspace: `isol8-core` / `isol8-registry` / `isol8-cli` + facade `isol8`. |
 
 Examples below that include a `network` block illustrate the *target* schema; omit
 it to author a layer that loads today.

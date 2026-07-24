@@ -11,7 +11,9 @@ namespaces), **WSL2**, and **Windows** (deferred). Primary targets: Linux and ma
 > **Status (v0.2.6):** **macOS + Linux MVP enforced** (Seatbelt / Landlock; WSL2 5.15
 > verified). Path access, HOME replacement, env sanitization, ~70 embedded profiles,
 > cages, toolchain recipes, offline registries, cage wizard, and `--analyze` (macOS
-> live + NDJSON) are implemented. Network tiers and full Windows path enforcement
+> live + NDJSON) are implemented. The repo is a **Cargo workspace**
+> (`isol8-core` / `isol8-registry` / `isol8-cli` + facade package `isol8`); binary and
+> `use isol8::…` API are unchanged. Network tiers and full Windows path enforcement
 > remain deferred.
 
 > Primary inspiration: the macOS [Agent Safehouse](https://github.com/eugene1g/agent-safehouse)
@@ -118,18 +120,26 @@ Environment overrides: `ISOL8_PROFILE`, `ISOL8_PROFILE_PATH`, `ISOL8_ADD_DIRS_RW
 
 ## Build
 
+Workspace members: `crates/isol8-core`, `crates/isol8-registry`, `crates/isol8-cli`,
+and the root facade package `isol8` (default features: `cli` + `registry`).
+
 ```sh
 cargo build
-cargo test
-just ci          # fmt + clippy + build + test
+cargo test --workspace
+just ci          # fmt + clippy --workspace + build + test
 just field-test  # real sandbox checks (macOS / Linux)
 ```
 
 ### Embedding as a library
 
+Depend on the facade crate; paths like `isol8::Sandbox` stay stable.
+
 ```toml
-# Cargo.toml — engine only (no clap / serde_yaml / dialoguer):
+# Cargo.toml — engine only (no CLI / registry):
 isol8 = { path = "../isol8", default-features = false }
+
+# engine + offline registries (optional):
+# isol8 = { path = "../isol8", default-features = false, features = ["registry"] }
 ```
 
 ```rust
@@ -138,6 +148,9 @@ let code = isol8::Sandbox::new()
     .grant_rw("/my/project")
     .home("/tmp/scratch")
     .run(["node", "script.js"])?;
+
+// If you load [registries.*] without the CLI binary, call once:
+// isol8::ensure_registry_provider();
 ```
 
 ## Docs
@@ -148,8 +161,8 @@ let code = isol8::Sandbox::new()
 | [`_docs/profile-model.md`](_docs/profile-model.md) | Profile format, filters, merge |
 | [`_docs/recipes.md`](_docs/recipes.md) | Recipes & strategies |
 | [`_docs/registry.md`](_docs/registry.md) | Offline registries & trust |
-| [`_docs/project-structure.md`](_docs/project-structure.md) | Modules & data flow |
-| [`_docs/wip/multi-evo-plan.md`](_docs/wip/multi-evo-plan.md) | Evolution Phases 0–8 done; Phase 9 next |
+| [`_docs/project-structure.md`](_docs/project-structure.md) | Workspace layout & data flow |
+| [`_docs/wip/multi-evo-plan.md`](_docs/wip/multi-evo-plan.md) | Evolution Phases 0–9 done; Phase 10 deferred |
 | [`AGENTS.md`](AGENTS.md) | Contributor / agent guide |
 
 ## License

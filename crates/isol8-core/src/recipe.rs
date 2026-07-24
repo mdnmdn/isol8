@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 
@@ -736,13 +737,27 @@ fn load_dir_rec(reg: &mut RecipeRegistry, dir: &Path, source_prefix: Option<&str
     Ok(())
 }
 
-/// Discover offline registry recipe directories from config + lockfile.
+/// Callback that supplies offline registry recipe directories `(source_label, dir)`.
 ///
-/// Returns `(source_label, recipes_dir)` pairs. Never touches the network.
+/// Installed by the `isol8` facade or `isol8-cli` when the registry crate is
+/// linked — keeps `isol8-core` free of a dependency on `isol8-registry`.
+pub type OfflineRegistryProvider = fn() -> Vec<(String, PathBuf)>;
+
+static OFFLINE_REGISTRY_PROVIDER: OnceLock<OfflineRegistryProvider> = OnceLock::new();
+
+/// Register the offline-registry directory provider (idempotent; first wins).
+pub fn set_offline_registry_provider(f: OfflineRegistryProvider) {
+    let _ = OFFLINE_REGISTRY_PROVIDER.set(f);
+}
+
+/// Discover offline registry recipe directories via the registered provider.
+///
+/// Returns empty when no provider is registered (core-only embeds).
 fn offline_registry_recipe_dirs() -> Vec<(String, PathBuf)> {
-    // Engine-only path: avoid depending on CLI config types. Read isol8.toml
-    // registries via the registry module helpers when a config file exists.
-    crate::registry::discover_offline_recipe_dirs()
+    OFFLINE_REGISTRY_PROVIDER
+        .get()
+        .map(|f| f())
+        .unwrap_or_default()
 }
 
 /// Expand env value tokens: `#HOME` → real home, `~` → effective home.

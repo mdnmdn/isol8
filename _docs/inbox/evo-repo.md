@@ -1,12 +1,12 @@
 # isol8 — Cages, Recipe Registry & Policy Analysis
 
-**Status:** design source of truth — **Phases 1–8 implemented** (see execution plan)  
+**Status:** design source of truth — **Phases 1–9 implemented** (see execution plan)  
 **Execution plan:** [`_docs/wip/multi-evo-plan.md`](../wip/multi-evo-plan.md) (phased implementation, gates, resume notes)  
 **Implemented (v0.2.6):** cages, Context/HomePlan, recipes/strategies, detect/verify,
-shared + macOS `--analyze`, offline registries (`src/registry.rs`), cage wizard
-(`src/wizard.rs`). **Still open on this track:** crate split (Phase 9), Linux
-shadow `--analyze` (Phase 10). HTTP registries, signing, full TUI, `@cage clone`/`fix`
-remain deferred design notes below.  
+shared + macOS `--analyze`, offline registries (`isol8-registry`), cage wizard
+(`isol8-cli`), crate split (workspace). **Still open on this track:** Linux
+shadow `--analyze` (Phase 10, deferred). HTTP registries, signing, full TUI,
+`@cage clone`/`fix` remain deferred design notes below.  
 **Target:** post-0.2.x  
 **Scope:** decouple policy evolution from the binary; make custom `$HOME` setup a one-command operation
 

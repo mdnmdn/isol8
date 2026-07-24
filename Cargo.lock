@@ -240,18 +240,50 @@ name = "isol8"
 version = "0.2.6"
 dependencies = [
  "anyhow",
+ "isol8-cli",
+ "isol8-core",
+ "isol8-registry",
+]
+
+[[package]]
+name = "isol8-cli"
+version = "0.2.6"
+dependencies = [
+ "anyhow",
  "clap",
  "dialoguer",
+ "isol8-core",
+ "isol8-registry",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "toml",
+ "toml_edit",
+]
+
+[[package]]
+name = "isol8-core"
+version = "0.2.6"
+dependencies = [
+ "anyhow",
  "enumflags2",
  "landlock",
  "nix",
  "serde",
  "serde_json",
- "serde_yaml",
  "thiserror 1.0.69",
  "toml",
- "toml_edit",
  "windows",
+]
+
+[[package]]
+name = "isol8-registry"
+version = "0.2.6"
+dependencies = [
+ "isol8-core",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]

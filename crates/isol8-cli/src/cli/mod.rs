@@ -58,7 +58,7 @@ pub struct ProfileOpts {
 
     /// Toolchain recipe choices from a cage (filled by apply_cage_to_opts; not a clap flag).
     #[arg(skip)]
-    pub toolchains: Vec<crate::recipe::ToolchainChoice>,
+    pub toolchains: Vec<isol8_core::recipe::ToolchainChoice>,
 
     /// Replacement $HOME (defaults to an auto scratch home when a profile enables it).
     #[arg(long)]
@@ -183,9 +183,9 @@ impl RunInvocation {
 }
 
 impl ProfileOpts {
-    /// Convert parsed CLI options + command into the clap-free engine [`Spec`](crate::sandbox::Spec).
-    pub fn into_spec(self, cmd: Vec<String>) -> crate::sandbox::Spec {
-        crate::sandbox::Spec {
+    /// Convert parsed CLI options + command into the clap-free engine [`Spec`](isol8_core::sandbox::Spec).
+    pub fn into_spec(self, cmd: Vec<String>) -> isol8_core::sandbox::Spec {
+        isol8_core::sandbox::Spec {
             profiles: self.profiles,
             profile_paths: self.profile_paths,
             auto_profiles: self.auto_profiles,
@@ -205,8 +205,8 @@ impl ProfileOpts {
     }
 }
 
-/// Build the engine [`Spec`](crate::sandbox::Spec) from options + command (CLI / test convenience).
-pub fn run_from(opts: ProfileOpts, cmd: Vec<String>) -> crate::sandbox::Spec {
+/// Build the engine [`Spec`](isol8_core::sandbox::Spec) from options + command (CLI / test convenience).
+pub fn run_from(opts: ProfileOpts, cmd: Vec<String>) -> isol8_core::sandbox::Spec {
     opts.into_spec(cmd)
 }
 
@@ -515,10 +515,12 @@ mod diag;
 use anyhow::{bail, Context, Result};
 use std::io::Write;
 
-use crate::{backends, profile, resolve, sandbox};
+use isol8_core::{backends, profile, resolve, sandbox};
 
 /// Entry point for the `isol8` binary (the `main.rs` shim calls this).
 pub fn main() -> Result<()> {
+    // Wire offline registry dirs into the core recipe loader.
+    isol8_core::recipe::set_offline_registry_provider(isol8_registry::discover_offline_recipe_dirs);
     match parse() {
         ParsedCli::Help => {
             print_help();
@@ -542,7 +544,7 @@ pub fn main() -> Result<()> {
 }
 
 fn registry_cmd(args: RegistryArgs) -> Result<()> {
-    use crate::registry::{
+    use isol8_registry::{
         self, apply_update_to_lockfile, default_cache_root, diff_index, discover_lockfile_path,
         open_offline, update_registry, verify_lock_against_disk, DirSource, Lockfile,
         ProfileSource, RegistrySpec,
@@ -721,7 +723,7 @@ fn registry_cmd(args: RegistryArgs) -> Result<()> {
                     let content_hash = src
                         .index_content_hash()
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
-                    let upd = registry::UpdateResult {
+                    let upd = isol8_registry::UpdateResult {
                         name: name.clone(),
                         pin: lock
                             .registry(name)
@@ -735,7 +737,7 @@ fn registry_cmd(args: RegistryArgs) -> Result<()> {
                     };
                     // Re-pin path registries to current content hash.
                     if matches!(spec, RegistrySpec::Path { .. }) {
-                        let upd = registry::UpdateResult {
+                        let upd = isol8_registry::UpdateResult {
                             pin: upd.content_hash.clone(),
                             ..upd
                         };
@@ -797,8 +799,8 @@ fn registry_cmd(args: RegistryArgs) -> Result<()> {
             }
             if !found {
                 // Also search merged offline recipe registry.
-                let reg =
-                    crate::recipe::RecipeRegistry::load(&[]).map_err(|e| anyhow::anyhow!("{e}"))?;
+                let reg = isol8_core::recipe::RecipeRegistry::load(&[])
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
                 if reg.ids().iter().any(|i| i == id) {
                     println!("id: {id}");
                     println!("source: loaded in RecipeRegistry (builtin/user/registry cache)");
@@ -917,7 +919,7 @@ fn apply_cage_to_opts(
         .or_else(|| cfg.cage.clone());
 
     let cwd = std::env::current_dir().context("resolving current directory for cage discovery")?;
-    let Some(cage) = crate::cage::resolve(name.as_deref(), &cwd)? else {
+    let Some(cage) = isol8_core::cage::resolve(name.as_deref(), &cwd)? else {
         return Ok(());
     };
 
@@ -951,10 +953,10 @@ fn cage_cmd(args: CageArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("resolving current directory")?;
     match args.action.as_str() {
         "list" => {
-            let list = crate::cage::list_cages(&cwd)?;
+            let list = isol8_core::cage::list_cages(&cwd)?;
             if list.is_empty() {
                 println!("(no cages found)");
-                if let Some(dir) = crate::cage::user_cages_dir() {
+                if let Some(dir) = isol8_core::cage::user_cages_dir() {
                     println!("# create one: isol8 @cage new <name> --yes");
                     println!("# user dir:   {}", dir.display());
                 }
@@ -970,9 +972,9 @@ fn cage_cmd(args: CageArgs) -> Result<()> {
                 .name
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("@cage show requires a name"))?;
-            let cage = crate::cage::resolve(Some(name), &cwd)?
+            let cage = isol8_core::cage::resolve(Some(name), &cwd)?
                 .ok_or_else(|| anyhow::anyhow!("cage '{name}' not found"))?;
-            print!("{}", crate::cage::format_show(&cage));
+            print!("{}", isol8_core::cage::format_show(&cage));
             Ok(())
         }
         "new" => cage_new_cmd(args, &cwd, false),
@@ -990,9 +992,9 @@ fn cage_cmd(args: CageArgs) -> Result<()> {
 
 /// Shared implementation for `@cage new` and `@cage edit`.
 fn cage_new_cmd(args: CageArgs, cwd: &std::path::Path, is_edit: bool) -> Result<()> {
-    use crate::profile::Access;
-    use crate::recipe::RecipeRegistry;
     use crate::wizard::{self, WizardRequest};
+    use isol8_core::profile::Access;
+    use isol8_core::recipe::RecipeRegistry;
 
     let name = args
         .name
@@ -1006,15 +1008,15 @@ fn cage_new_cmd(args: CageArgs, cwd: &std::path::Path, is_edit: bool) -> Result<
         .to_string();
 
     let reg = RecipeRegistry::load(&[])?;
-    let run_ctx = crate::filter::RunContext::from_cmd(&[]);
-    let real = crate::context::real_home_from_env();
+    let run_ctx = isol8_core::filter::RunContext::from_cmd(&[]);
+    let real = isol8_core::context::real_home_from_env();
 
     // Always show detection first (evo-repo §6.2) — even for --yes.
-    let detected = crate::detect::detect_all(&reg, &run_ctx, &real)?;
-    print!("{}", crate::detect::format_detect_table(&detected));
+    let detected = isol8_core::detect::detect_all(&reg, &run_ctx, &real)?;
+    print!("{}", isol8_core::detect::format_detect_table(&detected));
 
     let existing = if is_edit {
-        let cage = crate::cage::resolve(Some(&name), cwd)?
+        let cage = isol8_core::cage::resolve(Some(&name), cwd)?
             .ok_or_else(|| anyhow::anyhow!("cage '{name}' not found"))?;
         Some(cage)
     } else {
@@ -1079,9 +1081,9 @@ fn cage_new_cmd(args: CageArgs, cwd: &std::path::Path, is_edit: bool) -> Result<
         if let Some(cage) = &existing {
             if args.home == "inherit" && args.from.is_none() {
                 home = match &cage.home {
-                    crate::cage::HomeMode::Inherit => "inherit".into(),
-                    crate::cage::HomeMode::Ephemeral => "ephemeral".into(),
-                    crate::cage::HomeMode::Path(p) => p.clone(),
+                    isol8_core::cage::HomeMode::Inherit => "inherit".into(),
+                    isol8_core::cage::HomeMode::Ephemeral => "ephemeral".into(),
+                    isol8_core::cage::HomeMode::Path(p) => p.clone(),
                 };
             }
             if args.tools.is_none() && args.from.is_none() {
@@ -1192,7 +1194,7 @@ fn cage_new_cmd(args: CageArgs, cwd: &std::path::Path, is_edit: bool) -> Result<
 
 struct InteractivePicks {
     home: String,
-    tools: Vec<crate::recipe::ToolchainChoice>,
+    tools: Vec<isol8_core::recipe::ToolchainChoice>,
     /// When true, caller should keep the pre-parsed tools list.
     keep_tools: bool,
     dir: Option<String>,
@@ -1202,18 +1204,18 @@ struct InteractivePicks {
 struct InteractiveOpts<'a> {
     name: &'a str,
     home_default: &'a str,
-    detected: &'a [crate::detect::DetectResult],
-    reg: &'a crate::recipe::RecipeRegistry,
+    detected: &'a [isol8_core::detect::DetectResult],
+    reg: &'a isol8_core::recipe::RecipeRegistry,
     is_edit: bool,
-    existing: Option<&'a crate::cage::Cage>,
+    existing: Option<&'a isol8_core::cage::Cage>,
     keep_tools: bool,
-    preset_tools: &'a [crate::recipe::ToolchainChoice],
+    preset_tools: &'a [isol8_core::recipe::ToolchainChoice],
 }
 
 fn cage_wizard_interactive(opts: InteractiveOpts<'_>) -> Result<InteractivePicks> {
-    use crate::recipe::{StrategyName, ToolchainChoice};
     use crate::wizard::{self, default_strategy_for};
     use dialoguer::{Confirm, Input, MultiSelect, Select};
+    use isol8_core::recipe::{StrategyName, ToolchainChoice};
 
     let InteractiveOpts {
         name,
@@ -1284,7 +1286,7 @@ fn cage_wizard_interactive(opts: InteractiveOpts<'_>) -> Result<InteractivePicks
             let short = d.id.strip_prefix("toolchains/").unwrap_or(&d.id);
             let mark = if d.found { "found" } else { "absent" };
             let strat_hint = reg
-                .resolve(&d.id, &crate::filter::RunContext::from_cmd(&[]))
+                .resolve(&d.id, &isol8_core::filter::RunContext::from_cmd(&[]))
                 .map(|r| default_strategy_for(r).as_str())
                 .unwrap_or("link");
             labels.push(format!("{short} [{mark}] → {strat_hint}"));
@@ -1308,7 +1310,7 @@ fn cage_wizard_interactive(opts: InteractiveOpts<'_>) -> Result<InteractivePicks
             for i in chosen {
                 let id = &ids[i];
                 let strategy = if let Ok(recipe) =
-                    reg.resolve(id, &crate::filter::RunContext::from_cmd(&[]))
+                    reg.resolve(id, &isol8_core::filter::RunContext::from_cmd(&[]))
                 {
                     let def = default_strategy_for(recipe);
                     let opts: Vec<&str> = ["link", "share", "isolate"]
@@ -1376,17 +1378,17 @@ fn cage_wizard_interactive(opts: InteractiveOpts<'_>) -> Result<InteractivePicks
 }
 
 fn cage_detect_cmd() -> Result<()> {
-    let reg = crate::recipe::RecipeRegistry::load(&[])?;
-    let ctx = crate::filter::RunContext::from_cmd(&[]);
-    let real = crate::context::real_home_from_env();
-    let results = crate::detect::detect_all(&reg, &ctx, &real)?;
-    print!("{}", crate::detect::format_detect_table(&results));
+    let reg = isol8_core::recipe::RecipeRegistry::load(&[])?;
+    let ctx = isol8_core::filter::RunContext::from_cmd(&[]);
+    let real = isol8_core::context::real_home_from_env();
+    let results = isol8_core::detect::detect_all(&reg, &ctx, &real)?;
+    print!("{}", isol8_core::detect::format_detect_table(&results));
     Ok(())
 }
 
 fn cage_verify_cmd(name: Option<&str>) -> Result<()> {
     let cwd = std::env::current_dir().context("resolving current directory")?;
-    let cage = crate::cage::resolve(name, &cwd)?.ok_or_else(|| {
+    let cage = isol8_core::cage::resolve(name, &cwd)?.ok_or_else(|| {
         if let Some(n) = name {
             anyhow::anyhow!("cage '{n}' not found")
         } else {
@@ -1401,7 +1403,7 @@ fn cage_verify_cmd(name: Option<&str>) -> Result<()> {
     } else {
         overlay.profiles
     };
-    let spec = crate::sandbox::Spec {
+    let spec = isol8_core::sandbox::Spec {
         profiles,
         home: overlay.home,
         ephemeral_home: overlay.ephemeral_home,
@@ -1413,8 +1415,8 @@ fn cage_verify_cmd(name: Option<&str>) -> Result<()> {
     };
 
     println!("Verifying cage '{}' ({})", cage.name, cage.source.display());
-    let results = crate::detect::verify_toolchains(&spec)?;
-    print!("{}", crate::detect::format_verify_report(&results));
+    let results = isol8_core::detect::verify_toolchains(&spec)?;
+    print!("{}", isol8_core::detect::format_verify_report(&results));
     if results.iter().any(|r| !r.ok) {
         std::process::exit(1);
     }
@@ -1459,7 +1461,7 @@ fn run_cmd(run: RunInvocation) -> Result<()> {
     let args = run_from(run.opts, run.cmd);
     let mut effective = resolve::effective_policy(&args)?;
 
-    crate::home::materialize(&effective.home)?;
+    isol8_core::home::materialize(&effective.home)?;
     resolve::confine_executable(&mut effective.profile, &mut effective.cmd)?;
 
     let backend = backends::select();
@@ -1477,7 +1479,7 @@ fn analyze_cmd(run: RunInvocation) -> Result<()> {
     }
     let args = run_from(run.opts, run.cmd);
     let mut effective = resolve::effective_policy(&args)?;
-    crate::home::materialize(&effective.home)?;
+    isol8_core::home::materialize(&effective.home)?;
     resolve::confine_executable(&mut effective.profile, &mut effective.cmd)?;
 
     // Optional --author: Seatbelt trace (permissive) → draft allow profile path.
@@ -1492,7 +1494,7 @@ fn analyze_cmd(run: RunInvocation) -> Result<()> {
                 .map(|d| d.as_millis())
                 .unwrap_or(0)
         ));
-        let directive = crate::analyze_macos::seatbelt_trace_directive(&p);
+        let directive = isol8_core::analyze_macos::seatbelt_trace_directive(&p);
         let macos = effective.profile.macos.get_or_insert_with(Default::default);
         macos.raw.push_str(&directive);
         trace_path = Some(p);
@@ -1506,14 +1508,14 @@ fn analyze_cmd(run: RunInvocation) -> Result<()> {
     }
 
     // Prefer explicit NDJSON feed over live observation.
-    let feed_pre = crate::analyze::resolve_feed_path(None);
+    let feed_pre = isol8_core::analyze::resolve_feed_path(None);
 
     let (code, pid, denials, source_note) = if let Some(path) = feed_pre {
         let backend = backends::select();
         let mut child = backend.spawn(&effective.profile, &effective.env, &effective.cmd)?;
         let pid = child.id();
         let code = child.wait().unwrap_or(1);
-        let d = crate::analyze::load_ndjson_file(&path)?;
+        let d = isol8_core::analyze::load_ndjson_file(&path)?;
         (code, pid, d, format!("NDJSON feed {}", path.display()))
     } else {
         collect_denials_live(&effective)?
@@ -1521,8 +1523,8 @@ fn analyze_cmd(run: RunInvocation) -> Result<()> {
 
     // Post-run per-pid file (Windows hook future) if live path was empty.
     let (denials, source_note) = if denials.is_empty() {
-        if let Some(path) = crate::analyze::resolve_feed_path(Some(pid)) {
-            let d = crate::analyze::load_ndjson_file(&path)?;
+        if let Some(path) = isol8_core::analyze::resolve_feed_path(Some(pid)) {
+            let d = isol8_core::analyze::load_ndjson_file(&path)?;
             if !d.is_empty() {
                 (d, format!("NDJSON feed {}", path.display()))
             } else {
@@ -1535,11 +1537,12 @@ fn analyze_cmd(run: RunInvocation) -> Result<()> {
         (denials, source_note)
     };
 
-    let ambient = crate::context::Context::from_environment()?;
-    let ctx = crate::filter::RunContext::from_cmd(&effective.cmd);
-    let reg = crate::recipe::RecipeRegistry::load(&args.recipe_paths)?;
-    let index = crate::analyze::build_recipe_index(&reg, &ctx, &ambient, &effective.home.path)?;
-    let report = crate::analyze::analyze(
+    let ambient = isol8_core::context::Context::from_environment()?;
+    let ctx = isol8_core::filter::RunContext::from_cmd(&effective.cmd);
+    let reg = isol8_core::recipe::RecipeRegistry::load(&args.recipe_paths)?;
+    let index =
+        isol8_core::analyze::build_recipe_index(&reg, &ctx, &ambient, &effective.home.path)?;
+    let report = isol8_core::analyze::analyze(
         &denials,
         &index,
         &ambient,
@@ -1568,11 +1571,11 @@ fn analyze_cmd(run: RunInvocation) -> Result<()> {
 /// Spawn the confined command, collecting denials from the platform observer.
 fn collect_denials_live(
     effective: &resolve::EffectivePolicy,
-) -> Result<(i32, u32, Vec<crate::analyze::Denial>, String)> {
+) -> Result<(i32, u32, Vec<isol8_core::analyze::Denial>, String)> {
     #[cfg(target_os = "macos")]
     {
         let backend = backends::select();
-        match crate::analyze_macos::observe_denials_during(|| {
+        match isol8_core::analyze_macos::observe_denials_during(|| {
             let mut child = backend.spawn(&effective.profile, &effective.env, &effective.cmd)?;
             let pid = child.id();
             let code = child.wait().unwrap_or(1);
@@ -1580,7 +1583,7 @@ fn collect_denials_live(
         }) {
             Ok((code, pid, denials)) => {
                 let note = if denials.is_empty() {
-                    crate::analyze::no_observation_note().to_string()
+                    isol8_core::analyze::no_observation_note().to_string()
                 } else {
                     format!(
                         "macOS unified log (log stream + log show; {} denial line(s); pid={pid})",
@@ -1615,7 +1618,7 @@ fn collect_denials_live(
             code,
             pid,
             Vec::new(),
-            crate::analyze::no_observation_note().to_string(),
+            isol8_core::analyze::no_observation_note().to_string(),
         ))
     }
 }

@@ -1,13 +1,29 @@
-[package]
-name = "isol8"
+[workspace]
+resolver = "2"
+members = [
+  "crates/isol8-core",
+  "crates/isol8-registry",
+  "crates/isol8-cli",
+  ".",
+]
+default-members = ["."]
+
+[workspace.package]
 version = "0.2.6"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/mdnmdn/isol8"
-description = "Lightweight cross-platform isolation sandbox for AI coding agents and CLI tools with custom policies"
-default-run = "isol8"
-build = "build.rs"
 authors = ["Marco De Nittis"]
+
+[package]
+name = "isol8"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Lightweight cross-platform isolation sandbox for AI coding agents and CLI tools with custom policies"
+authors.workspace = true
+default-run = "isol8"
 
 [lib]
 name = "isol8"
@@ -15,50 +31,25 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "isol8"
-path = "src/main.rs"
+path = "src/bin_shim.rs"
 required-features = ["cli"]
 
-# Real-sandbox field tests (see _docs/testing-strategies.md §3). Run: `just field-test`.
-# Dev/testing only — gated behind a non-default feature so `cargo install` skips it.
 [[bin]]
 name = "isol8-field-test"
-path = "src/bin/isol8-field-test.rs"
+path = "crates/isol8-cli/src/bin/isol8-field-test.rs"
 required-features = ["field-test"]
 
 [features]
-default = ["cli"]
-# The CLI binary's arg parsing + YAML config; an embedder using only the engine API
-# can drop these with `default-features = false`.
-cli = ["dep:clap", "dep:serde_yaml", "dep:dialoguer"]
-# Builds the dev-only isol8-field-test binary; excluded from `cargo install`.
-field-test = []
+default = ["cli", "registry"]
+# Offline registry types + recipe auto-discovery provider.
+registry = ["dep:isol8-registry"]
+# CLI binary, wizard, meta-commands (implies registry).
+cli = ["registry", "dep:isol8-cli"]
+# Real-sandbox field-test binary.
+field-test = ["cli"]
 
 [dependencies]
-clap = { version = "4", features = ["derive"], optional = true }
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-serde_yaml = { version = "0.9", optional = true }
-dialoguer = { version = "0.11", optional = true }
+isol8-core = { path = "crates/isol8-core", version = "0.2.6" }
+isol8-registry = { path = "crates/isol8-registry", version = "0.2.6", optional = true }
+isol8-cli = { path = "crates/isol8-cli", version = "0.2.6", optional = true }
 anyhow = "1"
-thiserror = "1"
-serde_json = "1"
-toml_edit = "0.22"
-
-[build-dependencies]
-# build.rs only walks profiles/; no extra deps needed.
-
-# platform backends
-[target.'cfg(target_os = "linux")'.dependencies]
-landlock = "0.4"
-nix = { version = "0.31", features = ["sched", "mount", "fs", "user", "signal"] }
-enumflags2 = "0.7"
-
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = [
-  "Win32_Foundation",
-  "Win32_Security",
-  "Win32_Security_Isolation",
-  "Win32_System_Threading",
-] }
-
-# networking (Phase 3): add proxy/pasta orchestration crates then

@@ -133,6 +133,7 @@ impl Backend for super::linux::LinuxBackend {
     }
 }
 
+/// Linux Landlock backend.
 pub struct LinuxBackend;
 
 /// Render the merged profile into human-readable Landlock rules (for `--dry-run`).

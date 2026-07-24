@@ -359,12 +359,15 @@ pub fn run_captured(spec: Spec) -> Result<CapturedRun> {
 /// Ergonomic builder over [`Spec`] for embedding isol8.
 ///
 /// ```no_run
-/// let code = isol8::Sandbox::new()
+/// let code = isol8_core::Sandbox::new()
 ///     .profile("base")
 ///     .grant_rw("/my/project")
 ///     .run(["node", "script.js"])?;          // → exit code (blocking)
-/// # Ok::<(), isol8::Error>(())
+/// # Ok::<(), isol8_core::Error>(())
 /// ```
+///
+/// Embedders usually depend on the `isol8` facade crate instead of `isol8-core`
+/// directly (`isol8::Sandbox` re-exports this type).
 #[derive(Clone, Default)]
 pub struct Sandbox {
     spec: Spec,

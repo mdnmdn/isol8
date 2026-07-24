@@ -32,40 +32,58 @@ Full specification: [`_docs/project-description.md`](_docs/project-description.m
 
 ## Architecture
 
-Modules (see spec §7):
+**Cargo workspace** (Phase 9), versions lockstep **0.2.6**:
 
-- `cli` — clap arg parsing, profile selection, invocation overrides. Behind the
-  default-on `cli` cargo feature (`cli = ["dep:clap", "dep:serde_yaml", "dep:dialoguer"]`);
-  embedders can use `default-features = false` to get the engine without those.
-  Layout: `src/cli/{mod,config,diag}.rs`; `src/main.rs` is a thin shim calling
-  `isol8::cli::main()`.
-- `error` — typed `pub enum Error` (thiserror) + `pub type Result<T>`. Engine modules
-  return `isol8::Result`; the CLI layer keeps `anyhow` and upconverts at the boundary.
-- `sandbox` — library entry surface: `Spec` (clap-free confinement request), `Sandbox`
-  (ergonomic builder with `run`/`spawn`/`dry_run` terminals), `SandboxChild` (non-blocking
-  handle with `id`/`wait`/`kill`), `DryRun` (structured policy data, no printing).
-- `profile` — `Profile` / `PathGrant` / `Access` / `HomeReplace`, TOML (de)serialization,
-  deny-first `merge`. **Drives everything.**
-- `env` — minimal sanitized environment construction (HOME first).
-- `cage` — named local isolation units: TOML load, discovery, overlay into Spec
-  fields (`--cage`/`-c`, `@cage`). Not a profile layer.
-- `context` — injectable ambient state (`real_home`, `cwd`, `platform`, `managed_root`).
-- `plan` — home materialization plan/apply (`link` / `mkdir` / `seed-ro` / `copy`).
-- `recipe` — toolchain recipes (`share`/`link`/`isolate` → grants + home ops + env).
-- `registry` — offline-by-default recipe/profile sources (`DirSource`, git cache,
-  `isol8.lock`, trust); CLI `@registry list|update|install|show|verify`.
-- `detect` — `@cage detect` probes and `@cage verify` in-sandbox smoke tests
-  (`commands_trusted` gates official/local registry commands).
-- `wizard` — cage authoring (`@cage new` / `edit`): managed `[toolchains.*]`,
-  drift via `state.toml`, bundle expand, strategy defaults; CLI uses dialoguer
-  when TTY (`toml_edit` + optional `dialoguer` under `cli` feature).
-- `analyze` — `--analyze` denials → recipe suggestions (NDJSON feed; shared layer).
-- `analyze_macos` — macOS unified-log scrape + optional Seatbelt `(trace …)` for `--author`.
-- `backends/{linux,macos,windows}` — render the merged profile into the OS-native
-  policy (Landlock ruleset / Seatbelt text / AppContainer) and spawn the command.
-  `Backend` trait: `spawn(...) -> Result<SandboxChild>` (non-blocking),
+| Crate | Path | Role |
+|-------|------|------|
+| `isol8-core` | `crates/isol8-core/` | Engine: profiles, resolve, home, backends, detect, analyze, recipe, cage, plan, context, env, filter, error, sandbox |
+| `isol8-registry` | `crates/isol8-registry/` | Offline registries: `ProfileSource`, `DirSource`, lockfile, cache, trust (depends on core only) |
+| `isol8-cli` | `crates/isol8-cli/` | CLI library: `cli/*`, wizard (depends on core + registry) |
+| `isol8` (facade) | repo root | Re-exports the above; binary shim. Features: `default = ["cli", "registry"]` |
+
+- Root features: `registry` → dep `isol8-registry`; `cli` → registry + `isol8-cli`;
+  `field-test` → field-test bin.
+- Binary: `src/bin_shim.rs` → `ensure_registry_provider()` then `isol8_cli::cli::main()`.
+- Core does **not** depend on registry; `recipe::set_offline_registry_provider`
+  (installed by `isol8::ensure_registry_provider`) wires offline recipe discovery.
+- `profiles/` and `recipes/` stay at workspace root; `isol8-core` `build.rs` embeds them.
+- API stability: `use isol8::…` still works (modules + types re-exported).
+
+Modules (see spec §7); crate ownership in parentheses:
+
+- `cli` (**isol8-cli**) — clap arg parsing, profile selection, invocation overrides.
+  Behind default-on feature `cli` on the facade. Layout:
+  `crates/isol8-cli/src/cli/{mod,config,diag}.rs`.
+- `wizard` (**isol8-cli**) — cage authoring (`@cage new` / `edit`): managed
+  `[toolchains.*]`, drift via `state.toml`, bundle expand, strategy defaults;
+  dialoguer when TTY (`toml_edit` + `dialoguer`).
+- `registry` (**isol8-registry**, feature `registry`) — offline-by-default
+  recipe/profile sources (`DirSource`, git cache, `isol8.lock`, trust); CLI
+  `@registry list|update|install|show|verify`.
+- `error` (**isol8-core**) — typed `pub enum Error` (thiserror) + `pub type Result<T>`.
+  Engine modules return `isol8::Result`; the CLI layer keeps `anyhow` and upconverts
+  at the boundary.
+- `sandbox` (**isol8-core**) — library entry surface: `Spec`, `Sandbox`
+  (`run`/`spawn`/`dry_run`), `SandboxChild`, `DryRun`.
+- `profile` (**isol8-core**) — `Profile` / `PathGrant` / `Access` / `HomeReplace`,
+  TOML (de)serialization, deny-first `merge`. **Drives everything.**
+- `env` (**isol8-core**) — minimal sanitized environment construction (HOME first).
+- `cage` (**isol8-core**) — named local isolation units: TOML load, discovery, overlay
+  into Spec fields (`--cage`/`-c`, `@cage`). Not a profile layer.
+- `context` (**isol8-core**) — injectable ambient state (`real_home`, `cwd`, `platform`,
+  `managed_root`).
+- `plan` (**isol8-core**) — home materialization plan/apply (`link` / `mkdir` /
+  `seed-ro` / `copy`).
+- `recipe` (**isol8-core**) — toolchain recipes (`share`/`link`/`isolate` → grants +
+  home ops + env); offline dirs via provider hook.
+- `detect` (**isol8-core**) — `@cage detect` probes and `@cage verify` in-sandbox smoke
+  tests (`commands_trusted` gates official/local registry commands).
+- `analyze` (**isol8-core**) — `--analyze` denials → recipe suggestions (NDJSON feed).
+- `analyze_macos` (**isol8-core**, macOS) — unified-log scrape + optional Seatbelt
+  `(trace …)` for `--author`.
+- `backends/{linux,macos,windows}` (**isol8-core**) — render the merged profile into
+  the OS-native policy and spawn. `Backend` trait: `spawn(...) -> Result<SandboxChild>`,
   `render_policy(&self, profile) -> String`.
-- `spawn` — cross-platform child execution with policy applied.
 - `net` (future) — proxy config + N2/N3 helpers.
 
 **Key invariants:**
@@ -77,17 +95,20 @@ Modules (see spec §7):
 
 ## Current status
 
-**v0.2.6 — macOS + Linux MVP + evolution Phases 1–8.** Path/HOME/env enforcement works
+**v0.2.6 — macOS + Linux MVP + evolution Phases 1–9.** Path/HOME/env enforcement works
 on macOS (Seatbelt) and Linux (Landlock). Cages, recipes, offline registries, cage
-wizard, and `--analyze` are in tree. Network tiers and full Windows path enforcement
-remain deferred.
+wizard, `--analyze`, and the **crate split** (workspace) are in tree. Network tiers
+and full Windows path enforcement remain deferred.
 
-- **profile** — TOML load (`build.rs` embeds all `profiles/**/*.toml` + user config dir +
-  `--profile-path` overlays), `requires` inheritance, deny-first `merge`, layer/policy
-  `filter` (executable/OS/arch), and auto-profile selection. Types carry `Access`,
-  `MatchKind`, `Policy`, `ProfileFilter`, command `rewrite` (`ensure_args`, gated by
-  the layer filter and applied to the confined command), and macOS `capabilities` + raw SBPL.
-  `#[serde(deny_unknown_fields)]` throughout. ~70 Safehouse-derived layers embedded.
+- **workspace (Phase 9)** — `isol8-core` / `isol8-registry` / `isol8-cli` + root facade
+  package `isol8`. Behavior unchanged for the binary and for `use isol8::…` embedders.
+- **profile** — TOML load (`isol8-core` `build.rs` embeds all `profiles/**/*.toml` +
+  user config dir + `--profile-path` overlays), `requires` inheritance, deny-first
+  `merge`, layer/policy `filter` (executable/OS/arch), and auto-profile selection.
+  Types carry `Access`, `MatchKind`, `Policy`, `ProfileFilter`, command `rewrite`
+  (`ensure_args`, gated by the layer filter and applied to the confined command), and
+  macOS `capabilities` + raw SBPL. `#[serde(deny_unknown_fields)]` throughout.
+  ~70 Safehouse-derived layers embedded.
 - **home / env** — effective `$HOME` resolved first (`--home` > profile `home_replace` >
   the **real** home; HOME is *not* replaced unless explicitly requested), `~` expanded
   against it before merge; the `#HOME` token expands to the **real** home (survives an
@@ -107,22 +128,17 @@ remain deferred.
   Unix DAC handles path traversal). ABI version probed at runtime. WSL2 (kernel 5.15)
   verified enforced. Namespace helpers (user/mount) exist but are disabled pending
   `uid_map` write availability.
-- **typed errors** — `src/error.rs` defines `pub enum Error` (thiserror) with variants
-  `CommandNotFound`, `InvalidEnv`, `NestedSandbox`, `UnsupportedOs`, `PolicyRejected`,
-  `Profile`, `Io`, `Toml`, `Message`; all engine modules return `isol8::Result`. The
-  CLI layer uses `anyhow` and upconverts at the boundary. A `ResultExt::ctx` helper
-  adds context without a full `anyhow` dependency in engine code.
-- **library API** — `src/sandbox.rs` exposes `Spec` (plain, clap-free confinement
-  request), `Sandbox` (builder: `new()`, `profile`, `profile_path`, `auto_profiles`,
-  `grant_rw`, `grant_ro`, `cwd_ro`, `home`, `no_seed`, `env_pass`, `set_env`, then
-  `run(cmd) -> Result<i32>` / `spawn(cmd) -> Result<SandboxChild>` /
-  `dry_run(cmd) -> Result<DryRun>`), and `ensure_not_nested() -> Result<()>`.
-  `src/lib.rs` re-exports engine types including `Error`, `Result`, `Access`,
-  `MatchKind`, `PathGrant`, `Profile`, `Cage`, `HomeMode`, `Context`, `HomePlan`,
-  `Recipe`, `RecipeRegistry`, `StrategyName`, registry (`DirSource`, `Lockfile`,
-  `TrustLevel`, …), analyze (`Denial`, `AnalysisReport`), `confine_executable`,
-  `effective_policy`, `Sandbox`, `Spec`, `SandboxChild`, `DryRun`. The `cli`
-  module is gated on the `cli` feature.
+- **typed errors** — `isol8-core` `error.rs` defines `pub enum Error` (thiserror) with
+  variants `CommandNotFound`, `InvalidEnv`, `NestedSandbox`, `UnsupportedOs`,
+  `PolicyRejected`, `Profile`, `Io`, `Toml`, `Message`; all engine modules return
+  `isol8::Result`. The CLI layer uses `anyhow` and upconverts at the boundary. A
+  `ResultExt::ctx` helper adds context without a full `anyhow` dependency in engine code.
+- **library API** — facade `src/lib.rs` re-exports engine types from `isol8-core`
+  (`Sandbox`, `Spec`, `SandboxChild`, `DryRun`, profile/recipe/cage/context/plan/
+  analyze types, `confine_executable`, `effective_policy`, …); with `registry`,
+  re-exports registry types and `ensure_registry_provider()`; with `cli`, exposes
+  `isol8::cli` and `isol8::wizard`. Builder: `Sandbox::new()` → `profile` /
+  `grant_rw` / `home` / … then `run` / `spawn` / `dry_run`.
 - **non-blocking spawn** — `SandboxChild` is returned by `Backend::spawn` (and
   `Sandbox::spawn`); methods: `id() -> u32`, `wait() -> Result<i32>`, `kill() ->
   Result<()>`. macOS wraps `std::process::Child`; Linux uses a forked `Pid`
@@ -130,10 +146,11 @@ remain deferred.
 - **structured dry-run** — `DryRun { layer_names, profile, env, cmd, policy,
   policy_label }` is returned by `Sandbox::dry_run` — pure data, no printing. The
   CLI calls `print_dry_run(&DryRun)` to render the text report.
-- **cli feature gate** — `cli = ["dep:clap", "dep:serde_yaml", "dep:dialoguer"]`
-  is on by default. `isol8 = { ..., default-features = false }` drops clap /
-  serde_yaml / dialoguer for engine-only embedding (`toml_edit` stays for
-  wizard). The `[[bin]] isol8` has `required-features = ["cli"]`.
+- **feature gates (facade)** — `default = ["cli", "registry"]`.
+  `isol8 = { ..., default-features = false }` is engine-only (core).
+  `features = ["registry"]` adds offline registry types; call
+  `ensure_registry_provider()` when using config-backed recipe dirs without the CLI.
+  The `[[bin]] isol8` has `required-features = ["cli"]`.
 - **--dry-run** / `--show-policies` print layer stack + effective grants, env, command, SBPL/Landlock rules.
 - **config** — `isol8.toml`/`isol8.yaml` (cwd, `ISOL8_CONFIG_PATH`, or `~/.config/isol8/`),
   `ISOL8_*` env overrides, `isol8 @init`. Defaults: `base` + OS system-runtime; `auto_profiles`
@@ -152,27 +169,29 @@ remain deferred.
 - **@cage wizard** — `isol8 @cage new|edit <NAME>` (Phase 8): detect table first,
   interactive (dialoguer) or `--yes`/`--preview`; managed `[toolchains.*]` with
   drift protection (`~/.config/isol8/state.toml`); `--from` offline bundles;
-  optional `--verify` (`src/wizard.rs`).
+  optional `--verify` (`isol8-cli` `wizard.rs`).
 - **@registry** — offline-by-default recipe sources; path or git (CLI fetch); lockfile pins.
 - **@diag** — `isol8 @diag <cmd>` (macOS) diagnoses launch aborts (SIGABRT/exit 134) by
-  delta-debugging the effective Seatbelt policy down to the missing path grant (`src/diag.rs`).
+  delta-debugging the effective Seatbelt policy down to the missing path grant
+  (`isol8-cli` `cli/diag.rs`).
 - **profiles** — Safehouse port embedded; `macos-system` / `linux-system` are backward-compat
   aliases. `isol8 echo hi` works without `--profile` when config defaults apply.
 - **recipes** — embedded `recipes/toolchains/{nvm,cargo,maven}.toml` plus user/registry overlays.
-- **tests** — unit + integration (`cargo test`, including `tests/{registry,wizard,recipe,cage,analyze}.rs`)
-  and a real-sandbox field-test binary (`just field-test`, scenarios 1–9 cross-platform,
-  10–16 Linux-specific, 17–19 home materialization) prove the OS enforces the policy.
+- **tests** — unit + integration (`cargo test --workspace`, including
+  `tests/{registry,wizard,recipe,cage,analyze}.rs`) and a real-sandbox field-test
+  binary (`just field-test`, scenarios 1–9 cross-platform, 10–16 Linux-specific,
+  17–19 home materialization) prove the OS enforces the policy.
 
 **Not yet:** `--env-file`, resource limits, and network tiers are unstarted. The
 Windows (AppContainer) backend is an early draft — it compiles and wires through
 the pipeline but does not yet enforce path grants (see `_docs/wip/windows-review.md`).
-HTTP registries, registry signing, full TUI / `@cage clone` / `@cage fix`, crate split.
+HTTP registries, registry signing, full TUI / `@cage clone` / `@cage fix`.
 Known gaps: macOS `git`/`cargo` need extra developer-tool paths beyond `macos-system`.
 
-**Evolution track (post-0.2.x):** Phases **0–8 done** — cages, Context/HomePlan, recipes,
-detect/verify, shared `--analyze`, macOS log scrape, offline registries
-(`src/registry.rs`), cage wizard (`src/wizard.rs`). **Next:** crate split (Phase 9);
-Linux shadow observe (Phase 10); Win path hook —
+**Evolution track (post-0.2.x):** Phases **0–9 done** — cages, Context/HomePlan, recipes,
+detect/verify, shared `--analyze`, macOS log scrape, offline registries, cage wizard,
+**crate split** (workspace). **Next:** Linux shadow observe (Phase 10, deferred);
+Win path hook —
 [`_docs/inbox/evo-repo.md`](_docs/inbox/evo-repo.md),
 [`_docs/wip/multi-evo-plan.md`](_docs/wip/multi-evo-plan.md),
 [`_docs/registry.md`](_docs/registry.md).
@@ -190,8 +209,8 @@ Linux shadow observe (Phase 10); Win path hook —
 5. **Phase 5** — Windows Job Objects + Low IL + WFP (Tiers 2–3), best-effort HOME,
    `--elevate`/`--no-elevate` flags.
 6. **Evolution (parallel track)** — cages → materialization → recipes → detect/verify
-   → analyze → registry → **wizard (done)** → crate split (Phase 9). See
-   [`_docs/wip/multi-evo-plan.md`](_docs/wip/multi-evo-plan.md).
+   → analyze → registry → wizard → **crate split (Phase 9 done)**. Next: Linux shadow
+   (Phase 10, deferred). See [`_docs/wip/multi-evo-plan.md`](_docs/wip/multi-evo-plan.md).
 
 ## Working directives
 
@@ -224,7 +243,8 @@ How to work in this repo. These are not suggestions.
   (and drops privilege before exec).
 - **Deny-by-default** is the rule — never widen grants implicitly.
 - **Resolve `$HOME` first**, before computing any path grants.
-- **Profile TOML drives everything** — extend the schema in `profile.rs` (see spec §7).
+- **Profile TOML drives everything** — extend the schema in `isol8-core` `profile.rs`
+  (see spec §7). Policy logic stays in core; CLI has no merge/resolve of its own.
 - Prefer the referenced crates: `landlock`, `nix` (Linux), `clap`, `serde`, `toml`,
   `toml_edit`, `dialoguer` (cli), `anyhow`. Don't add a dependency for what a few
   lines do.
@@ -234,9 +254,10 @@ How to work in this repo. These are not suggestions.
 ## Build
 
 ```sh
-cargo build
-cargo test
-just field-test          # real-sandbox field tests (macOS / Linux)
+cargo build                 # facade + default features (cli + registry)
+cargo test --workspace      # all workspace members
+just ci                     # fmt + clippy --workspace + build + test
+just field-test             # real-sandbox field tests (macOS / Linux)
 
 # run with defaults (base + macos/system-runtime) and auto agent profiles:
 isol8 --add-dirs-rw /my/project -- /bin/sh -c 'echo hi'
@@ -252,9 +273,18 @@ isol8 -c work -- echo hi
 
 ### Embedding isol8 as a library
 
+Prefer the root **facade** package (`isol8`) so `use isol8::…` stays stable across
+workspace splits.
+
 ```toml
-# Cargo.toml — engine only (no clap / serde_yaml / dialoguer):
+# Cargo.toml — engine only (isol8-core re-exports; no clap / registry / wizard):
 isol8 = { path = "../isol8", default-features = false }
+
+# engine + offline registry types (no CLI):
+isol8 = { path = "../isol8", default-features = false, features = ["registry"] }
+
+# full surface (default):
+isol8 = { path = "../isol8" }
 ```
 
 ```rust
@@ -271,7 +301,14 @@ let code = child.wait()?;
 
 // structured dry-run (no spawn):
 let dry = isol8::Sandbox::new().profile("base").dry_run(["node", "x"])?;
+
+// if you use [registries.*] without going through the CLI binary:
+#[cfg(feature = "registry")]
+isol8::ensure_registry_provider();
 ```
+
+Advanced: path-depend on `isol8-core` / `isol8-registry` / `isol8-cli` directly when
+you need a stricter dependency graph; the facade remains the supported public API.
 
 
 ## Docs
@@ -280,7 +317,7 @@ let dry = isol8::Sandbox::new().profile("base").dry_run(["node", "x"])?;
 |-----|----------|
 | [`_docs/instructions.md`](_docs/instructions.md) | User guide: CLI, cages, wizard, registries, analyze |
 | [`_docs/profile-model.md`](_docs/profile-model.md) | Profile format, filters, inheritance, merge, status table |
-| [`_docs/project-structure.md`](_docs/project-structure.md) | Code layout and data flow |
+| [`_docs/project-structure.md`](_docs/project-structure.md) | Workspace layout and data flow |
 | [`_docs/project-description.md`](_docs/project-description.md) | Full requirements (R1–R6) |
 | [`_docs/testing-strategies.md`](_docs/testing-strategies.md) | Unit + integration + field tests |
 | [`_docs/macos-support.md`](_docs/macos-support.md) | macOS Seatbelt: SBPL, capabilities, `@diag`, `--analyze` |
@@ -288,6 +325,6 @@ let dry = isol8::Sandbox::new().profile("base").dry_run(["node", "x"])?;
 | [`_docs/windows-support.md`](_docs/windows-support.md) | Windows AppContainer backend (draft) |
 | [`_docs/recipes.md`](_docs/recipes.md) | Recipes, strategies, detect/verify |
 | [`_docs/registry.md`](_docs/registry.md) | Offline recipe registries: config, CLI, trust, lockfile |
-| [`_docs/wip/multi-evo-plan.md`](_docs/wip/multi-evo-plan.md) | Evolution Phases 0–8 done; Phase 9 crate split next |
-| [`_docs/inbox/evo-repo.md`](_docs/inbox/evo-repo.md) | Evolution design source (Phases 1–8 implemented) |
+| [`_docs/wip/multi-evo-plan.md`](_docs/wip/multi-evo-plan.md) | Evolution Phases 0–9 done; Phase 10 deferred |
+| [`_docs/inbox/evo-repo.md`](_docs/inbox/evo-repo.md) | Evolution design source (Phases 1–9 implemented) |
 | [`AGENTS.md`](AGENTS.md) | Guide for contributors and agents |

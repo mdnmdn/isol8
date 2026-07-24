@@ -6,8 +6,9 @@ profiles). They are configured in `isol8.toml`, fetched only by an explicit
 `isol8.lock`. Day-to-day sandbox runs never open the network for registry content.
 
 Design source: [`inbox/evo-repo.md`](./inbox/evo-repo.md) §5 / §7.5.  
-**Status:** Phase 7 done (v0.2.6) — see
-[`wip/multi-evo-plan.md`](./wip/multi-evo-plan.md) (`src/registry.rs`).  
+**Status:** Phase 7 done (v0.2.6); lives in crate **`isol8-registry`**
+(`crates/isol8-registry/`) after Phase 9 — see
+[`wip/multi-evo-plan.md`](./wip/multi-evo-plan.md).  
 Wizard (`@cage new --from …`) consumes offline registry indexes (Phase 8).
 
 ---
@@ -235,7 +236,7 @@ implemented** — install-time diff is the current control point.
 
 ---
 
-## 8. Implementer map (`src/registry.rs`)
+## 8. Implementer map (`crates/isol8-registry/`)
 
 | Type / fn | Role |
 |-----------|------|
@@ -250,8 +251,10 @@ implemented** — install-time diff is the current control point.
 | `diff_index` | Install diff + recipe flags |
 | `discover_offline_recipe_dirs` | Ambient config → recipe dirs for `RecipeRegistry` |
 
-Library re-exports (see `src/lib.rs`): `DirSource`, `Lockfile`, `ProfileSource`,
-`RegistryIndex`, `RegistrySpec`, `TrustLevel`, and related helpers.
+Facade re-exports (feature `registry` on package `isol8`; see root `src/lib.rs`):
+`DirSource`, `Lockfile`, `ProfileSource`, `RegistryIndex`, `RegistrySpec`,
+`TrustLevel`, and related helpers. Core loads offline dirs only after
+`isol8::ensure_registry_provider()` installs the provider hook.
 
 ---
 
@@ -263,8 +266,8 @@ Library re-exports (see `src/lib.rs`): `DirSource`, `Lockfile`, `ProfileSource`,
 - **Capability ceiling at resolve time** — diff/install only for now
 - **`registry:` reference syntax in cages** — bare recipe ids work; no separate
   `registry:id` resolver required for offline cache load
-- **Optional `registry` cargo feature / crate split** — still in-tree (`isol8`
-  engine module); crate split is Phase 9
+- **Cargo feature `registry`** — on by default with the facade; core stays free of
+  registry deps (Phase 9). Engine-only embed: `default-features = false`.
 - **Wizard** — Phase 8 done (`@cage new`/`edit` consumes offline index + detect;
   no auto fetch)
 

@@ -39,6 +39,7 @@ use super::Backend;
 use crate::home::expand_windows_vars;
 use crate::profile::{Profile, WindowsCapability};
 
+/// Windows AppContainer backend (draft).
 pub struct WindowsBackend;
 
 /// AppContainer capability RID mapping.

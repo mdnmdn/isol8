@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::cli::ProfileOpts;
-use crate::registry::{self, RegistrySpec};
+use isol8_registry::{self, RegistrySpec};
 
 /// User-facing config (isol8.toml / isol8.yaml).
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -108,7 +108,7 @@ fn load_from(path: &Path) -> Result<Config> {
         .with_context(|| format!("reading config '{}'", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     // Strip `[registries]` before deny_unknown_fields deserialize — registry
-    // tables are free-form (path/git/url) and parsed by `registry::`.
+    // tables are free-form (path/git/url) and parsed by `isol8_registry::`.
     let (body_without_regs, registries) = strip_and_parse_registries(&body, ext)?;
     let mut cfg: Config = match ext {
         "yaml" | "yml" => serde_yaml::from_str(&body_without_regs)
@@ -154,7 +154,7 @@ fn strip_and_parse_registries(
                             })?;
                         regs.insert(
                             name.clone(),
-                            registry::parse_registry_spec(&name, &toml_v)
+                            isol8_registry::parse_registry_spec(&name, &toml_v)
                                 .map_err(|e| anyhow::anyhow!("{e}"))?,
                         );
                     }
@@ -169,7 +169,8 @@ fn strip_and_parse_registries(
     // TOML: parse full document once for registries; rebuild body without that table.
     let value: toml::Value =
         toml::from_str(body).with_context(|| "parsing TOML for registries".to_string())?;
-    let regs = registry::parse_registries_from_toml(body).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let regs =
+        isol8_registry::parse_registries_from_toml(body).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut table = value
         .as_table()
         .cloned()

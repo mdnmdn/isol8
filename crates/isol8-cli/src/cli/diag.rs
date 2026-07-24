@@ -16,7 +16,7 @@
 
 use anyhow::Result;
 
-use crate::sandbox::Spec;
+use isol8_core::sandbox::Spec;
 
 #[cfg(target_os = "macos")]
 pub fn run(args: &Spec) -> Result<()> {
@@ -36,9 +36,9 @@ mod macos {
 
     use anyhow::{bail, Context, Result};
 
-    use crate::backends::macos::render_policy;
-    use crate::resolve;
-    use crate::sandbox::Spec;
+    use isol8_core::backends::macos::render_policy;
+    use isol8_core::resolve;
+    use isol8_core::sandbox::Spec;
 
     const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
     /// Per-trial launch budget. `@diag` is meant for fast-exiting probes (`node
@@ -50,7 +50,7 @@ mod macos {
         if eff.cmd.is_empty() {
             bail!("@diag needs a command (e.g. isol8 @diag node --version)");
         }
-        crate::home::materialize(&eff.home)?;
+        isol8_core::home::materialize(&eff.home)?;
         resolve::confine_executable(&mut eff.profile, &mut eff.cmd)?;
 
         let base = render_policy(&eff.profile);

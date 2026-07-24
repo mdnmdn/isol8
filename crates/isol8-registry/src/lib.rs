@@ -14,9 +14,9 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result, ResultExt};
-use crate::profile::Profile;
-use crate::recipe::{self, Recipe};
+use isol8_core::error::{Error, Result, ResultExt};
+use isol8_core::profile::Profile;
+use isol8_core::recipe::{self, Recipe};
 
 // ---------------------------------------------------------------------------
 // Trust
@@ -1142,7 +1142,7 @@ fn inspect_recipe_flags(src: &DirSource, entry: &IndexEntry) -> Result<Vec<Strin
                     || p.starts_with('/');
                 // Real-home grants use #HOME; those are "outside replaced home".
                 let real_home_grant = p.starts_with("#HOME");
-                if real_home_grant && matches!(g.access, crate::profile::Access::Rw) {
+                if real_home_grant && matches!(g.access, isol8_core::profile::Access::Rw) {
                     flags.push(format!(
                         "new rw on real home via {}: {p}",
                         strat_name.as_str()
@@ -1484,7 +1484,11 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn fixture_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/registry")
+        // Workspace root is two levels above crates/isol8-registry.
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/registry")
+            .canonicalize()
+            .expect("tests/fixtures/registry")
     }
 
     fn tmp() -> PathBuf {

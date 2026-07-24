@@ -1,6 +1,6 @@
 # isol8 — Multi-phase Evolution Plan
 
-**Status:** active plan — Phase 0–8 complete; next is Phase 9 (crate split)  
+**Status:** active plan — Phase 0–9 complete; next is Phase 10 (Linux `--analyze` / shadow, **deferred**)  
 **Source proposal:** [`_docs/inbox/evo-repo.md`](../inbox/evo-repo.md)  
 **Related prior art:** [`_docs/inbox/home-config-wizard.md`](../inbox/home-config-wizard.md) (exposure modes ≈ strategies)  
 **Companion docs:** [`profile-model.md`](../profile-model.md), [`project-structure.md`](../project-structure.md), [`AGENTS.md`](../../AGENTS.md)  
@@ -35,7 +35,7 @@
 | 6 | macOS `--analyze` | **done** (2026-07-24) | `just ci` + live smoke |
 | 7 | Registry (local/git/http + lockfile) | **done** (2026-07-24) | `just ci` |
 | 8 | Wizard (`@cage new/edit`) | **done** (2026-07-24) | `just ci` |
-| 9 | Crate split (`isol8-core` / `-registry` / `-cli`) | pending | `just ci` |
+| 9 | Crate split (`isol8-core` / `-registry` / `-cli`) | **done** (2026-07-24) | `just ci` |
 | 10 | Linux `--analyze` (shadow mode) | deferred | — |
 
 Phases map 1:1 to evo-repo §10 with an explicit Phase 0 for planning and
@@ -100,7 +100,7 @@ Key glossary (authoritative in evo-repo §2):
 | Context | ambient `HOME` / `RunContext` | injectable `Context` |
 | Analyze | `@diag` (launch SBPL delta-debug) | runtime denials → recipe suggestions |
 | Wizard | `@cage new`/`edit` (Phase 8) | full TUI / clone / fix (deferred) |
-| Crate split | single crate + `cli` feature | workspace later |
+| Crate split | single crate + `cli` feature | **done** (Phase 9 workspace) |
 
 ### 0.4 Design principles for implementation
 
@@ -916,36 +916,50 @@ isol8 @cage edit <NAME> [same flags]
 
 ## Phase 9 — Crate split
 
-**Status:** pending  
+**Status:** **done** (2026-07-24)  
 **Depends on:** Phase 7–8 (boundaries proven)  
 **evo-repo:** §7.1, §10 step 9  
 **Goal:** Clean API seams without behavior change.
 
-### Target layout
+### Target layout (as shipped)
 
 ```
-isol8-core      # schema, merge, resolve, home plan, Context
-isol8-registry  # ProfileSource impls, cache, lockfile
-isol8-cli       # prompts, rendering, toml_edit, meta-commands, bin
+crates/isol8-core/     # engine: profiles, resolve, home, backends, detect, analyze,
+                       #         recipe, cage, plan, context, env, filter, error, sandbox
+crates/isol8-registry/ # offline registries: ProfileSource, DirSource, lockfile, cache,
+                       #         trust (depends on isol8-core only)
+crates/isol8-cli/      # CLI library: cli/*, wizard (depends on core + registry)
+.                      # package name `isol8` — facade re-exporting all of the above;
+                       # binary shim `src/bin_shim.rs`
 ```
 
-### Rules
+### Rules (locked)
 
-- CLI contains **no** policy logic
-- Public API follows one real consumer (analyze + sandbox embed)
-- Feature gates preserved / improved
-- Version crates in lockstep initially (workspace)
+- CLI contains **no** policy logic — only prompts, rendering, config, meta-commands.
+- Core does **not** depend on registry; discovery is wired via
+  `recipe::set_offline_registry_provider` (facade/`ensure_registry_provider`).
+- Public API stability: `use isol8::…` still works (modules + types re-exported).
+- Feature gates on the root `isol8` package:
+  - `default = ["cli", "registry"]`
+  - `registry` → dep `isol8-registry`
+  - `cli` → `registry` + dep `isol8-cli`
+  - `field-test` → field-test bin
+- Versions lockstep **0.2.6** (workspace).
+- `profiles/` and `recipes/` stay at workspace root; `isol8-core` `build.rs` embeds them.
+- Behavior unchanged for users of the `isol8` binary and `isol8` crate.
 
 ### Tests
 
-- Entire previous suite green; publish dry-run / path deps
+- Entire previous suite green under `cargo test --workspace`
+- Justfile gate uses `--workspace` for clippy/build/test
 
 ### Docs checklist
 
-- [ ] `project-structure.md` full rewrite of crate layout
-- [ ] `AGENTS.md` build/embed examples
-- [ ] README embed section
-- [ ] This plan
+- [x] `project-structure.md` full rewrite of crate layout
+- [x] `AGENTS.md` build/embed examples
+- [x] README embed section
+- [x] `_docs/instructions.md` embed section (workspace features)
+- [x] This plan
 
 ### Gate
 
@@ -955,19 +969,53 @@ just ci
 
 ### Resume notes
 
-*(fill when done)*
+**Completed 2026-07-24.** Evolution Phases 0–9 complete. Next is Phase 10
+(Linux `--analyze` / shadow mode) — **deferred**; not started.
+
+#### Files / layout
+
+| Path | Role |
+|------|------|
+| `Cargo.toml` (root) | Workspace members; facade package `isol8`; features `cli` / `registry` / `field-test` |
+| `src/lib.rs` | Facade: re-exports `isol8_core` + optional registry/cli; `ensure_registry_provider()` |
+| `src/bin_shim.rs` | Binary: `ensure_registry_provider()` then `isol8_cli::cli::main()` |
+| `crates/isol8-core/` | Engine crate (`isol8_core`); `build.rs` embeds `../../profiles` + `../../recipes` |
+| `crates/isol8-registry/` | Offline registries (`isol8_registry`); depends on core only |
+| `crates/isol8-cli/` | CLI + wizard (`isol8_cli`); field-test bin under `src/bin/` |
+| `justfile` | `cargo test --workspace`, clippy/build `--workspace` |
+
+#### Behaviour locked
+
+1. **Facade API** — `isol8::Sandbox`, `isol8::profile::…`, `isol8::registry::…` (with features) unchanged for embedders.
+2. **Engine-only** — `isol8 = { …, default-features = false }` pulls core only (no clap / registry / wizard).
+3. **Registry provider** — core calls optional offline-dir hook; CLI binary installs it at startup; library users of config-backed registries call `isol8::ensure_registry_provider()` once.
+4. **No policy in CLI** — merge/resolve/backends stay in core.
+5. **Single binary UX** — `isol8` and `isol8-field-test` still built from the root package.
+
+#### Public API impact
+
+- Additive workspace crates; root `isol8` remains the recommended dependency.
+- Direct path deps on `isol8-core` / `isol8-registry` / `isol8-cli` are possible for advanced split embeds.
+- Feature `cli` now implies `registry` (was formerly a single crate feature set).
+
+#### Known follow-ups (not blockers)
+
+- Phase 10: Linux shadow observe
+- HTTP registries, signing, full TUI / `@cage clone` / `@cage fix` (out of Phase 9)
+- Optional publish of individual crates to crates.io (path/workspace today)
 
 ---
 
 ## Phase 10 — Linux `--analyze` (deferred)
 
 **Status:** deferred  
-**Depends on:** Phase 6  
+**Depends on:** Phase 6 (suggestion UX proven); Phase 9 complete  
 **evo-repo:** §8.5, §10 step 10  
 
 Landlock emits no denial log on verified kernels (WSL2 5.15). Primary approach when
 picked up: **shadow mode** (evaluate policy in userspace, opt-in permissive run),
-not LD_PRELOAD. Do not start until Phases 5–6 prove the suggestion UX.
+not LD_PRELOAD. Do not start until Phases 5–6 prove the suggestion UX. Pick up when
+Linux denial observation is prioritized over remaining registry/signing/TUI work.
 
 ### Resume notes
 
@@ -1053,3 +1101,4 @@ No recipes, no materialization changes, no new dependencies.
 | 2026-07-24 | Phase 6 done: macOS log stream/show scrape, `--author` Seatbelt trace |
 | 2026-07-24 | Phase 7 done: offline registries (`src/registry.rs`), `@registry`, lockfile, trust, install diff |
 | 2026-07-24 | Phase 8 done: cage wizard (`src/wizard.rs`), `@cage new`/`edit`, managed sections, drift, bundles offline |
+| 2026-07-24 | Phase 9 done: Cargo workspace split (`isol8-core` / `isol8-registry` / `isol8-cli` + root facade); API-stable `use isol8::…`; registry provider hook; docs updated |

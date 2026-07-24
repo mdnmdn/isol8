@@ -289,14 +289,27 @@ isol8 --profile macos-system --show-policies date
 
 ## Embedding isol8
 
-`isol8` is usable as a Rust library. All engine modules are public and re-exported
-from the crate root. The CLI (clap + serde_yaml) is behind the default-on `cli`
-cargo feature — disable it to get a lean engine-only dependency:
+`isol8` is a Cargo workspace. Depend on the root **facade** package so
+`use isol8::…` stays stable. Engine modules live in `isol8-core` and are re-exported
+from the facade. Default features are `cli` + `registry`.
 
 ```toml
-# Cargo.toml
+# Cargo.toml — engine only (no clap / registry / wizard):
 isol8 = { path = "../isol8", default-features = false }
+
+# engine + offline registry types (no CLI binary surface):
+isol8 = { path = "../isol8", default-features = false, features = ["registry"] }
 ```
+
+If you use config-backed `[registries.*]` recipe dirs **without** running the
+`isol8` CLI binary, call once at startup:
+
+```rust
+#[cfg(feature = "registry")]
+isol8::ensure_registry_provider();
+```
+
+(The shipped `isol8` binary does this for you.)
 
 ### `Sandbox` builder
 

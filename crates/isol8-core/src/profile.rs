@@ -900,13 +900,11 @@ mod tests {
     }
 
     fn run_args(cwd_ro: bool) -> Spec {
-        crate::cli::run_from(
-            crate::cli::ProfileOpts {
-                cwd_ro,
-                ..Default::default()
-            },
-            vec!["echo".into(), "hi".into()],
-        )
+        Spec {
+            cwd_ro,
+            cmd: vec!["echo".into(), "hi".into()],
+            ..Default::default()
+        }
     }
 
     #[test]

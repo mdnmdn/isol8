@@ -16,15 +16,15 @@ use std::fs;
 use std::path::Path;
 use std::process;
 
-use isol8::backends;
-use isol8::context::{Context, Platform};
-use isol8::env::build_minimal;
-use isol8::plan::{HomeOpSpec, HomePlan};
-use isol8::profile::{
+use isol8_core::backends;
+use isol8_core::context::{Context, Platform};
+use isol8_core::env::build_minimal;
+use isol8_core::plan::{HomeOpSpec, HomePlan};
+use isol8_core::profile::{
     apply_rewrite, Access, Capability, MacosExtra, MatchKind, PathGrant, Profile, Rewrite,
     WindowsCapability, WindowsExtra,
 };
-use isol8::resolve::confine_executable;
+use isol8_core::resolve::confine_executable;
 
 fn grant(path: &str, access: Access, m: MatchKind) -> PathGrant {
     PathGrant {

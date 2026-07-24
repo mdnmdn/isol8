@@ -19,9 +19,9 @@ release:
 run *args:
     cargo run -- {{args}}
 
-# Unit + integration tests.
+# Unit + integration tests (full workspace).
 test:
-    cargo test
+    cargo test --workspace
 
 # Field tests: real sandbox checks on an ad-hoc env/profile (see _docs/testing-strategies.md).
 # Pass --keep to retain the temp workspace.
@@ -41,17 +41,17 @@ fmt:
 # Lint: format check + clippy with warnings denied (the CI lint gate).
 lint:
     cargo fmt --all -- --check
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Type-check without building artifacts.
 check:
-    cargo check --all-targets
+    cargo check --workspace --all-targets
 
 # Full pre-commit gate: everything CI runs.
 ci: fmt-check
-    cargo clippy --all-targets --all-features -- -D warnings
-    cargo build
-    cargo test
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo build --workspace
+    cargo test --workspace
 
 # Format check only (used by `ci`).
 fmt-check:

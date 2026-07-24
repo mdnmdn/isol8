@@ -42,6 +42,7 @@ use crate::profile::{Access, Capability, MatchKind, Profile};
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
+/// macOS Seatbelt (`sandbox-exec`) backend.
 pub struct MacosBackend;
 
 impl Backend for MacosBackend {
@@ -158,14 +159,14 @@ impl Backend for MacosBackend {
 
 /// Render the merged profile into an SBPL policy string.
 ///
-/// Shape (order matters — Seatbelt is last-match-wins):
+/// Used by dry-run and `@diag`. Shape (order matters — Seatbelt is last-match-wins):
 /// 1. header `(version 1) (deny default)`
 /// 2. ancestor `file-read-metadata` grants (deduped) for path resolution (R2.3)
 /// 3. per-grant allows (`ro`/`rw`/`metadata`)
 /// 4. per-grant `none` denies (after the allows, so they carve holes)
 /// 5. capability allows
 /// 6. raw SBPL passthrough, verbatim
-pub(crate) fn render_policy(profile: &Profile) -> String {
+pub fn render_policy(profile: &Profile) -> String {
     let mut out = String::from("(version 1)\n(deny default)\n");
 
     // macOS firmlinks/symlinks (`/tmp`->`/private/tmp`, `/var`->`/private/var`,

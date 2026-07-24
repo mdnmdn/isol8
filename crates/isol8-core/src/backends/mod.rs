@@ -6,11 +6,11 @@ use crate::profile::Profile;
 use crate::sandbox::SandboxChild;
 
 #[cfg(target_os = "linux")]
-mod linux;
+pub mod linux;
 #[cfg(target_os = "macos")]
-pub(crate) mod macos;
+pub mod macos;
 #[cfg(windows)]
-pub(crate) mod windows;
+pub mod windows;
 
 /// A platform sandbox implementation. Renders the merged `Profile` into the
 /// OS-native policy (Landlock ruleset, Seatbelt text, …) and execs the command.

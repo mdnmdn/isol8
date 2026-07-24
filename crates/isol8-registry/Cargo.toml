@@ -1,0 +1,18 @@
+[package]
+name = "isol8-registry"
+version = "0.2.6"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/mdnmdn/isol8"
+description = "isol8 offline recipe/profile registries: sources, cache, lockfile, trust"
+authors = ["Marco De Nittis"]
+
+[lib]
+name = "isol8_registry"
+path = "src/lib.rs"
+
+[dependencies]
+isol8-core = { path = "../isol8-core", version = "0.2.6" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+serde_json = "1"
