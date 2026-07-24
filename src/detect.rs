@@ -52,15 +52,24 @@ pub struct VerifyResult {
 
 /// True when `detect.version` / `verify.cmd` may run for this recipe source.
 ///
-/// Builtins and local filesystem paths are trusted. URLs / future registry
-/// remotes are not (Phase 7 will add an explicit trust gate).
+/// Trusted:
+/// - `builtin:…`
+/// - local filesystem paths
+/// - `registry:<trust>:<name>:<id>` when `<trust>` is `official` or `local`
+///
+/// Untrusted: raw URLs, `registry:community:…`, `registry:untrusted:…`.
 pub fn commands_trusted(source: &str) -> bool {
     if source.starts_with("builtin:") {
         return true;
     }
-    // Remote-looking sources are untrusted until Phase 7.
-    if source.contains("://") || source.starts_with("registry:") {
+    if source.contains("://") {
         return false;
+    }
+    if let Some(rest) = source.strip_prefix("registry:") {
+        // Format: registry:<trust>:<name>:<id>  (Phase 7)
+        // Legacy / shorthand: registry:<name>:… → untrusted until trust known
+        let trust = rest.split(':').next().unwrap_or("untrusted");
+        return matches!(trust, "official" | "local");
     }
     true
 }
@@ -610,7 +619,12 @@ paths = []
     fn commands_trusted_rules() {
         assert!(commands_trusted("builtin:toolchains/nvm"));
         assert!(commands_trusted("/home/u/.config/isol8/recipes/x.toml"));
-        assert!(!commands_trusted("registry:official/foo"));
+        assert!(commands_trusted(
+            "registry:official:fixture:toolchains/sample"
+        ));
+        assert!(commands_trusted("registry:local:scratch:toolchains/x"));
+        assert!(!commands_trusted("registry:community:work:toolchains/x"));
+        assert!(!commands_trusted("registry:official/foo")); // legacy shorthand
         assert!(!commands_trusted("https://example.com/r.toml"));
     }
 

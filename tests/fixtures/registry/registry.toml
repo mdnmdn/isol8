@@ -1,0 +1,15 @@
+schema = 1
+name = "fixture"
+title = "isol8 test fixture registry"
+description = "Minimal registry for unit and integration tests"
+min_isol8 = "0.2.0"
+index = "index.json"
+
+[maintainers]
+owner = "isol8-tests"
+
+[trust]
+level = "official"
+forbidden_paths = ["#HOME/.ssh", "#HOME/.aws", "#HOME/.gnupg"]
+max_grant_outside_home = "ro"
+rw_outside_home_allowed = ["toolchains/sample-cache"]

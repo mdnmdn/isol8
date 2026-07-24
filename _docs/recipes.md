@@ -6,8 +6,9 @@ env vars. They are a **separate document type** from profile layers and compile
 down into the existing `Spec` → `effective_policy` pipeline.
 
 Design source: [`inbox/evo-repo.md`](./inbox/evo-repo.md) §4.  
-Implementation status: Phases 3–4 of [`wip/multi-evo-plan.md`](./wip/multi-evo-plan.md)
-(strategies + detect/verify).
+Implementation status: Phases 3–4, 7–8 of
+[`wip/multi-evo-plan.md`](./wip/multi-evo-plan.md) (strategies, detect/verify,
+offline registries, cage wizard).
 
 ---
 
@@ -34,7 +35,7 @@ filter = { os = ["macos", "linux"] }   # authoritative selector
 summary = "Node Version Manager"
 default_strategy = "link"              # optional
 
-[detect]                               # Phase 4 will run these
+[detect]                               # run by `@cage detect` (host)
 probe = { path = "~/.nvm" }
 version = "nvm --version"
 
@@ -64,6 +65,11 @@ env = { NVM_DIR = "~/.nvm" }
 | `link` | Version managers | symlink + **ro** on real path, rw overlays where needed |
 | `isolate` | Agent-writable config | mkdir (and optional seed) under replaced home |
 
+**Wizard defaults** (`@cage new` / `edit` bare tool ids): use the recipe’s
+`default_strategy` when set and defined; otherwise heuristics (cache-like ids →
+`share`, version-manager-like → `link`, else prefer link > share > isolate among
+defined strategies). Explicit `id:strategy` in `--tools` always wins.
+
 ### Tokens
 
 | Token | Expands to |
@@ -88,10 +94,18 @@ effective home).
 |--------|----------|------------|
 | Builtin | `recipes/**/*.toml` embedded via `build.rs` | lowest |
 | User | `~/.config/isol8/recipes/**/*.toml` | later |
+| Registry (offline) | Configured `[registries.*]` path roots or git cache pins | later |
 | Explicit | `Spec.recipe_paths` / library `Sandbox::recipe_path` | highest |
 
 Variants of the same `id` must have **disjoint** `filter` selectors (validated on
 load). Filename suffixes (`.windows.toml`) are convention only.
+
+**Registries (Phase 7).** Named path or git sources in `isol8.toml` contribute
+recipe directories without network I/O at load time — only after
+`isol8 @registry update` (or install) has populated a git cache and `isol8.lock`.
+Each recipe’s `source` is labelled `registry:<trust>:<name>:<id>` for detect/verify
+trust gating. Unparseable files in a registry tree (e.g. profiles) are skipped.
+See [`registry.md`](./registry.md).
 
 ### Per-platform strategy bodies
 
@@ -212,12 +226,14 @@ expect = "^v\\d+"              # optional stdout pattern (\d / \d+ / ^ / $)
 | `@cage verify` | materialize home, then `verify.cmd` | **Sandbox** | Home plan apply |
 | Normal `isol8 -c …` run | strategies only | Sandbox | Materialize on spawn; no detect/verify |
 
-**Trust:** builtin + local (`~/.config/isol8/recipes/`, `recipe_paths`) may run
-`detect.version` and `verify.cmd`. Remote/registry sources (Phase 7) do not until
-an explicit trust gate exists. Path probes always run (read-only).
+**Trust:** builtin, local filesystem paths, and registry sources with trust
+`official` or `local` may run `detect.version` and `verify.cmd`. Registry recipes
+at `community` or `untrusted` block those host commands. Path probes always run
+(read-only). See [`registry.md`](./registry.md) §4.
 
 ## 7. Not yet
 
-- Remote registry + lockfile — Phase 7
-- Wizard-owned managed sections — Phase 8
-- `--analyze` denial → recipe suggestion — Phases 5–6
+- HTTP registries and artifact signing — deferred after Phase 7 MVP
+- Full capability-ceiling enforcement at resolve time (install-time diff only today)
+- Wizard extras: full TUI, `@cage clone` / `@cage fix` (Phase 8 core is done —
+  managed `[toolchains.*]` + drift; see [`instructions.md`](./instructions.md))

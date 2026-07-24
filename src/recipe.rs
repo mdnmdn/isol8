@@ -53,16 +53,16 @@ impl StrategyName {
     }
 }
 
-/// Optional detection metadata (Phase 4 will run probes; parsed today).
+/// Optional detection metadata (`@cage detect` on the host).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Detect {
     /// Path probe (typically under real home, e.g. `~/.nvm` or `#HOME/.nvm`).
     pub probe_path: Option<String>,
-    /// Optional version command (not executed until Phase 4).
+    /// Optional version command (host; trust-gated).
     pub version_cmd: Option<String>,
 }
 
-/// Optional verify metadata (Phase 4 will run; parsed today).
+/// Optional verify metadata (`@cage verify` inside the cage).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Verify {
     /// Smoke-test command.
@@ -480,21 +480,47 @@ pub struct RecipeRegistry {
 }
 
 impl RecipeRegistry {
-    /// Load builtins + user config dir + explicit recipe paths (later wins on
-    /// identical id+filter; new variants are appended).
+    /// Load builtins + user config dir + offline registry caches + explicit
+    /// recipe paths (later wins on identical id+filter; new variants append).
+    ///
+    /// Registry roots are discovered from `isol8.toml` `[registries]` + the
+    /// lockfile / path specs — **no network**. Missing caches are skipped.
     pub fn load(recipe_paths: &[String]) -> Result<Self> {
+        Self::load_with_registry_dirs(recipe_paths, &offline_registry_recipe_dirs())
+    }
+
+    /// Like [`Self::load`], but with explicit extra registry recipe directories
+    /// `(source_label, path)` — used by tests and `@registry` tooling.
+    ///
+    /// `source_label` is written onto each recipe's `source` field when loading
+    /// from that directory (e.g. `registry:official:fixture`). When empty, the
+    /// filesystem path is used (local trust).
+    pub fn load_with_registry_dirs(
+        recipe_paths: &[String],
+        registry_dirs: &[(String, PathBuf)],
+    ) -> Result<Self> {
         let mut reg = Self::default();
         for (id, body) in BUILTIN_RECIPES {
             let r = parse_recipe(body, &format!("builtin:{id}"))?;
             reg.insert(r)?;
         }
         if let Some(dir) = user_recipes_dir() {
-            load_dir_into(&mut reg, &dir)?;
+            load_dir_into(&mut reg, &dir, None)?;
+        }
+        for (label, dir) in registry_dirs {
+            if dir.is_dir() {
+                let prefix = if label.is_empty() {
+                    None
+                } else {
+                    Some(label.as_str())
+                };
+                load_dir_into(&mut reg, dir, prefix)?;
+            }
         }
         for p in recipe_paths {
             let path = PathBuf::from(p);
             if path.is_dir() {
-                load_dir_into(&mut reg, &path)?;
+                load_dir_into(&mut reg, &path, None)?;
             } else if path.is_file() {
                 reg.insert(load_from_path(&path)?)?;
             } else {
@@ -671,14 +697,14 @@ fn user_recipes_dir() -> Option<PathBuf> {
         .map(|h| h.join("isol8").join("recipes"))
 }
 
-fn load_dir_into(reg: &mut RecipeRegistry, dir: &Path) -> Result<()> {
+fn load_dir_into(reg: &mut RecipeRegistry, dir: &Path, source_prefix: Option<&str>) -> Result<()> {
     if !dir.is_dir() {
         return Ok(());
     }
-    load_dir_rec(reg, dir)
+    load_dir_rec(reg, dir, source_prefix)
 }
 
-fn load_dir_rec(reg: &mut RecipeRegistry, dir: &Path) -> Result<()> {
+fn load_dir_rec(reg: &mut RecipeRegistry, dir: &Path, source_prefix: Option<&str>) -> Result<()> {
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(_) => return Ok(()),
@@ -686,12 +712,37 @@ fn load_dir_rec(reg: &mut RecipeRegistry, dir: &Path) -> Result<()> {
     for ent in rd.flatten() {
         let p = ent.path();
         if p.is_dir() {
-            load_dir_rec(reg, &p)?;
+            load_dir_rec(reg, &p, source_prefix)?;
         } else if p.extension().and_then(|e| e.to_str()) == Some("toml") {
-            reg.insert(load_from_path(&p)?)?;
+            match load_from_path(&p) {
+                Ok(mut r) => {
+                    if let Some(prefix) = source_prefix {
+                        // prefix is typically `registry:<trust>:<name>`
+                        r.source = format!("{prefix}:{}", r.id);
+                    }
+                    reg.insert(r)?;
+                }
+                Err(e) => {
+                    // Registry trees may contain profiles / future schema —
+                    // skip unreadable TOML rather than failing the whole load.
+                    if source_prefix.is_some() {
+                        continue;
+                    }
+                    return Err(e);
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// Discover offline registry recipe directories from config + lockfile.
+///
+/// Returns `(source_label, recipes_dir)` pairs. Never touches the network.
+fn offline_registry_recipe_dirs() -> Vec<(String, PathBuf)> {
+    // Engine-only path: avoid depending on CLI config types. Read isol8.toml
+    // registries via the registry module helpers when a config file exists.
+    crate::registry::discover_offline_recipe_dirs()
 }
 
 /// Expand env value tokens: `#HOME` → real home, `~` → effective home.

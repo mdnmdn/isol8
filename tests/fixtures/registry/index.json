@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "registry": "fixture",
+  "count": 2,
+  "entries": [
+    {
+      "id": "toolchains/sample",
+      "kind": "recipe",
+      "os": [
+        "macos",
+        "linux",
+        "windows"
+      ],
+      "file": "recipes/toolchains/sample.toml",
+      "summary": "Sample toolchain for registry tests",
+      "tags": [
+        "test"
+      ],
+      "strategies": [
+        "isolate",
+        "link"
+      ],
+      "default_strategy": "link",
+      "detects": "~/.sample-tool",
+      "verify": null,
+      "requires": [],
+      "sha256": "ce1e0aea9806c035e006682d360e071e4f625a9ede04e893e07a36f31ebbef51"
+    },
+    {
+      "id": "toolchains/sample-cache",
+      "kind": "recipe",
+      "os": [
+        "macos",
+        "linux",
+        "windows"
+      ],
+      "file": "recipes/toolchains/sample-cache.toml",
+      "summary": "Sample shared cache (rw on real home)",
+      "tags": [
+        "test"
+      ],
+      "strategies": [
+        "isolate",
+        "share"
+      ],
+      "default_strategy": "share",
+      "detects": "~/.sample-cache",
+      "verify": null,
+      "requires": [],
+      "sha256": "5584925e01c83d2d4342470a27a252d97a14d35d575aa84932243ffe4d399499"
+    }
+  ]
+}

@@ -8,26 +8,32 @@ tiered network confinement.
 It generalizes the macOS `sandbox-exec` (Seatbelt) model to **Linux** (Landlock +
 namespaces), **WSL2**, and **Windows** (deferred). Primary targets: Linux and macOS.
 
-> **Status: Phase 1 — macOS + Linux MVP working.** Path access, HOME replacement, env
-> sanitization, ~70 embedded Safehouse-derived profiles, conditional filters,
-> config file + auto-profile selection, and policy introspection are implemented.
-> **Enforcement works on macOS** via Seatbelt and **on Linux** via Landlock (WSL2
-> kernel 5.15 verified). Network tiers and Windows backend are deferred.
+> **Status (v0.2.6):** **macOS + Linux MVP enforced** (Seatbelt / Landlock; WSL2 5.15
+> verified). Path access, HOME replacement, env sanitization, ~70 embedded profiles,
+> cages, toolchain recipes, offline registries, cage wizard, and `--analyze` (macOS
+> live + NDJSON) are implemented. Network tiers and full Windows path enforcement
+> remain deferred.
 
 > Primary inspiration: the macOS [Agent Safehouse](https://github.com/eugene1g/agent-safehouse)
 > project, whose composable profile model `isol8` generalizes cross-platform.
 
-Full usage: [`_docs/instructions.md`](_docs/instructions.md).
+Full usage: [`_docs/instructions.md`](_docs/instructions.md).  
+Agent/contributor guide: [`AGENTS.md`](AGENTS.md).
 
 ## What it does
 
 - **Process isolation** — unprivileged wrapper around any command and its children.
 - **Path access control** — per-path `none` / `ro` / `rw` / `metadata`, deny-by-default.
 - **Environment isolation** — minimal allowlist; secrets in the host env do not pass through. Opt in per-var with `--env-pass NAME`, or set explicitly with `--set-env K=V`.
-- **HOME replacement (opt-in)** — keeps the real `$HOME` by default; substitute a scratch/alternate `$HOME` with `--home` or a profile, resolved before any path grant is computed. Seed real-home files read-only (first-creation-only; `--no-seed` to skip), and reach the real home from a profile via the `#HOME` token even under replacement.
+- **HOME replacement (opt-in)** — keeps the real `$HOME` by default; substitute a scratch/alternate `$HOME` with `--home`, a cage, or a profile, resolved before any path grant is computed. Seed real-home files read-only (first-creation-only; `--no-seed` to skip), and reach the real home via the `#HOME` token even under replacement.
 - **Composable profiles** — ~70 embedded TOML layers, `requires` inheritance, deny-first merge.
 - **Conditional filters** — layers and policies can match executable name, OS, and architecture.
 - **Auto-profiles** — agent layers (e.g. `claude` → `agents/claude-code`) selected automatically.
+- **Cages** — one-knob named selection (`-c work`): home mode + profiles + dirs + toolchains.
+- **Recipes & strategies** — toolchain packages (`share` / `link` / `isolate`) with detect/verify.
+- **Offline registries** — path/git sources, `isol8.lock`, `@registry update|install` (no network at exec).
+- **Cage wizard** — `@cage new` / `@cage edit` (interactive or `--yes`) with managed toolchain sections.
+- **Policy diagnosis** — `--analyze` maps denials to recipe suggestions (macOS log scrape or NDJSON feed).
 
 ## Quick start
 
@@ -46,6 +52,13 @@ isol8 --show-profiles claude --version
 
 # First-time setup: write ~/.config/isol8/isol8.toml
 isol8 @init
+
+# Named cage + wizard
+isol8 @cage new work --yes --home managed --tools nvm,cargo --dir "$PWD"
+isol8 -c work -- echo hi
+
+# Offline recipe registry (path or git in isol8.toml)
+isol8 @registry update
 ```
 
 **Meta commands** use an `@` prefix so they never collide with the confined program:
@@ -53,6 +66,9 @@ isol8 @init
 ```sh
 isol8 @profiles-list              # all embedded + user layers
 isol8 @profiles-show base         # dump one layer as TOML
+isol8 @cage list|show|new|edit|detect|verify
+isol8 @registry list|update|install|show|verify
+isol8 @diag <cmd>…                # macOS: why did launch abort?
 ```
 
 Run `isol8` or `isol8 --help` for full usage.
@@ -89,10 +105,16 @@ Config file search order: `ISOL8_CONFIG_PATH` → `./isol8.toml` →
 default_profiles = ["base", "macos/system-runtime"]
 auto_profiles = true
 profile_paths = []
+# cage = "work"
+
+# Optional offline recipe registries:
+# [registries.official]
+# path = "~/src/isol8-recipes"
+# # or: git = "https://…/isol8-recipes.git"  ref = "v1"
 ```
 
 Environment overrides: `ISOL8_PROFILE`, `ISOL8_PROFILE_PATH`, `ISOL8_ADD_DIRS_RW`,
-`ISOL8_HOME`, `ISOL8_DRY_RUN`, etc.
+`ISOL8_HOME`, `ISOL8_CAGE`, `ISOL8_DRY_RUN`, etc.
 
 ## Build
 
@@ -100,10 +122,35 @@ Environment overrides: `ISOL8_PROFILE`, `ISOL8_PROFILE_PATH`, `ISOL8_ADD_DIRS_RW
 cargo build
 cargo test
 just ci          # fmt + clippy + build + test
-just field-test  # real sandbox checks (macOS)
+just field-test  # real sandbox checks (macOS / Linux)
 ```
 
+### Embedding as a library
 
+```toml
+# Cargo.toml — engine only (no clap / serde_yaml / dialoguer):
+isol8 = { path = "../isol8", default-features = false }
+```
+
+```rust
+let code = isol8::Sandbox::new()
+    .profile("base")
+    .grant_rw("/my/project")
+    .home("/tmp/scratch")
+    .run(["node", "script.js"])?;
+```
+
+## Docs
+
+| Doc | Contents |
+|-----|----------|
+| [`_docs/instructions.md`](_docs/instructions.md) | CLI, cages, wizard, registries, analyze |
+| [`_docs/profile-model.md`](_docs/profile-model.md) | Profile format, filters, merge |
+| [`_docs/recipes.md`](_docs/recipes.md) | Recipes & strategies |
+| [`_docs/registry.md`](_docs/registry.md) | Offline registries & trust |
+| [`_docs/project-structure.md`](_docs/project-structure.md) | Modules & data flow |
+| [`_docs/wip/multi-evo-plan.md`](_docs/wip/multi-evo-plan.md) | Evolution Phases 0–8 done; Phase 9 next |
+| [`AGENTS.md`](AGENTS.md) | Contributor / agent guide |
 
 ## License
 

@@ -1,0 +1,26 @@
+schema = 1
+id = "toolchains/sample"
+kind = "recipe"
+filter = { os = ["macos", "linux", "windows"] }
+summary = "Sample toolchain for registry tests"
+default_strategy = "link"
+
+[detect]
+probe = { path = "~/.sample-tool" }
+version = "sample --version"
+
+[verify]
+cmd = "sample --version"
+expect = "^\\d+"
+
+[strategies.link]
+home = [{ kind = "link", from = "#HOME/.sample-tool", to = "~/.sample-tool" }]
+paths = [
+  { path = "#HOME/.sample-tool", access = "ro" },
+]
+env = { SAMPLE_HOME = "~/.sample-tool" }
+
+[strategies.isolate]
+home = [{ kind = "mkdir", path = "~/.sample-tool" }]
+paths = [{ path = "~/.sample-tool", access = "rw" }]
+env = { SAMPLE_HOME = "~/.sample-tool" }

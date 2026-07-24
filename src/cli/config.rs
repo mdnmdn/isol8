@@ -1,11 +1,13 @@
 //! Global isol8 config file discovery, parsing, and env-var overrides.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::cli::ProfileOpts;
+use crate::registry::{self, RegistrySpec};
 
 /// User-facing config (isol8.toml / isol8.yaml).
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -20,10 +22,14 @@ pub struct Config {
     /// Named cage to use when `--cage` / `ISOL8_CAGE` are unset.
     pub cage: Option<String>,
     pub dry_run: bool,
+    /// Named recipe registries (`[registries.<name>]`). Parsed separately from
+    /// free-form TOML tables so path/git/url shapes stay flexible.
+    #[serde(default, skip_deserializing)]
+    pub registries: BTreeMap<String, RegistrySpec>,
 }
 
 impl Config {
-    /// OS-specific defaults used by `isol8 init` and when no config file exists.
+    /// OS-specific defaults used by `isol8 @init` and when no config file exists.
     pub fn builtin_defaults() -> Self {
         let system = if cfg!(target_os = "macos") {
             "macos/system-runtime"
@@ -101,17 +107,77 @@ fn load_from(path: &Path) -> Result<Config> {
     let body = std::fs::read_to_string(path)
         .with_context(|| format!("reading config '{}'", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    // Strip `[registries]` before deny_unknown_fields deserialize — registry
+    // tables are free-form (path/git/url) and parsed by `registry::`.
+    let (body_without_regs, registries) = strip_and_parse_registries(&body, ext)?;
     let mut cfg: Config = match ext {
-        "yaml" | "yml" => serde_yaml::from_str(&body)
+        "yaml" | "yml" => serde_yaml::from_str(&body_without_regs)
             .with_context(|| format!("parsing YAML config '{}'", path.display()))?,
-        _ => toml::from_str(&body)
+        _ => toml::from_str(&body_without_regs)
             .with_context(|| format!("parsing TOML config '{}'", path.display()))?,
     };
+    cfg.registries = registries;
     // Empty default_profiles in file → use builtin OS defaults.
     if cfg.default_profiles.is_empty() {
         cfg.default_profiles = Config::builtin_defaults().default_profiles;
     }
     Ok(cfg)
+}
+
+/// Remove registries from the body (so deny_unknown_fields succeeds) and parse them.
+fn strip_and_parse_registries(
+    body: &str,
+    ext: &str,
+) -> Result<(String, BTreeMap<String, RegistrySpec>)> {
+    if matches!(ext, "yaml" | "yml") {
+        // YAML: parse full doc, pull registries, re-serialize without them.
+        // Simpler path: if YAML contains registries, parse via toml-less map.
+        // For Phase 7, registries are TOML-first; YAML configs rarely use them.
+        let mut value: serde_yaml::Value = serde_yaml::from_str(body)
+            .with_context(|| "parsing YAML for registries".to_string())?;
+        let mut regs = BTreeMap::new();
+        if let Some(map) = value.as_mapping_mut() {
+            let key = serde_yaml::Value::String("registries".into());
+            if let Some(reg_val) = map.remove(&key) {
+                if let Some(reg_map) = reg_val.as_mapping() {
+                    for (k, v) in reg_map {
+                        let name = k.as_str().unwrap_or("").to_string();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        // Convert YAML value → TOML via JSON intermediate for reuse.
+                        let json = serde_json::to_value(v)
+                            .with_context(|| format!("registries.{name}: converting YAML entry"))?;
+                        let toml_v: toml::Value =
+                            serde_json::from_value(json).with_context(|| {
+                                format!("registries.{name}: converting to TOML value")
+                            })?;
+                        regs.insert(
+                            name.clone(),
+                            registry::parse_registry_spec(&name, &toml_v)
+                                .map_err(|e| anyhow::anyhow!("{e}"))?,
+                        );
+                    }
+                }
+            }
+        }
+        let stripped = serde_yaml::to_string(&value)
+            .with_context(|| "re-serializing YAML without registries".to_string())?;
+        return Ok((stripped, regs));
+    }
+
+    // TOML: parse full document once for registries; rebuild body without that table.
+    let value: toml::Value =
+        toml::from_str(body).with_context(|| "parsing TOML for registries".to_string())?;
+    let regs = registry::parse_registries_from_toml(body).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut table = value
+        .as_table()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("config root must be a table"))?;
+    table.remove("registries");
+    let stripped = toml::to_string(&toml::Value::Table(table))
+        .with_context(|| "re-serializing TOML without registries".to_string())?;
+    Ok((stripped, regs))
 }
 
 /// Apply config defaults to `run` (only fills unset CLI fields).
@@ -198,7 +264,7 @@ fn split_list(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// Default config file content for `isol8 init`.
+/// Default config file content for `isol8 @init`.
 pub fn init_template(format: &str) -> Result<String> {
     let defaults = Config::builtin_defaults();
     match format {

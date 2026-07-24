@@ -29,7 +29,8 @@ pub enum HomeMode {
 }
 
 impl HomeMode {
-    fn parse(s: &str) -> Result<Self> {
+    /// Parse a cage `home = "…"` value (`inherit` | `ephemeral` | `@managed/<id>` | path).
+    pub fn parse(s: &str) -> Result<Self> {
         match s.trim() {
             "" | "inherit" => Ok(HomeMode::Inherit),
             "ephemeral" => Ok(HomeMode::Ephemeral),

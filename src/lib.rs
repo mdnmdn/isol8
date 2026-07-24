@@ -45,6 +45,8 @@
 //! - [`context`] — injectable ambient state for token expansion (`~`, `#HOME`, `@managed`).
 //! - [`plan`] — home materialization plan/apply (`link` / `mkdir` / `seed-ro` / `copy`).
 //! - [`recipe`] — toolchain recipes (strategies → grants + home ops + env).
+//! - [`registry`] — offline-by-default recipe/profile sources, lockfile, trust.
+//! - [`wizard`] — cage authoring (`@cage new` / `edit`), managed sections, drift.
 //! - [`filter`] — conditional layer/policy matching (OS / arch / executable).
 //! - [`backends`] — the per-OS [`backends::Backend`] implementations.
 //! - [`error`] — the typed [`Error`] and [`Result`] returned by the engine.
@@ -78,8 +80,12 @@ pub mod plan;
 pub mod profile;
 /// Toolchain recipes: strategies compile to path grants, env, and home ops.
 pub mod recipe;
+/// Offline-by-default recipe/profile registries (path/git cache + lockfile).
+pub mod registry;
 pub mod resolve;
 pub mod sandbox;
+/// Cage wizard: managed sections, drift protection, non-interactive authoring.
+pub mod wizard;
 
 /// CLI surface (arg parsing, config, diag, the binary entry point). Behind the
 /// default-on `cli` feature; not part of the stable embedding API.
@@ -93,5 +99,6 @@ pub use error::{Error, Result};
 pub use plan::{HomeOpKind, HomeOpSpec, HomePlan, PlanAction, PlannedOp};
 pub use profile::{Access, MatchKind, PathGrant, Profile};
 pub use recipe::{Recipe, RecipeRegistry, StrategyName, ToolchainChoice};
+pub use registry::{DirSource, Lockfile, ProfileSource, RegistryIndex, RegistrySpec, TrustLevel};
 pub use resolve::{confine_executable, effective_policy, EffectivePolicy, LayerOrigin};
 pub use sandbox::{DryRun, Sandbox, SandboxChild, Spec};

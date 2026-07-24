@@ -1,0 +1,22 @@
+schema = 1
+id = "toolchains/sample-cache"
+kind = "recipe"
+filter = { os = ["macos", "linux", "windows"] }
+summary = "Sample shared cache (rw on real home)"
+default_strategy = "share"
+
+[detect]
+probe = { path = "~/.sample-cache" }
+
+[verify]
+cmd = "true"
+
+[strategies.share]
+home = [{ kind = "link", from = "#HOME/.sample-cache", to = "~/.sample-cache" }]
+paths = [{ path = "#HOME/.sample-cache", access = "rw" }]
+env = { SAMPLE_CACHE = "~/.sample-cache" }
+
+[strategies.isolate]
+home = [{ kind = "mkdir", path = "~/.sample-cache" }]
+paths = [{ path = "~/.sample-cache", access = "rw" }]
+env = { SAMPLE_CACHE = "~/.sample-cache" }

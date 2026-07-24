@@ -1,6 +1,6 @@
 # isol8 — Multi-phase Evolution Plan
 
-**Status:** active plan — Phase 0–6 complete; next is Phase 7 (registry)  
+**Status:** active plan — Phase 0–8 complete; next is Phase 9 (crate split)  
 **Source proposal:** [`_docs/inbox/evo-repo.md`](../inbox/evo-repo.md)  
 **Related prior art:** [`_docs/inbox/home-config-wizard.md`](../inbox/home-config-wizard.md) (exposure modes ≈ strategies)  
 **Companion docs:** [`profile-model.md`](../profile-model.md), [`project-structure.md`](../project-structure.md), [`AGENTS.md`](../../AGENTS.md)  
@@ -33,8 +33,8 @@
 | 4 | Detection + `@cage verify` | **done** (2026-07-24) | `just ci` |
 | 5 | Shared analysis layer + Windows `--analyze` | **done** (2026-07-24) | `just ci` |
 | 6 | macOS `--analyze` | **done** (2026-07-24) | `just ci` + live smoke |
-| 7 | Registry (local/git/http + lockfile) | pending | `just ci` |
-| 8 | Wizard (`@cage new/edit`) | pending | `just ci` |
+| 7 | Registry (local/git/http + lockfile) | **done** (2026-07-24) | `just ci` |
+| 8 | Wizard (`@cage new/edit`) | **done** (2026-07-24) | `just ci` |
 | 9 | Crate split (`isol8-core` / `-registry` / `-cli`) | pending | `just ci` |
 | 10 | Linux `--analyze` (shadow mode) | deferred | — |
 
@@ -99,7 +99,7 @@ Key glossary (authoritative in evo-repo §2):
 | Materialization | `home::seed` (copy-ro, first-create) | link/mkdir/copy + plan/apply |
 | Context | ambient `HOME` / `RunContext` | injectable `Context` |
 | Analyze | `@diag` (launch SBPL delta-debug) | runtime denials → recipe suggestions |
-| Wizard | `@init` template only | interactive cage authoring |
+| Wizard | `@cage new`/`edit` (Phase 8) | full TUI / clone / fix (deferred) |
 | Crate split | single crate + `cli` feature | workspace later |
 
 ### 0.4 Design principles for implementation
@@ -678,7 +678,7 @@ just field-test  # if analyze field scenario added
 
 ### Resume notes
 
-**Completed 2026-07-24.** Restart from Phase 7 (registry) when ready.
+**Completed 2026-07-24.** Evolution track continued through Phase 8 (wizard); next is Phase 9 (crate split).
 
 #### Files added/changed
 
@@ -707,7 +707,6 @@ isol8 --analyze --profile base --profile macos/system-runtime -- /bin/cat ~/.ssh
 
 #### Known follow-ups
 
-- Phase 7: registry
 - Phase 10: Linux shadow mode
 - TCC / Full Disk Access may still empty the stream on locked-down hosts
 - Field-test scenario for analyze (optional; live log is environment-dependent)
@@ -716,49 +715,54 @@ isol8 --analyze --profile base --profile macos/system-runtime -- /bin/cat ~/.ssh
 
 ## Phase 7 — Registry (git / http / local + lockfile)
 
-**Status:** pending  
+**Status:** **done** (2026-07-24)  
 **Depends on:** Phase 3 (schema); Phase 4 informs which recipes to seed officially  
 **evo-repo:** §5, §7.5, §10 step 7  
 **Goal:** Policy evolution decoupled from the binary; offline cache + pins.
 
 ### In scope
 
-- `ProfileSource` trait: `get`, `index`, `trust`
-- Implementations: `EmbeddedSource`, `DirSource`, `GitSource`, `HttpSource`,
-  `LayeredSource` (later-wins)
+- `ProfileSource` trait: `name`, `index`, `trust`, `root`, `get_recipe`, `get_profile`
+- Implementations: `DirSource`, `LayeredSource` (later-wins); git via CLI cache as
+  `DirSource` after pin; HTTP stub only
 - Config:
   ```toml
-  [registries]
-  official = { git = "…", ref = "v1" }
-  scratch  = { path = "~/…" }
+  [registries.official]
+  git = "…"
+  ref = "v1"
+  # optional: trust = "official"
+
+  [registries.scratch]
+  path = "~/…"
   ```
-- Cache: `~/.cache/isol8/registries/<name>/<commit>/`
-- Offline by default; `@registry update|install|list`
-- `isol8.lock` — commit SHA + content hash; drift = error
-- Diff on install (highlight new rw; flag sensitive paths)
-- Optional capability ceiling `max_grant` for non-official
-- Reference syntax `registry:id` with bare ids still working
+- Cache: `~/.cache/isol8/registries/<name>/<pin>/` (or `XDG_CACHE_HOME`)
+- Offline by default; `@registry list|update|install|show|verify`
+- `isol8.lock` — registry pins + per-entry sha256; drift checked by `verify`
+- Diff on install (added/changed/removed; sensitive paths, rw on real home,
+  forbidden/ceiling flags); `--strict` hard-fails on forbidden/ceiling
+- Capability ceiling metadata in manifest (`max_grant_outside_home`,
+  `rw_outside_home_allowed`) — **install-time only**, not resolve-time enforcement
+- Bare recipe ids still work; source label `registry:<trust>:<name>:<id>`
 
-### Out of scope
+### Out of scope (still deferred)
 
-- Signing (minisign/sigstore) — deferred per proposal
-- Async/tokio registry stack — keep sync (`ureq` / `git2` or git CLI)
-
-### Dependency note
-
-Add optional feature `registry` so `default-features = false` embedders stay light.
+- Signing (minisign/sigstore)
+- Async/tokio registry stack — sync only (`git` CLI + filesystem)
+- HTTP registries (error message only)
+- Full ceiling enforcement at resolve time
+- Optional `registry` cargo feature / crate split (Phase 9)
 
 ### Tests
 
-- Unit: DirSource + LayeredSource precedence, lockfile pin mismatch
-- Integration: local path registry; git only if testcontainers/fixture repo
+- Unit: DirSource, LayeredSource, lockfile, trust parse, install diff flags
+- Fixture: `tests/fixtures/registry/` (sample + sample-cache recipes)
 
 ### Docs checklist
 
-- [ ] New `_docs/registry.md` or section in instructions
-- [ ] `project-structure.md` — sources
-- [ ] Trust model in AGENTS / instructions
-- [ ] This plan
+- [x] New `_docs/registry.md`
+- [x] `project-structure.md` — `registry.rs` + offline recipe load note
+- [x] Trust model in AGENTS / instructions / recipes
+- [x] This plan
 
 ### Gate
 
@@ -768,47 +772,100 @@ just ci
 
 ### Resume notes
 
-*(fill when done)*
+**Completed 2026-07-24.** Phase 8 (wizard) also complete; next is Phase 9 (crate split).
+
+#### Files
+
+| Path | Role |
+|------|------|
+| `src/registry.rs` | Trust, DirSource, LayeredSource, RegistrySpec, lockfile, cache, open_offline, update, install diff, discover_offline_recipe_dirs |
+| `src/cli/mod.rs` | `@registry list\|update\|install\|show\|verify`, RegistryArgs (`--lockfile`, `--no-lock`, `--strict`) |
+| `src/cli/config.rs` | `[registries.*]` strip/parse into `Config.registries` |
+| `src/recipe.rs` | `RecipeRegistry::load` pulls offline registry recipe dirs; skips unparseable registry TOML |
+| `src/detect.rs` | `commands_trusted` allows `registry:official:…` / `registry:local:…` |
+| `src/lib.rs` | Re-exports registry surface |
+| `tests/fixtures/registry/` | Minimal path registry fixture |
+
+#### Behaviour locked
+
+1. **Offline by default** — no network on ordinary runs or `RecipeRegistry::load`.
+2. **Git only via explicit update/install** when cache missing; pin = commit SHA.
+3. **Path registries** open in place; pin = index content hash.
+4. **HTTP** config parse ok; open/update error with “not implemented yet”.
+5. **Trust defaults:** path→local, git→community, http→untrusted; config/manifest may override.
+6. **commands_allowed:** official + local only (community/untrusted block detect.version / verify.cmd).
+7. **Install diff** flags sensitive paths, rw on `#HOME`, forbidden, ceiling; `--strict` fails on FORBIDDEN/ceiling only.
+8. **Lockfile discovery:** `./isol8.lock` if present; else `./isol8.lock` when
+   cwd has `isol8.toml`/yaml; else `~/.config/isol8/isol8.lock`.
+
+#### API surface (engine)
+
+- `TrustLevel`, `RegistrySpec`, `DirSource`, `LayeredSource`, `Lockfile`, `ProfileSource`
+- `open_offline`, `update_registry`, `diff_index`, `discover_offline_recipe_dirs`
+- Recipe source label: `registry:<trust>:<name>:<id>`
+
+#### Follow-ups
+
+- HTTP registry + signing when needed
+- Resolve-time capability ceiling (install-only today)
+- Optional feature gate / crate split (Phase 9)
+- `EmbeddedSource` as a `ProfileSource` wrapper (builtins stay in
+  `RecipeRegistry` / `LayerRegistry` today — KISS; evo-repo §7.5 full trait
+  surface can wrap them later if embedders need one stack)
+- Separate `GitSource` type (today: `update_registry` → cache → `DirSource`)
 
 ---
 
 ## Phase 8 — Wizard
 
-**Status:** pending  
+**Status:** **done** (2026-07-24)  
 **Depends on:** Phase 4 + Phase 7  
 **evo-repo:** §3.3, §6, §10 step 8  
 **Goal:** First-run good path; managed sections safe to re-run.
 
 ### In scope
 
-- `@cage new` interactive (dialoguer/inquire — **not** ratatui)
-- Flow: home mode → toolchains (from detect) → project dirs → preview → apply+verify
-- Non-interactive: `--yes --tools … --home managed`
-- `toml_edit` surgery; `# isol8:managed` sections
-- Drift protection via content hash in `~/.config/isol8/state.toml`
-- Bundles: `@cage new work --from official:bundles/…`
-- Preview reuses dry-run / show-policies; highlight rw outside replaced home
+- `@cage new` / `@cage edit` interactive (dialoguer — **not** ratatui)
+- Flow: always print `@cage detect` table first → home mode → toolchains →
+  project dirs → preview → apply (+ optional `--verify`)
+- Non-interactive: `--yes` (or `--preview`); bare `--tools` uses recipe defaults
+- `toml_edit` surgery; `# isol8:managed` markers on toolchain sections
+- Drift protection via managed-section hash in `~/.config/isol8/state.toml`
+- Bundles: `--from bundles/…|path.toml` (offline registry index or filesystem)
+- Security notes: `preview_security_notes` flags **rw** grants on `#HOME`
+- Project-local write via `--path DIR`
 
-### Out of scope
+### Out of scope (still open)
 
 - Full TUI
+- `@cage clone`, `@cage fix`
 - Auto network fetch without prior `@registry update`
+- Phase 9 crate split
 
-### Open decisions to resolve before coding (write answers in resume notes)
+### Open decisions (locked)
 
-1. Strategy defaults: recipe `default_strategy` vs wizard category rules?
-2. `inherit` + toolchains: strategies no-op except optional share grants?
-3. Project-local cages supported (portable lint) or discouraged?
+1. **Strategy defaults:** recipe `default_strategy` first (if defined), else
+   heuristics (caches → `share`, version managers → `link`, else prefer
+   link > share > isolate among defined strategies). See
+   `wizard::default_strategy_for`.
+2. **`inherit` + toolchains:** still written; strategy grants apply;
+   materialization under `~` hits the **real** home (warning emitted).
+3. **Project-local cages:** supported via `--path`; absolute `home` paths get a
+   **portability warning only** (not an error).
 
 ### Tests
 
-- Unit: managed section rewrite preserves user keys; drift detection
-- Integration: non-interactive `@cage new --yes` golden TOML
+- Unit: `src/wizard.rs` (normalize_home, parse_tools_list, default_strategy_for,
+  managed hash/drift, render/apply rewrite preserving `[[dirs]]`)
+- Integration: `tests/wizard.rs` (non-interactive authoring, force/drift)
 
 ### Docs checklist
 
-- [ ] `instructions.md` — wizard walkthrough
-- [ ] This plan + evo-repo open points resolution
+- [x] `instructions.md` — wizard walkthrough
+- [x] `project-structure.md` — `wizard.rs` in layout
+- [x] `AGENTS.md` — status, module, roadmap
+- [x] `recipes.md` — strategy defaults used by wizard
+- [x] This plan — status + resume notes + open decisions
 
 ### Gate
 
@@ -818,14 +875,49 @@ just ci
 
 ### Resume notes
 
-*(fill when done)*
+**Completed 2026-07-24.** Restart from Phase 9 (crate split) when ready.
+
+#### Files added/changed
+
+| Path | Role |
+|------|------|
+| `src/wizard.rs` | Engine: `WizardRequest` / `WizardResult` / `DriftStatus`, normalize_home, parse_tools_list, default_strategy_for, tools_from_detect, expand_bundle / parse_bundle, managed hash, render/apply, state.toml |
+| `src/cli/mod.rs` | `@cage new` / `edit` flags, detect table first, interactive (dialoguer) vs `--yes` / `--preview`, security notes, optional `--verify` |
+| `src/lib.rs` | `pub mod wizard` |
+| `tests/wizard.rs` | Integration: non-interactive write, drift / `--force` |
+| `Cargo.toml` | `toml_edit` (always); `dialoguer` under `cli` feature |
+| Docs | instructions, AGENTS, project-structure, recipes, this plan |
+
+#### Behaviour locked
+
+1. **Detect first** — every `@cage new`/`edit` prints the detect table (even with `--yes`).
+2. **Interactive** — TTY + not `--yes` → dialoguer prompts; non-TTY requires `--yes` or `--preview`.
+3. **Managed sections** — `[toolchains.*]` marked `# isol8:managed`; wizard rewrites them wholesale on edit; `[[dirs]]` and unknown keys preserved via `toml_edit`.
+4. **Drift** — hash of managed toolchain content stored in `~/.config/isol8/state.toml`; hand-edited toolchains refuse rewrite without `--force` (also when state is missing for an existing file on edit).
+5. **`managed` home** — `--home managed` → `home = "@managed/<cage_name>"`.
+6. **Bundles** — offline only (`kind = "bundle"` TOML from registry cache or path); no auto fetch.
+7. **Security preview** — prints notes for recipe strategies that grant **rw** on `#HOME` before write.
+8. **CLI surface:**
+
+```
+isol8 @cage new <NAME> [--yes] [--home inherit|ephemeral|managed|PATH]
+  [--tools nvm,cargo:share] [--dir PATH]... [--from bundles/…|path.toml]
+  [--force] [--preview] [--verify] [--path DIR] [--profiles a,b]
+isol8 @cage edit <NAME> [same flags]
+```
+
+#### Follow-ups
+
+- Full TUI, `@cage clone`, `@cage fix` (not planned for Phase 9)
+- Auto registry fetch (explicit `@registry update` remains the gate)
+- Phase 9 crate split (`isol8-core` / `-registry` / `-cli`)
 
 ---
 
 ## Phase 9 — Crate split
 
 **Status:** pending  
-**Depends on:** Phase 7 (boundaries proven)  
+**Depends on:** Phase 7–8 (boundaries proven)  
 **evo-repo:** §7.1, §10 step 9  
 **Goal:** Clean API seams without behavior change.
 
@@ -959,3 +1051,5 @@ No recipes, no materialization changes, no new dependencies.
 | 2026-07-24 | Phase 4 done: `@cage detect` / `verify`, `run_captured`, trust gate |
 | 2026-07-24 | Phase 5 done: shared analyze layer, `--analyze`, NDJSON feed; Win hook deferred |
 | 2026-07-24 | Phase 6 done: macOS log stream/show scrape, `--author` Seatbelt trace |
+| 2026-07-24 | Phase 7 done: offline registries (`src/registry.rs`), `@registry`, lockfile, trust, install diff |
+| 2026-07-24 | Phase 8 done: cage wizard (`src/wizard.rs`), `@cage new`/`edit`, managed sections, drift, bundles offline |

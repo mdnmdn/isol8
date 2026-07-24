@@ -29,7 +29,7 @@ required-features = ["field-test"]
 default = ["cli"]
 # The CLI binary's arg parsing + YAML config; an embedder using only the engine API
 # can drop these with `default-features = false`.
-cli = ["dep:clap", "dep:serde_yaml"]
+cli = ["dep:clap", "dep:serde_yaml", "dep:dialoguer"]
 # Builds the dev-only isol8-field-test binary; excluded from `cargo install`.
 field-test = []
 
@@ -38,9 +38,11 @@ clap = { version = "4", features = ["derive"], optional = true }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 serde_yaml = { version = "0.9", optional = true }
+dialoguer = { version = "0.11", optional = true }
 anyhow = "1"
 thiserror = "1"
 serde_json = "1"
+toml_edit = "0.22"
 
 [build-dependencies]
 # build.rs only walks profiles/; no extra deps needed.

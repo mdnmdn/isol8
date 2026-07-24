@@ -82,6 +82,15 @@ Standard `cargo test`. Keep them deterministic and platform-independent:
   same-named built-in layers and adds new ones. (`tests/profile_path.rs`)
 - **Filters & auto-selection** — executable/OS/arch constraints, `[[policies]]`
   folding, and `auto_profiles` behaviour. (`src/filter.rs`, `tests/profile_filters.rs`)
+- **Cages** — TOML load, discovery, Spec overlay. (`src/cage.rs`, `tests/cage.rs`)
+- **Recipes** — strategy compile, disjoint filters, builtins.
+  (`src/recipe.rs`, `tests/recipe.rs`)
+- **Registry** — DirSource, lockfile, install diff, offline recipe load.
+  (`src/registry.rs`, `tests/registry.rs`, `tests/fixtures/registry/`)
+- **Wizard** — managed sections, drift, non-interactive golden TOML.
+  (`src/wizard.rs`, `tests/wizard.rs`)
+- **Detect / verify / analyze** — probes, trust gate, NDJSON collapse/match.
+  (`src/detect.rs`, `src/analyze.rs`, `tests/detect_verify.rs`, `tests/analyze.rs`)
 
 These must pass on Linux, macOS, WSL2, and Windows alike — no real sandboxing
 involved, so they are the portable backbone of CI.

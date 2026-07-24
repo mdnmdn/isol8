@@ -2,9 +2,11 @@
 
 How to use `isol8` to confine commands, inspect policies, and manage profiles.
 
-> **Platform:** sandbox **enforcement** works on **macOS 12+** (via `sandbox-exec`).
-> On Linux and other OSes you can still inspect policies with `--show-policies` and
-> `--show-profiles`; running confined commands requires a working backend on that OS.
+> **Platform:** sandbox **enforcement** works on **macOS 12+** (Seatbelt /
+> `sandbox-exec`) and **Linux** (Landlock; WSL2 kernel 5.15 verified). Windows
+> AppContainer is a draft (compile + spawn; path grants not yet enforcing — see
+> [`windows-support.md`](./windows-support.md)). Use `--show-policies` /
+> `--show-profiles` on any OS to inspect the resolved policy without spawning.
 
 ---
 
@@ -25,8 +27,8 @@ a confined program name:
 isol8 @<meta-command> [OPTIONS] [ARGS]...
 ```
 
-Common meta commands: `@init`, `@profiles-list`, `@profiles-show`, `@cage`, `@diag`,
-`@version`.
+Common meta commands: `@init`, `@profiles-list`, `@profiles-show`, `@cage`,
+`@registry`, `@diag`, `@version`.
 
 ---
 
@@ -123,6 +125,8 @@ When a flag accepts a path or profile name, you can repeat it.
 | `isol8 @init` | Create a default config file. |
 | `isol8 @profiles-list` | List all profile layers and their source (builtin, user config, profile-path). |
 | `isol8 @profiles-show <NAME>` | Dump one layer as TOML (e.g. `base`, `agents/claude-code`). |
+| `isol8 @cage …` | Cage admin (list / show / new / edit / detect / verify). See [Cages](#cages-named-selection-units). |
+| `isol8 @registry …` | Recipe registries (list / update / install / show / verify). See [Registries](#registries-offline-recipe-sources). |
 | `isol8 @diag <CMD>...` | Diagnose why a confined command aborts at launch (SIGABRT / exit 134) and report the missing path grant. macOS only. |
 
 Unknown `@` commands print a short hint and exit with an error.
@@ -365,8 +369,8 @@ See [`wip/multi-evo-plan.md`](./wip/multi-evo-plan.md) Phase 1 and
 [`inbox/evo-repo.md`](./inbox/evo-repo.md) §3.
 
 ```sh
-# create a cage file under ~/.config/isol8/cages/
-isol8 @cage new work --home inherit
+# create / edit a cage (wizard — see below)
+isol8 @cage new work --home managed --tools nvm,cargo --yes
 isol8 @cage list
 isol8 @cage show work
 
@@ -375,13 +379,19 @@ isol8 -c work --show-policies -- echo hi
 isol8 --cage work claude
 ```
 
-**Cage file** (`~/.config/isol8/cages/work.toml` or `./.isol8/cages/work.toml`):
+**Cage file** (`~/.config/isol8/cages/work.toml` or project-local via `--path`):
 
 ```toml
 schema = 1
 name = "work"
-home = "inherit"          # inherit | ephemeral | @managed/<id> | /path/to/home
+home = "@managed/work"    # inherit | ephemeral | @managed/<id> | /path/to/home
 profiles = []             # empty → config default_profiles; non-empty replaces them
+
+# isol8:managed — rewritten by `@cage edit`
+[toolchains.nvm]
+strategy = "link"
+
+# user-owned dirs (wizard preserves these on edit):
 # [[dirs]]
 # path = "~/work/acme"
 # access = "rw"
@@ -406,6 +416,64 @@ profiles = []             # empty → config default_profiles; non-empty replace
 
 **Precedence:** existing CLI flags (`--profile`, `--home`, `--add-dirs-*`) override
 the cage. Config defaults fill whatever is still empty after the cage.
+
+### Cage wizard (`@cage new` / `@cage edit`)
+
+Authors a cage TOML with managed `[toolchains.*]` sections, optional project
+dirs, and drift protection so re-runs do not silently clobber hand edits.
+
+```sh
+# Interactive (TTY): prompts for home, toolchains, optional project dir
+isol8 @cage new work
+
+# Non-interactive (CI / scripts): --yes required when not a TTY
+isol8 @cage new work --yes --home managed --tools nvm,cargo:share --dir ~/proj
+
+# Preview only (no write)
+isol8 @cage new work --preview --home managed --tools nvm
+
+# Seed from an offline bundle (registry cache or .toml path)
+isol8 @cage new work --from bundles/polyglot-agent --yes
+isol8 @cage new work --from ./my-bundle.toml --yes
+
+# Project-local cage file
+isol8 @cage new work --path ./.isol8/cages --yes --home managed
+
+# Re-run safely: rewrites managed toolchains; preserves [[dirs]]
+isol8 @cage edit work --tools nvm,cargo,maven --yes
+# Hand-edited [toolchains.*] → refuse unless --force
+isol8 @cage edit work --tools nvm --yes --force
+
+# Optional smoke test after write
+isol8 @cage new work --yes --home managed --tools nvm --verify
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--yes` / `-y` | Non-interactive; accept flags / defaults |
+| `--home` | `inherit` \| `ephemeral` \| `managed` (→ `@managed/<name>`) \| path |
+| `--tools` | Comma list: `nvm,cargo:share` (bare id → recipe `default_strategy` or heuristics) |
+| `--dir` | Extra `[[dirs]]` path with `rw` (repeatable); user-owned on edit |
+| `--from` | Bundle id (`bundles/…`, `official:bundles/…`) or filesystem `.toml` |
+| `--profiles` | Comma-separated profile layers |
+| `--path` | Output directory for the cage file (default: `~/.config/isol8/cages/`) |
+| `--force` | Overwrite existing / ignore managed-section drift |
+| `--preview` | Print generated TOML only (does not write) |
+| `--verify` | Run `@cage verify` after a successful write |
+
+**Behaviour notes**
+
+- Always prints the `@cage detect` table first (even with `--yes`).
+- Interactive when stdin/stdout are a TTY and `--yes` is not set; otherwise
+  non-interactive requires `--yes` or `--preview`.
+- Without `--tools` in non-interactive mode, every **found** detect hit is
+  selected with default strategies.
+- Managed sections are marked `# isol8:managed`. Hashes live in
+  `~/.config/isol8/state.toml`. Hand-edited toolchains need `--force` to rewrite.
+- Before write, security-relevant **rw** grants on real home (`#HOME`) from the
+  chosen strategies are printed.
+- `home = inherit` with toolchains is allowed: grants still apply;
+  materialization under `~` targets the **real** home (warning).
 
 ### Home materialization (plan / apply)
 
@@ -444,7 +512,8 @@ isol8 -c work --show-policies -- node --version
 ```
 
 Built-ins: `toolchains/nvm`, `toolchains/cargo`, `toolchains/maven` (under
-`recipes/`). User overlays: `~/.config/isol8/recipes/`.
+`recipes/`). User overlays: `~/.config/isol8/recipes/`. Offline registry caches
+(see [Registries](#registries-offline-recipe-sources)) load by bare id as well.
 
 ### `@cage detect` — discover toolchains (read-only)
 
@@ -474,8 +543,40 @@ isol8 @cage verify work
 ```
 
 Cage resolution matches normal runs (name arg, discovery, or default). Recipes
-without `verify.cmd` are skipped. Builtin and local recipes may run version/verify
-commands; remote registry sources (Phase 7) will need an explicit trust gate.
+without `verify.cmd` are skipped. Builtin, local-path, and **official/local
+registry** recipes may run version/verify commands; **community** and
+**untrusted** registry recipes block those host commands (path probes still run).
+
+### Registries (offline recipe sources)
+
+Named recipe sources configured under `[registries.<name>]` in `isol8.toml`.
+Runs never fetch over the network; use `@registry update` (or install when the
+cache is empty) to populate the cache and write `isol8.lock`. Full detail:
+[`registry.md`](./registry.md).
+
+```toml
+[registries.official]
+git = "https://github.com/example/isol8-recipes.git"
+ref = "main"
+trust = "official"          # optional; git default is community
+
+[registries.scratch]
+path = "~/src/isol8-recipes"  # default trust: local
+```
+
+```sh
+isol8 @registry list
+isol8 @registry update                 # fetch/refresh + write isol8.lock
+isol8 @registry install                # offline open (or fetch), print diff, pin lock
+isol8 @registry install --strict       # fail on forbidden/ceiling flags
+isol8 @registry show toolchains/sample
+isol8 @registry verify                 # lockfile vs on-disk cache
+```
+
+Lockfile discovery: `./isol8.lock`, else `~/.config/isol8/isol8.lock`
+(`--lockfile PATH` overrides). Git content caches under
+`~/.cache/isol8/registries/<name>/<pin>/` (or `XDG_CACHE_HOME`). HTTP registries
+are not implemented yet.
 
 ### `--analyze` — denial → recipe suggestions
 
@@ -510,7 +611,8 @@ holes (SIGABRT); `--analyze` records **runtime** denials from the unified log.
 
 Reports *observed* denials only — not an audit of every access. Does not edit cages.
 
-**Not yet:** remote registry, interactive wizard — later evolution phases.
+**Not yet:** full TUI / `@cage clone` / `@cage fix`, HTTP registries / signing,
+auto registry fetch on wizard seed (run `@registry update` first).
 
 ---
 

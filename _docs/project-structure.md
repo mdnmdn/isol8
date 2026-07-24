@@ -22,9 +22,11 @@
 > - A `src/lib.rs` re-exports the public API; `tests/` share the crate.
 > - `home.rs`, `env.rs`, `backends/{macos,linux}.rs`, and the `isol8-field-test` bin
 >   are real; `net/`, `caps.rs`, and the N3 helper are still future.
-> - **Evolution track:** Phases 1–3 landed — cages, Context/HomePlan, and
->   **recipes/strategies** (`src/recipe.rs`, embedded `recipes/**/*.toml`). Still
->   open: macOS/Linux live observe (Phases 6/10), registry, wizard. Sequencing:
+> - **Evolution track:** Phases 1–8 landed — cages, Context/HomePlan,
+>   recipes/strategies, detect/verify, shared + macOS `--analyze`, offline
+>   registries (`src/registry.rs`, `@registry`, `isol8.lock`), and **cage wizard**
+>   (`src/wizard.rs`, `@cage new`/`edit`). Still open: crate split (Phase 9),
+>   Linux shadow observe (Phase 10). Sequencing:
 >   [`wip/multi-evo-plan.md`](./wip/multi-evo-plan.md) (design:
 >   [`inbox/evo-repo.md`](./inbox/evo-repo.md)).
 >
@@ -68,12 +70,17 @@ isol8/
 │   │   ├── config.rs           # isol8.toml/yaml discovery, ISOL8_* overrides, init template
 │   │   └── diag.rs             # @diag delta-debug helper (macOS)
 │   ├── filter.rs               # ProfileFilter matching, apply_layer_filter, policies fold
-│   ├── resolve.rs              # effective_policy(&Spec) shared by run + policies show
+│   ├── resolve.rs              # effective_policy(&Spec) shared by run + --show-policies
 │   ├── profile.rs              # Profile, Policy, LayerRegistry, merge, resolve_requires
 │   ├── cage.rs                 # Cage selection → Spec overlay (Phase 1 evolution)
 │   ├── context.rs              # Injectable Context (real_home, cwd, platform, managed_root)
 │   ├── plan.rs                 # HomePlan plan/apply (link/mkdir/seed-ro/copy)
 │   ├── recipe.rs               # Recipe registry + strategy compile (Phase 3)
+│   ├── registry.rs             # Offline registries: DirSource, lockfile, trust, @registry (Phase 7)
+│   ├── detect.rs               # @cage detect / verify + commands_trusted (Phase 4)
+│   ├── wizard.rs               # @cage new/edit: managed toolchains, drift, bundles (Phase 8)
+│   ├── analyze.rs              # shared --analyze denial → recipe suggestions (Phase 5)
+│   ├── analyze_macos.rs        # macOS unified-log scrape + --author (Phase 6)
 │   ├── env.rs                  # sanitized environment construction (HOME first)
 │   ├── home.rs                 # R4 effective-home resolution + plan wiring
 │   ├── spawn.rs                # (target) cross-platform child exec — not split out yet
@@ -90,13 +97,14 @@ isol8/
 └── tests/
     ├── profile_merge.rs        # deny-first merge + inheritance
     ├── profile_path.rs         # profile-path overlay + auto-profile selection
+    ├── wizard.rs               # non-interactive @cage authoring / drift (Phase 8)
     └── integration_linux.rs    # (target) Linux enforcement harness
 ```
 
 **Embeddable crate.** All engine modules (`error`, `sandbox`, `profile`, `env`, `home`,
-`filter`, `resolve`, `backends`) are `pub` and re-exported from `src/lib.rs`. The CLI
-(clap + serde_yaml) is behind the default-on `cli` feature; embedders use
-`default-features = false` to get the engine only.
+`filter`, `resolve`, `backends`, `wizard`, …) are `pub` from `src/lib.rs` (key types
+re-exported). The CLI (clap + serde_yaml + dialoguer) is behind the default-on `cli`
+feature; embedders use `default-features = false` to get the engine only.
 
 **Two binaries.** `isol8` (main, always unprivileged; `required-features = ["cli"]`) and
 `isol8-net-helper` (Phase 3, file-capability `cap_net_admin+ep`). The helper
@@ -134,7 +142,8 @@ resolve::effective_policy(&Spec)          ← also called directly by Sandbox::r
    │     fold matching [[policies]] into layer
    ├─ Context::from_environment()          ── real_home, cwd, platform, managed_root
    ├─ recipe::RecipeRegistry::load + compile_all(spec.toolchains)
-   │                                          → home_ops + path grants + env
+   │     builtins → ~/.config/isol8/recipes → offline registry dirs (registry::discover_*)
+   │     → home_ops + path grants + env   (no network; missing git caches skipped)
    ├─ home::resolve(&spec+recipe_ops, …)   ── R4: effective $HOME FIRST; @managed/<id>;
    │                                          HomePlan (mkdir + seed-ro + recipe/spec ops)
    ├─ profile::load_merged()               ── ~ + #HOME expansion, --add-dirs-* override layer, merge
@@ -291,7 +300,7 @@ Discovery: `ISOL8_CONFIG_PATH` (file or dir) → `./isol8.toml|yaml` →
 ### `resolve.rs`
 
 `effective_policy(&RunArgs) -> EffectivePolicy` — shared pipeline for `run`,
-`policies show`, and `--dry-run`. `EffectivePolicy.layer_names` is the resolved
+`--show-policies`, and `--dry-run`. `EffectivePolicy.layer_names` is the resolved
 (deps-first) stack tagged with `LayerOrigin` (`Explicit` / `Auto` / `Required`) so
 `--show-policies` shows *why* each layer contributes. `parse_set_env(&[String])`
 parses `--set-env K=V` pairs (errors on a missing `=`, no silent drop) before
@@ -405,7 +414,7 @@ main sandboxed process into the prepared namespace.
   main binary never escalates.
 - **Single binary, no daemons.** No persistent state; scratch homes are temp dirs
   cleaned on exit.
-- **Trust via transparency.** `--dry-run` / `isol8 policies show` render the layer
+- **Trust via transparency.** `--dry-run` / `--show-policies` render the layer
   stack and exact effective policy; `isol8 profiles resolve` shows which layers matched.
 - **Config precedence.** Built-in defaults < config file < `ISOL8_*` env < CLI flags.
 - **Profile-path overlay.** External dirs/files override same-named built-in layers;
