@@ -4,7 +4,7 @@
 
 filter = { executables = ["opencode"] }
 
-requires = ["macos/system-runtime"]
+requires = ["macos/system-runtime", "integrations/macos-gui"]
 
 paths = [
   { path = "~/.opencode/bin/opencode", access = "rw", match = "prefix" },

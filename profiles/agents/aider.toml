@@ -4,7 +4,7 @@
 
 filter = { executables = ["aider"] }
 
-requires = ["macos/system-runtime", "integrations/git", "toolchains/python"]
+requires = ["macos/system-runtime", "integrations/git", "toolchains/python", "integrations/macos-gui"]
 
 paths = [
   { path = "~/.local/bin/aider", access = "rw", match = "prefix" },

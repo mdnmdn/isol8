@@ -4,7 +4,7 @@
 
 filter = { executables = ["amp"] }
 
-requires = ["integrations/clipboard"]
+requires = ["integrations/clipboard", "integrations/macos-gui"]
 
 paths = [
   { path = "~/.amp/bin/amp", access = "rw", match = "literal" },

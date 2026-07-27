@@ -57,6 +57,7 @@ isol8/                              # Cargo workspace (resolver = "2")
 │   │       ├── plan.rs             # HomePlan plan/apply
 │   │       ├── cage.rs             # Cage selection → Spec overlay
 │   │       ├── recipe.rs           # Recipe registry + strategy compile;
+│   │       │                       #   path_prepend globs, per-source override;
 │   │       │                       #   set_offline_registry_provider hook
 │   │       ├── detect.rs           # @cage detect / verify + commands_trusted
 │   │       ├── analyze.rs          # shared --analyze denial → recipe suggestions
@@ -76,7 +77,8 @@ isol8/                              # Cargo workspace (resolver = "2")
 │           ├── wizard.rs           # @cage new/edit managed sections, drift, bundles
 │           ├── cli/
 │           │   ├── mod.rs          # pub fn main(); run + meta commands
-│           │   ├── config.rs       # isol8.toml/yaml, ISOL8_*, [registries.*]
+│           │   ├── config.rs       # isol8.toml/yaml, markers, ISOL8_*, [registries.*]
+│           │   │                   # see _docs/config.md
 │           │   └── diag.rs         # @diag (macOS)
 │           └── bin/
 │               └── isol8-field-test.rs
@@ -145,8 +147,9 @@ file-capability `cap_net_admin+ep`). The main binary never needs root.
 cli::Cli::parse()  [feature = "cli"]
    │  ProfileOpts { cage, profiles, profile_paths, auto_profiles, add_dirs_rw/ro, home, … }
    ▼
-cli::config::load()                      ── isol8.toml/yaml (cwd, ISOL8_CONFIG_PATH,
-   │  Config { default_profiles, auto_profiles, profile_paths, cage, … }   or ~/.config/isol8/)
+cli::config::load()                      ── ISOL8_CONFIG_PATH | project markers
+   │  Config { default_profiles, auto_profiles, profile_paths, cage, … }   (config_path / merge)
+   │                                           | ~/.config/isol8/
    ▼
 cage::resolve + apply_cage_to_opts()     ── --cage / ISOL8_CAGE / config cage / .isol8 discovery
    │  fills empty opts fields only (CLI already set wins)
@@ -161,21 +164,27 @@ resolve::effective_policy(&Spec)          ← also called directly by Sandbox::r
    │     builtin (build.rs embed) → user config dir → profile-path overlays
    │
    ├─ filter::RunContext::from_cmd(&cmd)
+   ├─ recipe::RecipeRegistry::load + compile_all(spec.toolchains)
+   │     builtins → ~/.config/isol8/recipes → offline registry dirs
+   │     (isol8_registry::discover_* via recipe provider hook; later source
+   │      replaces an overlapping variant of the same id)
+   │     → home_ops + path grants + env + path_prepend + layer `requires`
    ├─ profile::select_layer_names()        ── default_profiles + --profile + auto_profiles
    │     (executable filter match on layer.filter.executables)
+   │     + recipe `requires` appended (provenance: required)
    ├─ profile::resolve_requires()           ── transitive requires, cycle detect, dedup
    ├─ filter::apply_layer_filter() per layer   ── skip grants when os/arch/executable mismatch;
    │     fold matching [[policies]] into layer
    ├─ Context::from_environment()          ── real_home, cwd, platform, managed_root
-   ├─ recipe::RecipeRegistry::load + compile_all(spec.toolchains)
-   │     builtins → ~/.config/isol8/recipes → offline registry dirs
-   │     (isol8_registry::discover_* via recipe provider hook)
-   │     → home_ops + path grants + env   (no network; missing git caches skipped)
+   │                                          (recipes already compiled above; no
+   │                                           network, missing git caches skipped)
    ├─ home::resolve(&spec+recipe_ops, …)   ── R4: effective $HOME FIRST; @managed/<id>;
    │                                          HomePlan (mkdir + seed-ro + recipe/spec ops)
    ├─ profile::load_merged()               ── ~ + #HOME expansion, --add-dirs-* override layer, merge
    │                                          + recipe path grants + expanded recipe env
-   └─ env::build_minimal()                 ── R3.1 allowlist, HOME first, then --env-pass / --set-env
+   ├─ env::build_minimal()                 ── R3.1 allowlist, HOME first, then --env-pass / --set-env
+   └─ apply_path_prepend()                 ── recipe path_prepend → front of PATH
+                                              (globs resolved through planned links)
    │  EffectivePolicy { layer_names, profile, env, home, recipes }
    ▼
 backends::select()
@@ -320,9 +329,12 @@ pub struct Config {
 }
 ```
 
-Discovery: `ISOL8_CONFIG_PATH` (file or dir) → `./isol8.toml|yaml` →
-`~/.config/isol8/isol8.toml`. `ISOL8_PROFILE`, `ISOL8_PROFILE_PATH`,
-`ISOL8_ADD_DIRS_RW`, `ISOL8_HOME`, `ISOL8_DRY_RUN`, etc. mirror CLI flags.
+Discovery: `ISOL8_CONFIG_PATH` (file or dir; no local merge) → project markers
+(`isol8.toml` / `.isol8.toml` / `encage.toml` / `.encage.toml` with optional
+`config_path`, `ignore_global`, field overlay) → `~/.config/isol8/isol8.toml`.
+`@…` paths expand relative to the base config directory.
+`ISOL8_PROFILE`, `ISOL8_PROFILE_PATH`, `ISOL8_ADD_DIRS_RW`, `ISOL8_HOME`,
+`ISOL8_DRY_RUN`, etc. mirror CLI flags.
 
 ### `isol8-core` — `filter.rs`
 

@@ -1,6 +1,9 @@
 # integrations/macos-gui
 # Integration: macOS GUI Window server, AppKit, accessibility, input, and framework services
-# filter = { os = ["macos"] }  # macOS-only layer (filter not parsed yet)
+# Required by every agents/* layer: TUIs need HIToolbox, input methods and the
+# window server even when nothing renders a window.
+
+filter = { os = ["macos"] }
 
 requires = ["integrations/clipboard"]
 

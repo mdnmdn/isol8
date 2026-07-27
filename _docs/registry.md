@@ -158,7 +158,8 @@ configured directory is opened in place.
 Discovery order:
 
 1. `./isol8.lock` if present
-2. `./isol8.lock` if a project config (`isol8.toml` / yaml) is in the cwd (created on first update/install)
+2. `./isol8.lock` if a project config marker is in the cwd (`isol8.toml`,
+   `.isol8.toml`, `encage.toml`, … — created on first update/install)
 3. else `~/.config/isol8/isol8.lock` (or under `XDG_CONFIG_HOME`) for user-global registries
 
 Override with `--lockfile PATH` on `@registry` commands.

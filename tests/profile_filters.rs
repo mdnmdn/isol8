@@ -500,3 +500,43 @@ fn confine_executable_absolutizes_and_grants_binary() {
         effective.profile.paths
     );
 }
+
+/// Every agent layer pulls `integrations/macos-gui`: TUIs need HIToolbox, input
+/// methods and the window server even when nothing renders a window.
+#[test]
+fn every_agent_layer_requires_macos_gui() {
+    let registry = LayerRegistry::load(&[]).unwrap();
+    let mut agents: Vec<String> = registry
+        .list()
+        .into_iter()
+        .map(|(n, _)| n)
+        .filter(|n| n.starts_with("agents/"))
+        .collect();
+    agents.sort();
+    assert!(!agents.is_empty(), "expected builtin agents/* layers");
+    for name in &agents {
+        let layer = registry.get(name).unwrap();
+        assert!(
+            layer.requires.iter().any(|r| r == "integrations/macos-gui"),
+            "{name} does not require integrations/macos-gui"
+        );
+    }
+    // And it actually lands in a resolved stack.
+    let run = cli::run_from(
+        ProfileOpts {
+            profiles: vec!["base".into(), agents[0].clone()],
+            auto_profiles: false,
+            ..Default::default()
+        },
+        vec!["echo".into(), "hi".into()],
+    );
+    let effective = resolve::effective_policy(&run).unwrap();
+    assert!(
+        effective
+            .layer_names
+            .iter()
+            .any(|(n, _)| n == "integrations/macos-gui"),
+        "layers: {:?}",
+        effective.layer_names
+    );
+}

@@ -328,3 +328,71 @@ pathz = [{ path = "/a", access = "ro" }]
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Registry-schema recipe: `requires` joins the layer stack and `path_prepend`
+/// lands at the front of PATH (globs expanded against the real home).
+#[test]
+fn recipe_requires_and_path_prepend_apply() {
+    if matches!(std::env::consts::OS, "windows") {
+        return;
+    }
+    let dir = tmp_dir();
+    let real_home = std::env::var("HOME").unwrap();
+    let shims = PathBuf::from(&real_home).join(".isol8-test-shims/v1/bin");
+    std::fs::create_dir_all(&shims).unwrap();
+
+    std::fs::write(
+        dir.join("tool.toml"),
+        r##"
+schema = 1
+id = "toolchains/pp-test"
+kind = "recipe"
+summary = "path_prepend fixture"
+tags = ["test"]
+requires = ["integrations/git"]
+
+[strategies.link]
+summary = "link"
+paths = [{ path = "#HOME/.isol8-test-shims", access = "ro" }]
+path_prepend = ["#HOME/.isol8-test-shims/*/bin", "~/.local/bin"]
+"##,
+    )
+    .unwrap();
+
+    let home = dir.join("home");
+    let spec = Spec {
+        profiles: vec!["base".into()],
+        home: Some(home.to_string_lossy().into_owned()),
+        recipe_paths: vec![dir.to_string_lossy().into_owned()],
+        toolchains: vec![ToolchainChoice {
+            id: "toolchains/pp-test".into(),
+            strategy: StrategyName::Link,
+        }],
+        cmd: vec!["echo".into(), "hi".into()],
+        ..Default::default()
+    };
+    let dry = sandbox::dry_run(&spec).unwrap();
+
+    // `requires` pulled the layer in (tagged as required, not explicit).
+    assert!(
+        dry.layer_names.iter().any(|(n, _)| n == "integrations/git"),
+        "layers: {:?}",
+        dry.layer_names.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    let path = dry.env.get("PATH").cloned().unwrap_or_default();
+    let entries: Vec<&str> = path.split(':').collect();
+    assert_eq!(
+        entries.first().copied(),
+        Some(shims.to_string_lossy().as_ref()),
+        "PATH: {path}"
+    );
+    assert_eq!(
+        entries.get(1).copied(),
+        Some(home.join(".local/bin").to_string_lossy().as_ref()),
+        "PATH: {path}"
+    );
+
+    std::fs::remove_dir_all(PathBuf::from(&real_home).join(".isol8-test-shims")).ok();
+    std::fs::remove_dir_all(&dir).ok();
+}

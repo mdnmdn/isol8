@@ -4,7 +4,7 @@
 
 filter = { executables = ["copilot"] }
 
-requires = ["integrations/keychain"]
+requires = ["integrations/keychain", "integrations/macos-gui"]
 
 paths = [
   { path = "~/.local/bin/copilot", access = "rw", match = "prefix" },

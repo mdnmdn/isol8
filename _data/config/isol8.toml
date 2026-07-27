@@ -1,0 +1,9 @@
+# isol8 test config — selected via repo-root `.isol8.toml` (`config_path = "./_data/config"`)
+# or explicitly with ISOL8_CONFIG_PATH=./_data/config
+default_profiles = ["base", "macos/system-runtime"]
+auto_profiles = true
+
+# Local policy repository (path registry; trust defaults to "local").
+# Relative to the cwd isol8 runs in — repo root. Use @/… for paths relative to this config dir.
+[registries.policy]
+path = "./_tmp/policy-repository"

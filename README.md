@@ -100,8 +100,19 @@ for examples and configuration.
 
 ## Configuration
 
-Config file search order: `ISOL8_CONFIG_PATH` → `./isol8.toml` →
-`~/.config/isol8/isol8.toml`.
+Full reference: [`_docs/config.md`](_docs/config.md).
+
+Config discovery order:
+
+1. `ISOL8_CONFIG_PATH` (file or directory) — absolute override
+2. Project marker in cwd: `isol8.toml`, `.isol8.toml`, `encage.toml`, `.encage.toml`
+   - `config_path = "./_data/config"` redirects the global base (like the env var)
+   - `ignore_global = true` uses only the local file
+   - other fields merge onto the base (local wins)
+3. OS default: `~/.config/isol8/isol8.toml` (`$XDG_CONFIG_HOME/isol8/` when set)
+
+Paths starting with `@` are relative to the config directory
+(e.g. `profile_paths = ["@/profiles"]`).
 
 ```toml
 default_profiles = ["base", "macos/system-runtime"]
@@ -158,6 +169,7 @@ let code = isol8::Sandbox::new()
 | Doc | Contents |
 |-----|----------|
 | [`_docs/instructions.md`](_docs/instructions.md) | CLI, cages, wizard, registries, analyze |
+| [`_docs/config.md`](_docs/config.md) | Config discovery, parameters, markers, env |
 | [`_docs/profile-model.md`](_docs/profile-model.md) | Profile format, filters, merge |
 | [`_docs/recipes.md`](_docs/recipes.md) | Recipes & strategies |
 | [`_docs/registry.md`](_docs/registry.md) | Offline registries & trust |

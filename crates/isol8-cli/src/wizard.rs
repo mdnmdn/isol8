@@ -760,6 +760,15 @@ pub fn preview_security_notes(tools: &[ToolchainChoice], reg: &RecipeRegistry) -
         let Ok(contrib) = reg.compile(tc, &ctx) else {
             continue;
         };
+        // A strategy that knows it exceeds the trust ceiling says so; show that
+        // sentence verbatim rather than re-deriving it from the grants.
+        if let Some(danger) = &contrib.danger {
+            notes.push(format!(
+                "{danger} ({}, strategy {})",
+                recipe.id,
+                tc.strategy.as_str()
+            ));
+        }
         for g in &contrib.paths {
             if matches!(g.access, Access::Rw) && g.path.starts_with("#HOME") {
                 notes.push(format!(

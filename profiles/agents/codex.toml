@@ -4,7 +4,7 @@
 
 filter = { executables = ["codex"] }
 
-requires = ["integrations/keychain"]
+requires = ["integrations/keychain", "integrations/macos-gui"]
 
 paths = [
   { path = "~/.local/bin/codex", access = "rw", match = "prefix" },

@@ -83,12 +83,21 @@ pub struct Verify {
 pub struct Strategy {
     /// Platform selector for this body; `None` matches every run context.
     pub filter: Option<ProfileFilter>,
+    /// One-line description of this choice (shown by the wizard).
+    pub summary: String,
+    /// Why this strategy exceeds the usual trust ceiling, when it does. Surfaced
+    /// as a security note before a cage is written; never suppresses the grant.
+    pub danger: Option<String>,
     /// Home materialization ops (tokens still present).
     pub home: Vec<HomeOpSpec>,
     /// Path grants (tokens still present).
     pub paths: Vec<PathGrant>,
     /// Env defaults (values may contain `~` / `#HOME` tokens).
     pub env: HashMap<String, String>,
+    /// Directories prepended to `PATH` inside the sandbox (tokens still present,
+    /// `*` segment globs allowed). Version managers resolve through shims, which
+    /// a single-scalar `env` entry cannot express.
+    pub path_prepend: Vec<String>,
 }
 
 /// A loaded recipe document.
@@ -100,6 +109,11 @@ pub struct Recipe {
     pub id: String,
     /// One-line summary.
     pub summary: String,
+    /// Free-form labels for wizard grouping and registry search.
+    pub tags: Vec<String>,
+    /// Profile layers this recipe needs in the stack (same semantics as a
+    /// layer's own `requires`); pulled in when the recipe is applied.
+    pub requires: Vec<String>,
     /// Platform selector (authoritative; filename is convention only).
     pub filter: Option<ProfileFilter>,
     /// Optional detection.
@@ -158,6 +172,12 @@ pub struct RecipeContribution {
     pub paths: Vec<PathGrant>,
     /// Env defaults (unexpanded values).
     pub env: HashMap<String, String>,
+    /// `PATH` entries to prepend (unexpanded tokens, `*` globs unresolved).
+    pub path_prepend: Vec<String>,
+    /// Profile layers the recipe requires in the stack.
+    pub requires: Vec<String>,
+    /// Danger note declared by the chosen strategy, if any.
+    pub danger: Option<String>,
 }
 
 // --- TOML wire format ---
@@ -172,6 +192,10 @@ struct RecipeFile {
     kind: String,
     #[serde(default)]
     summary: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    requires: Vec<String>,
     #[serde(default)]
     filter: Option<ProfileFilter>,
     #[serde(default)]
@@ -223,11 +247,17 @@ struct StrategyFile {
     #[serde(default)]
     filter: Option<ProfileFilter>,
     #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    danger: Option<String>,
+    #[serde(default)]
     home: Vec<HomeOpFile>,
     #[serde(default)]
     paths: Vec<PathGrantFile>,
     #[serde(default)]
     env: HashMap<String, String>,
+    #[serde(default)]
+    path_prepend: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -345,9 +375,12 @@ pub fn parse_recipe(body: &str, source: &str) -> Result<Recipe> {
                 .collect();
             variants.push(Strategy {
                 filter: body.filter,
+                summary: body.summary,
+                danger: body.danger,
                 home,
                 paths,
                 env: body.env,
+                path_prepend: body.path_prepend,
             });
         }
         // Ambiguity is an error, not a precedence question: if two bodies could
@@ -405,6 +438,8 @@ pub fn parse_recipe(body: &str, source: &str) -> Result<Recipe> {
         schema: file.schema,
         id: file.id,
         summary: file.summary,
+        tags: file.tags,
+        requires: file.requires,
         filter: file.filter,
         detect,
         verify,
@@ -501,12 +536,18 @@ impl RecipeRegistry {
         registry_dirs: &[(String, PathBuf)],
     ) -> Result<Self> {
         let mut reg = Self::default();
+
+        let mut builtins = Self::default();
         for (id, body) in BUILTIN_RECIPES {
             let r = parse_recipe(body, &format!("builtin:{id}"))?;
-            reg.insert(r)?;
+            builtins.insert(r)?;
         }
+        reg.merge_stage(builtins)?;
+
         if let Some(dir) = user_recipes_dir() {
-            load_dir_into(&mut reg, &dir, None)?;
+            let mut stage = Self::default();
+            load_dir_into(&mut stage, &dir, None)?;
+            reg.merge_stage(stage)?;
         }
         for (label, dir) in registry_dirs {
             if dir.is_dir() {
@@ -515,21 +556,25 @@ impl RecipeRegistry {
                 } else {
                     Some(label.as_str())
                 };
-                load_dir_into(&mut reg, dir, prefix)?;
+                let mut stage = Self::default();
+                load_dir_into(&mut stage, dir, prefix)?;
+                reg.merge_stage(stage)?;
             }
         }
         for p in recipe_paths {
             let path = PathBuf::from(p);
+            let mut stage = Self::default();
             if path.is_dir() {
-                load_dir_into(&mut reg, &path, None)?;
+                load_dir_into(&mut stage, &path, None)?;
             } else if path.is_file() {
-                reg.insert(load_from_path(&path)?)?;
+                stage.insert(load_from_path(&path)?)?;
             } else {
                 return Err(Error::Message(format!(
                     "recipe path not found: '{}'",
                     path.display()
                 )));
             }
+            reg.merge_stage(stage)?;
         }
         reg.validate_disjoint()?;
         Ok(reg)
@@ -540,6 +585,23 @@ impl RecipeRegistry {
             .entry(recipe.id.clone())
             .or_default()
             .push(recipe);
+        Ok(())
+    }
+
+    /// Fold one load stage (builtins, user dir, one registry, one `--recipe-path`)
+    /// into this registry: a later stage **replaces** any variant it overlaps, so
+    /// a registry can ship a better `toolchains/cargo` than the embedded one.
+    /// Overlap *within* a stage stays an error — that one is an authoring mistake
+    /// with no ordering to resolve it.
+    fn merge_stage(&mut self, stage: RecipeRegistry) -> Result<()> {
+        stage.validate_disjoint()?;
+        for (id, variants) in stage.by_id {
+            let slot = self.by_id.entry(id).or_default();
+            for v in variants {
+                slot.retain(|e| !filters_overlap(e.filter.as_ref(), v.filter.as_ref()));
+                slot.push(v);
+            }
+        }
         Ok(())
     }
 
@@ -650,6 +712,9 @@ impl RecipeRegistry {
             home_ops: strategy.home.clone(),
             paths: strategy.paths.clone(),
             env: strategy.env.clone(),
+            path_prepend: strategy.path_prepend.clone(),
+            requires: recipe.requires.clone(),
+            danger: strategy.danger.clone(),
         })
     }
 
@@ -726,7 +791,13 @@ fn load_dir_rec(reg: &mut RecipeRegistry, dir: &Path, source_prefix: Option<&str
                 Err(e) => {
                     // Registry trees may contain profiles / future schema —
                     // skip unreadable TOML rather than failing the whole load.
+                    // A file that calls itself a recipe and still fails is a real
+                    // problem the user must see: silence here is how 20 rejected
+                    // recipes looked exactly like an empty registry.
                     if source_prefix.is_some() {
+                        if declares_recipe_kind(&p) {
+                            eprintln!("warning: skipping recipe '{}': {e}", p.display());
+                        }
                         continue;
                     }
                     return Err(e);
@@ -760,6 +831,19 @@ fn offline_registry_recipe_dirs() -> Vec<(String, PathBuf)> {
         .unwrap_or_default()
 }
 
+/// True when a TOML file explicitly declares `kind = "recipe"`. Used to decide
+/// whether a parse failure in a registry tree is worth a warning (profiles and
+/// bundles live in the same tree and are expected to be skipped).
+fn declares_recipe_kind(path: &Path) -> bool {
+    let Ok(body) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    body.parse::<toml::Table>()
+        .ok()
+        .and_then(|t| t.get("kind").and_then(|k| k.as_str().map(str::to_string)))
+        .is_some_and(|k| k == "recipe")
+}
+
 /// Expand env value tokens: `#HOME` → real home, `~` → effective home.
 pub fn expand_env_value(raw: &str, real_home: &Path, effective_home: &Path) -> String {
     let s = if raw.contains(REAL_HOME_TOKEN) {
@@ -768,6 +852,91 @@ pub fn expand_env_value(raw: &str, real_home: &Path, effective_home: &Path) -> S
         raw.to_string()
     };
     expand_tilde(&s, effective_home)
+}
+
+/// Expand one `path_prepend` entry into concrete directories.
+///
+/// Tokens expand as everywhere else (`#HOME` → real home, `~` → effective home),
+/// then a `*` path segment is globbed against the filesystem: version managers
+/// keep their shims under a per-version directory (`~/.nvm/versions/node/*/bin`)
+/// that only exists at resolve time. A glob matching nothing yields no entries;
+/// a literal path is kept even if absent, because home materialization may still
+/// create it after the policy is computed.
+///
+/// `planned_links` are the `(link_path, target)` pairs the home plan will create.
+/// A glob under a not-yet-created link is resolved against its target and mapped
+/// back, so a cold home yields the same `PATH` as a warm one — otherwise the
+/// first run of a fresh cage silently has no node on `PATH` and the second works.
+///
+/// ponytail: `*` matches one whole segment — no `node-*`, no `**`, no character
+/// classes. Pull in a glob crate if a recipe ever needs more.
+pub fn expand_path_prepend(
+    raw: &str,
+    real_home: &Path,
+    effective_home: &Path,
+    planned_links: &[(PathBuf, PathBuf)],
+) -> Vec<String> {
+    let expanded = expand_env_value(raw, real_home, effective_home);
+    if !expanded.contains('*') {
+        return vec![expanded];
+    }
+    // Redirect through a planned symlink, remembering how to map results back.
+    let mut probe = expanded.clone();
+    let mut mapping: Option<(String, String)> = None;
+    for (link, target) in planned_links {
+        let l = link.to_string_lossy();
+        if expanded.starts_with(&format!("{l}/")) {
+            let t = target.to_string_lossy().into_owned();
+            probe = expanded.replacen(l.as_ref(), &t, 1);
+            mapping = Some((t, l.into_owned()));
+            break;
+        }
+    }
+    let path = PathBuf::from(&probe);
+    let mut comps = path.components();
+    // Anchor on the path root (or cwd for a relative entry), then walk segments.
+    let root = match comps.next() {
+        Some(std::path::Component::RootDir) => PathBuf::from("/"),
+        Some(std::path::Component::Prefix(p)) => PathBuf::from(p.as_os_str()),
+        Some(other) => PathBuf::from(other.as_os_str()),
+        None => return Vec::new(),
+    };
+    let rest: Vec<String> = comps
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    glob_segments(root, &rest)
+        .into_iter()
+        .map(|p| {
+            let s = p.to_string_lossy().into_owned();
+            match &mapping {
+                Some((target, link)) => s.replacen(target.as_str(), link.as_str(), 1),
+                None => s,
+            }
+        })
+        .collect()
+}
+
+/// Walk `rest` under `base`, expanding a whole-segment `*` against real directories.
+fn glob_segments(base: PathBuf, rest: &[String]) -> Vec<PathBuf> {
+    let Some((seg, tail)) = rest.split_first() else {
+        return vec![base];
+    };
+    if seg != "*" {
+        return glob_segments(base.join(seg), tail);
+    }
+    let Ok(rd) = std::fs::read_dir(&base) else {
+        return Vec::new();
+    };
+    let mut kids: Vec<PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    // Lexical order so the resulting PATH is deterministic across runs.
+    kids.sort();
+    kids.into_iter()
+        .flat_map(|k| glob_segments(k, tail))
+        .collect()
 }
 
 /// Resolve strategy for a choice, applying recipe `default_strategy` when the
@@ -918,6 +1087,135 @@ paths = []
         reg.insert(b).unwrap();
         let err = reg.validate_disjoint().unwrap_err().to_string();
         assert!(err.contains("overlapping"), "{err}");
+    }
+
+    // Registry-schema fields: metadata the parser must accept, plus path_prepend.
+    const EXTENDED_RECIPE: &str = r##"
+schema = 1
+id = "toolchains/pyenv"
+kind = "recipe"
+summary = "pyenv"
+tags = ["runtime", "version-manager"]
+requires = ["integrations/git"]
+default_strategy = "link"
+
+[strategies.link]
+summary = "Execute the host's interpreters; new installs land in the replaced home"
+danger = "grants rw on the real pyenv root"
+home = [{ kind = "link", from = "#HOME/.pyenv", to = "~/.pyenv" }]
+paths = [{ path = "#HOME/.pyenv", access = "ro" }]
+path_prepend = ["~/.pyenv/shims", "~/.pyenv/bin"]
+"##;
+
+    #[test]
+    fn parses_registry_metadata_and_path_prepend() {
+        let r = parse_recipe(EXTENDED_RECIPE, "test").unwrap();
+        assert_eq!(r.tags, vec!["runtime", "version-manager"]);
+        assert_eq!(r.requires, vec!["integrations/git"]);
+
+        let mut reg = RecipeRegistry::default();
+        reg.insert(r).unwrap();
+        let ctx = RunContext {
+            cmd: vec![],
+            os: std::env::consts::OS.into(),
+            arch: std::env::consts::ARCH.into(),
+        };
+        let c = reg
+            .compile(
+                &ToolchainChoice {
+                    id: "toolchains/pyenv".into(),
+                    strategy: StrategyName::Link,
+                },
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(c.path_prepend, vec!["~/.pyenv/shims", "~/.pyenv/bin"]);
+        assert_eq!(c.requires, vec!["integrations/git"]);
+        assert!(c.danger.as_deref().unwrap().contains("rw on the real"));
+    }
+
+    #[test]
+    fn path_prepend_expands_tokens_and_globs() {
+        let base = std::env::temp_dir().join(format!("isol8-pp-{}", std::process::id()));
+        let versions = base.join(".nvm/versions/node");
+        std::fs::create_dir_all(versions.join("v18.20.0/bin")).unwrap();
+        std::fs::create_dir_all(versions.join("v22.1.0/bin")).unwrap();
+        let eff = base.join("eff-home");
+
+        // Literal entry: kept even though it does not exist yet (materialization
+        // may still create it), and `~` resolves against the effective home.
+        let lit = expand_path_prepend("~/.local/bin", &base, &eff, &[]);
+        assert_eq!(lit, vec![eff.join(".local/bin").to_string_lossy()]);
+
+        // Glob entry: one segment, sorted, only real directories.
+        let globbed = expand_path_prepend("#HOME/.nvm/versions/node/*/bin", &base, &eff, &[]);
+        assert_eq!(
+            globbed,
+            vec![
+                versions.join("v18.20.0/bin").to_string_lossy().into_owned(),
+                versions.join("v22.1.0/bin").to_string_lossy().into_owned(),
+            ]
+        );
+
+        // Glob matching nothing contributes nothing.
+        assert!(expand_path_prepend("#HOME/.nope/*/bin", &base, &eff, &[]).is_empty());
+
+        // Cold home: `~/.nvm` is only a *planned* link, so the glob resolves via
+        // the target and the result is mapped back to the replaced-home form.
+        let planned = vec![(eff.join(".nvm"), base.join(".nvm"))];
+        let cold = expand_path_prepend("~/.nvm/versions/node/*/bin", &base, &eff, &planned);
+        assert_eq!(
+            cold,
+            vec![
+                eff.join(".nvm/versions/node/v18.20.0/bin")
+                    .to_string_lossy()
+                    .into_owned(),
+                eff.join(".nvm/versions/node/v22.1.0/bin")
+                    .to_string_lossy()
+                    .into_owned(),
+            ]
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn only_self_declared_recipes_are_worth_a_warning() {
+        let dir = std::env::temp_dir().join(format!("isol8-kind-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let recipe = dir.join("r.toml");
+        std::fs::write(&recipe, "kind = \"recipe\"\nid = \"x\"\n").unwrap();
+        let profile = dir.join("p.toml");
+        std::fs::write(&profile, "paths = []\n").unwrap();
+        let bundle = dir.join("b.toml");
+        std::fs::write(&bundle, "kind = \"bundle\"\n").unwrap();
+
+        assert!(declares_recipe_kind(&recipe));
+        assert!(!declares_recipe_kind(&profile));
+        assert!(!declares_recipe_kind(&bundle));
+        assert!(!declares_recipe_kind(&dir.join("missing.toml")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn later_source_replaces_an_overlapping_variant() {
+        let mut reg = RecipeRegistry::default();
+        let mut builtin = RecipeRegistry::default();
+        builtin
+            .insert(parse_recipe(NVM_RECIPE, "builtin:toolchains/nvm").unwrap())
+            .unwrap();
+        reg.merge_stage(builtin).unwrap();
+
+        let mut from_registry = RecipeRegistry::default();
+        from_registry
+            .insert(parse_recipe(NVM_RECIPE, "registry:official:policy:toolchains/nvm").unwrap())
+            .unwrap();
+        reg.merge_stage(from_registry).unwrap();
+
+        // One variant survives — the later source — instead of an overlap error.
+        reg.validate_disjoint().unwrap();
+        let variants = &reg.by_id["toolchains/nvm"];
+        assert_eq!(variants.len(), 1);
+        assert!(variants[0].source.starts_with("registry:"));
     }
 
     #[test]

@@ -75,7 +75,7 @@ Modules (see spec §7); crate ownership in parentheses:
 - `plan` (**isol8-core**) — home materialization plan/apply (`link` / `mkdir` /
   `seed-ro` / `copy`).
 - `recipe` (**isol8-core**) — toolchain recipes (`share`/`link`/`isolate` → grants +
-  home ops + env); offline dirs via provider hook.
+  home ops + env + `path_prepend` + layer `requires`); offline dirs via provider hook.
 - `detect` (**isol8-core**) — `@cage detect` probes and `@cage verify` in-sandbox smoke
   tests (`commands_trusted` gates official/local registry commands).
 - `analyze` (**isol8-core**) — `--analyze` denials → recipe suggestions (NDJSON feed).
@@ -152,8 +152,12 @@ and full Windows path enforcement remain deferred.
   `ensure_registry_provider()` when using config-backed recipe dirs without the CLI.
   The `[[bin]] isol8` has `required-features = ["cli"]`.
 - **--dry-run** / `--show-policies` print layer stack + effective grants, env, command, SBPL/Landlock rules.
-- **config** — `isol8.toml`/`isol8.yaml` (cwd, `ISOL8_CONFIG_PATH`, or `~/.config/isol8/`),
-  `ISOL8_*` env overrides, `isol8 @init`. Defaults: `base` + OS system-runtime; `auto_profiles`
+- **config** — default OS dir `~/.config/isol8/` (`$XDG_CONFIG_HOME/isol8/`);
+  `ISOL8_CONFIG_PATH` absolute override; project markers
+  (`isol8.toml` / `.isol8.toml` / `encage.toml` / `.encage.toml`) may set
+  `config_path` (redirect base, like the env var), `ignore_global`, and/or merge
+  overlays. Paths with `@` are relative to the config directory. `ISOL8_*` env
+  overrides, `isol8 @init`. Defaults: `base` + OS system-runtime; `auto_profiles`
   selects agent layers by executable name (e.g. `claude` → `agents/claude-code`).
   Optional `[registries.*]` for offline recipe sources.
 - **Windows backend (Phase 1)** — token-based AppContainer (`DuplicateTokenEx` +
@@ -176,7 +180,17 @@ and full Windows path enforcement remain deferred.
   (`isol8-cli` `cli/diag.rs`).
 - **profiles** — Safehouse port embedded; `macos-system` / `linux-system` are backward-compat
   aliases. `isol8 echo hi` works without `--profile` when config defaults apply.
-- **recipes** — embedded `recipes/toolchains/{nvm,cargo,maven}.toml` plus user/registry overlays.
+  Every `agents/*` layer `requires` `integrations/macos-gui` — agent TUIs need
+  HIToolbox, input methods and the window server even with no window on screen;
+  that layer now carries `filter = { os = ["macos"] }` so it is inert elsewhere.
+- **recipes** — embedded `recipes/toolchains/{nvm,cargo,maven}.toml` plus user/registry
+  overlays. Schema also carries `tags` / `requires` (profile layers pulled into the
+  stack, tagged `required`), strategy `summary` / `danger` (wizard security note), and
+  strategy `path_prepend` (`PATH` entries prepended in recipe order; `*` globs one
+  segment, resolved through planned links so a cold home matches a warm one). Across
+  sources a later recipe **replaces** an overlapping variant (builtin < user <
+  registry < `--recipe-path`); overlap within one source stays an error. A registry
+  file declaring `kind = "recipe"` that fails to parse now warns instead of vanishing.
 - **tests** — unit + integration (`cargo test --workspace`, including
   `tests/{registry,wizard,recipe,cage,analyze}.rs`) and a real-sandbox field-test
   binary (`just field-test`, scenarios 1–9 cross-platform, 10–16 Linux-specific,
@@ -225,7 +239,7 @@ How to work in this repo. These are not suggestions.
   (unit for logic, a field scenario for enforcement). See
   [`_docs/testing-strategies.md`](_docs/testing-strategies.md). Run them; don't
   assume green.
-- **Use subagents to optimize work.** Delegate mechanical or parallelizable work to
+- **Strongly use subagents to optimize work.** Delegate mechanical or parallelizable work to
   cheaper models (e.g. Haiku/Sonnet) — bulk edits, searches, boilerplate — and
   reserve the strong model for design and security-sensitive code.
 - **End every task with the full gate.** Run `just ci` (or equivalently
@@ -236,6 +250,9 @@ How to work in this repo. These are not suggestions.
   is never traded for brevity.
 - **Update the docs after each task.** Keep `AGENTS.md`, the `_docs/*` specs, and the
   README in sync with what the code actually does.
+- **When testing use `./_data/config/` as config path.** Repo root `.isol8.toml`
+  sets `config_path = "./_data/config"` so runs from the project root pick it up
+  automatically (same as `ISOL8_CONFIG_PATH=./_data/config`).
 
 ## Conventions for agents
 
@@ -316,6 +333,7 @@ you need a stricter dependency graph; the facade remains the supported public AP
 | Doc | Contents |
 |-----|----------|
 | [`_docs/instructions.md`](_docs/instructions.md) | User guide: CLI, cages, wizard, registries, analyze |
+| [`_docs/config.md`](_docs/config.md) | Config discovery, parameters, markers, env overrides |
 | [`_docs/profile-model.md`](_docs/profile-model.md) | Profile format, filters, inheritance, merge, status table |
 | [`_docs/project-structure.md`](_docs/project-structure.md) | Workspace layout and data flow |
 | [`_docs/project-description.md`](_docs/project-description.md) | Full requirements (R1–R6) |

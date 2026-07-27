@@ -51,21 +51,40 @@ pub struct EffectivePolicy {
 pub fn effective_policy(spec: &Spec) -> Result<EffectivePolicy> {
     let registry = LayerRegistry::load(&spec.profile_paths)?;
     let ctx = RunContext::from_cmd(&spec.cmd);
-    let selected = profile::select_layer_names(spec, &registry, &ctx)?;
+
+    // Recipes compile first: their `requires` join the layer selection (a recipe
+    // that needs `integrations/git` must get it) and their home ops must enter
+    // the plan before the home is resolved.
+    let recipe_reg = crate::recipe::RecipeRegistry::load(&spec.recipe_paths)?;
+    let contributions = recipe_reg.compile_all(&spec.toolchains, &ctx)?;
+    let recipes: Vec<(String, String)> = contributions
+        .iter()
+        .map(|c| (c.id.clone(), c.strategy.as_str().to_string()))
+        .collect();
+
+    let mut selected = profile::select_layer_names(spec, &registry, &ctx)?;
+    // Provenance is judged against the pre-recipe selection, so a layer a recipe
+    // dragged in reads as `required`, not as an auto-match.
+    let selected_set: std::collections::HashSet<String> = selected.iter().cloned().collect();
+    for c in &contributions {
+        for req in &c.requires {
+            if !selected.iter().any(|s| s == req) {
+                selected.push(req.clone());
+            }
+        }
+    }
     let all = registry.profiles();
     let resolved = profile::resolve_requires(&selected, &all)?;
 
     // Classify provenance: explicit (named) > auto (selected but not named) > required.
     let explicit: std::collections::HashSet<&str> =
         spec.profiles.iter().map(String::as_str).collect();
-    let selected_set: std::collections::HashSet<&str> =
-        selected.iter().map(String::as_str).collect();
     let layer_names: Vec<(String, LayerOrigin)> = resolved
         .iter()
         .map(|(name, _)| {
             let origin = if explicit.contains(name.as_str()) {
                 LayerOrigin::Explicit
-            } else if selected_set.contains(name.as_str()) {
+            } else if selected_set.contains(name) {
                 LayerOrigin::Auto
             } else {
                 LayerOrigin::Required
@@ -85,14 +104,6 @@ pub fn effective_policy(spec: &Spec) -> Result<EffectivePolicy> {
         .map(|(_, p)| filter::apply_layer_filter(p, &ctx))
         .collect();
     let ambient = crate::context::Context::from_environment()?;
-
-    // Compile recipes before home resolve so their home_ops enter the plan.
-    let recipe_reg = crate::recipe::RecipeRegistry::load(&spec.recipe_paths)?;
-    let contributions = recipe_reg.compile_all(&spec.toolchains, &ctx)?;
-    let recipes: Vec<(String, String)> = contributions
-        .iter()
-        .map(|c| (c.id.clone(), c.strategy.as_str().to_string()))
-        .collect();
 
     let mut spec_for_home = spec.clone();
     for c in &contributions {
@@ -124,7 +135,8 @@ pub fn effective_policy(spec: &Spec) -> Result<EffectivePolicy> {
     }
 
     let set_env = parse_set_env(&spec.set_env)?;
-    let env_map = env::build_minimal(&merged, &effective_home.path, &spec.env_pass, &set_env);
+    let mut env_map = env::build_minimal(&merged, &effective_home.path, &spec.env_pass, &set_env);
+    apply_path_prepend(&mut env_map, &contributions, &effective_home)?;
     let cmd = profile::apply_rewrite(&spec.cmd, &merged.rewrite);
     Ok(EffectivePolicy {
         layer_names,
@@ -134,6 +146,52 @@ pub fn effective_policy(spec: &Spec) -> Result<EffectivePolicy> {
         cmd,
         recipes,
     })
+}
+
+/// Prepend recipe `path_prepend` directories to `PATH`, in recipe order.
+///
+/// Runs last, after `env::build_minimal` and `--set-env`: `PATH` is a single
+/// scalar, so a recipe cannot contribute to it through the first-writer-wins env
+/// merge, yet version managers resolve entirely through their shim directories.
+/// Existing entries are kept (deduplicated, first occurrence wins) — this widens
+/// lookup, never confinement: a directory on `PATH` is still unreachable unless
+/// some layer or recipe granted it.
+fn apply_path_prepend(
+    env: &mut std::collections::HashMap<String, String>,
+    contributions: &[crate::recipe::RecipeContribution],
+    home: &EffectiveHome,
+) -> Result<()> {
+    // Links the plan will create, so a glob under a not-yet-materialized symlink
+    // still resolves (cold home = warm home).
+    let links: Vec<(PathBuf, PathBuf)> = home
+        .plan
+        .ops
+        .iter()
+        .filter(|op| matches!(op.kind, crate::plan::HomeOpKind::Link))
+        .filter_map(|op| Some((op.to.clone()?, op.from.clone()?)))
+        .collect();
+    let dirs: Vec<String> = contributions
+        .iter()
+        .flat_map(|c| c.path_prepend.iter())
+        .flat_map(|raw| {
+            crate::recipe::expand_path_prepend(raw, &home.real_home, &home.path, &links)
+        })
+        .collect();
+    if dirs.is_empty() {
+        return Ok(());
+    }
+    let current = env.get("PATH").cloned().unwrap_or_default();
+    let mut parts: Vec<PathBuf> = dirs.into_iter().map(PathBuf::from).collect();
+    parts.extend(std::env::split_paths(&current));
+    let mut seen = std::collections::HashSet::new();
+    parts.retain(|p| !p.as_os_str().is_empty() && seen.insert(p.clone()));
+    let joined = std::env::join_paths(&parts).map_err(|e| {
+        Error::InvalidEnv(format!(
+            "recipe path_prepend produced an unusable PATH entry: {e}"
+        ))
+    })?;
+    env.insert("PATH".into(), joined.to_string_lossy().into_owned());
+    Ok(())
 }
 
 /// Parse `--set-env K=V` entries into pairs. Errors (no silent loss) on a missing

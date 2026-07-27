@@ -158,19 +158,71 @@ trial and counted as "launched".
 
 ## Configuration
 
-isol8 reads a global config file before each run. Search order:
+Full reference (all parameters, merge rules, `@` paths, registries):
+[`config.md`](./config.md).
 
-1. `ISOL8_CONFIG_PATH` (file, or directory containing `isol8.toml` / `isol8.yaml`)
-2. `./isol8.toml` or `./isol8.yaml` in the current directory
-3. `~/.config/isol8/isol8.toml` (or `.yaml`)
+isol8 loads config before each run. Discovery order:
 
-Example:
+1. **`ISOL8_CONFIG_PATH`** (file, or directory containing `isol8.toml` / `isol8.yaml`) —
+   absolute override; no project-local merge.
+2. **Project-local marker** in the current directory (first match wins):
+   `isol8.toml`, `.isol8.toml`, `encage.toml`, `.encage.toml`
+3. **OS default:** `~/.config/isol8/isol8.toml` (or `.yaml`), using
+   `$XDG_CONFIG_HOME/isol8/` when set (Windows: `%APPDATA%/isol8/`).
+
+When no config file is found, built-in defaults apply (`base` + OS system-runtime,
+`auto_profiles = true`).
+
+### Project-local markers
+
+A project marker can:
+
+| Key | Effect |
+|-----|--------|
+| `config_path = "./_data/config"` | Redirect the global/base config (same semantics as `ISOL8_CONFIG_PATH`: file or directory). Local fields then **merge on top** of that base. |
+| `ignore_global = true` | Do not load OS (or redirected) global config; local file is the whole config. |
+| other settings | Overlay onto the base: only fields present in the marker replace base values. `[registries.*]` entries merge by name (local wins). |
+
+Example — use a repo test config tree and tweak one flag:
+
+```toml
+# .isol8.toml (project root)
+config_path = "./_data/config"
+auto_profiles = false
+```
+
+Example — pure project config, ignore `~/.config/isol8`:
+
+```toml
+# isol8.toml
+ignore_global = true
+default_profiles = ["base", "macos/system-runtime"]
+auto_profiles = true
+```
+
+### Path token `@`
+
+Paths in config that start with `@` are resolved relative to the **config
+directory** (parent of the base config file). Useful for profiles and grants
+next to the global config:
+
+```toml
+# ~/.config/isol8/isol8.toml
+profile_paths = ["@/profiles"]
+add_dirs_rw = ["@/../projects/work"]
+# [registries.policy]
+# path = "@/registries/policy"
+```
+
+Non-`@` paths are unchanged (relative paths stay relative to the process cwd).
+
+### Example global config
 
 ```toml
 default_profiles = ["base", "macos/system-runtime"]
 auto_profiles = true
 profile_paths = []
-# profile_paths = ["/my/extra-profiles", "/my/override.toml"]
+# profile_paths = ["/my/extra-profiles", "@/profiles"]
 add_dirs_rw = []
 ```
 
@@ -178,7 +230,7 @@ add_dirs_rw = []
 
 | Variable | Effect |
 |----------|--------|
-| `ISOL8_CONFIG_PATH` | Config file or directory |
+| `ISOL8_CONFIG_PATH` | Config file or directory (skips local merge) |
 | `ISOL8_PROFILE` | Comma-separated `--profile` layers |
 | `ISOL8_PROFILE_PATH` | Comma-separated `--profile-path` entries |
 | `ISOL8_ADD_DIRS_RW` | Extra read-write directories |

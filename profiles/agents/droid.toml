@@ -4,7 +4,7 @@
 
 filter = { executables = ["droid"] }
 
-requires = ["macos/system-runtime"]
+requires = ["macos/system-runtime", "integrations/macos-gui"]
 
 paths = [
   { path = "~/.local/bin/droid", access = "rw", match = "prefix" },

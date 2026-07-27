@@ -4,7 +4,7 @@
 
 filter = { executables = ["kilo", "kilocode"] }
 
-requires = ["integrations/keychain"]
+requires = ["integrations/keychain", "integrations/macos-gui"]
 
 paths = [
   { path = "~/.local/bin/kilo", access = "rw", match = "prefix" },

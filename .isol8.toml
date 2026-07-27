@@ -1,0 +1,3 @@
+# Project-local config marker for the isol8 repo.
+# Redirects the global config to the test tree (same as ISOL8_CONFIG_PATH=./_data/config).
+config_path = "./_data/config"

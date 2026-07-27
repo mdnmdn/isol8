@@ -33,6 +33,8 @@ id = "toolchains/nvm"
 kind = "recipe"
 filter = { os = ["macos", "linux"] }   # authoritative selector
 summary = "Node Version Manager"
+tags = ["runtime", "version-manager"]  # optional; wizard grouping / registry search
+requires = ["base"]                    # optional; profile layers, not recipes
 default_strategy = "link"              # optional
 
 [detect]                               # run by `@cage detect` (host)
@@ -44,12 +46,14 @@ cmd = "node --version"
 expect = "^v\\d+"
 
 [strategies.link]
+summary = "Run the host's installed versions; new installs land in the cage"
 home = [{ kind = "link", from = "#HOME/.nvm", to = "~/.nvm" }]
 paths = [
   { path = "#HOME/.nvm", access = "ro" },
   { path = "#HOME/.nvm/alias", access = "rw" },
 ]
 env = { NVM_DIR = "~/.nvm" }
+path_prepend = ["~/.nvm/versions/node/*/bin"]
 
 [strategies.isolate]
 home = [{ kind = "mkdir", path = "~/.nvm" }]
@@ -69,6 +73,37 @@ env = { NVM_DIR = "~/.nvm" }
 `default_strategy` when set and defined; otherwise heuristics (cache-like ids →
 `share`, version-manager-like → `link`, else prefer link > share > isolate among
 defined strategies). Explicit `id:strategy` in `--tools` always wins.
+
+### Recipe fields
+
+| Field | Where | Effect |
+|-------|-------|--------|
+| `tags` | recipe | Labels for wizard grouping / registry search. No policy effect. |
+| `requires` | recipe | **Profile layers** the recipe needs. Joined to the layer selection before `resolve_requires`, so they appear in the stack tagged `required`. A layer that does not exist is a hard error. |
+| `summary` | strategy | One-line description of the choice (wizard). |
+| `danger` | strategy | Why this strategy exceeds the usual ceiling. Printed as a security note before a cage is written; never suppresses the grant. |
+| `path_prepend` | strategy | Directories prepended to `PATH` inside the sandbox. |
+
+**`path_prepend`.** `PATH` is a single scalar and env merge is first-writer-wins,
+so a recipe cannot contribute to it through `env`. Without this, version managers
+that resolve through shims (`~/.pyenv/shims`, `~/.nvm/versions/node/*/bin`, mise)
+load but do not work. Semantics:
+
+- Tokens expand as everywhere else (`~` effective home, `#HOME` real home).
+- A `*` matches **one whole path segment**, globbed against the filesystem and
+  sorted lexically for a deterministic `PATH`. No `**`, no `node-*`.
+  Lexical means `v20.20.2` precedes `v24.11.0` and a version manager's own
+  "default" alias is **not** consulted: with several versions installed, the
+  first match wins. Pin the version in the cage (or narrow the glob) when that
+  matters.
+- A glob under a path the home plan will *link* is resolved through the link
+  target and mapped back, so the first run of a fresh cage produces the same
+  `PATH` as the tenth. A glob matching nothing contributes nothing.
+- A literal entry is kept even if absent — materialization may still create it.
+- Entries are prepended in recipe order, ahead of the inherited `PATH`, after
+  `--set-env`; duplicates are dropped (first occurrence wins).
+- This widens **lookup, not confinement**: a directory on `PATH` stays unreachable
+  unless some layer or recipe granted it. Grant it explicitly.
 
 ### Tokens
 
@@ -97,14 +132,20 @@ effective home).
 | Registry (offline) | Configured `[registries.*]` path roots or git cache pins | later |
 | Explicit | `Spec.recipe_paths` / library `Sandbox::recipe_path` | highest |
 
-Variants of the same `id` must have **disjoint** `filter` selectors (validated on
-load). Filename suffixes (`.windows.toml`) are convention only.
+Variants of the same `id` must have **disjoint** `filter` selectors *within one
+source*; that is an authoring error with no ordering to resolve it. **Across
+sources the later one replaces what it overlaps** — a registry may ship a better
+`toolchains/cargo` than the embedded recipe without the two colliding. Filename
+suffixes (`.windows.toml`) are convention only.
 
 **Registries (Phase 7).** Named path or git sources in `isol8.toml` contribute
 recipe directories without network I/O at load time — only after
 `isol8 @registry update` (or install) has populated a git cache and `isol8.lock`.
 Each recipe’s `source` is labelled `registry:<trust>:<name>:<id>` for detect/verify
-trust gating. Unparseable files in a registry tree (e.g. profiles) are skipped.
+trust gating. Unparseable files in a registry tree (e.g. profiles and bundles) are
+skipped — but a file that declares `kind = "recipe"` and still fails to parse
+prints a warning naming the file and the offending key, because a silently
+skipped registry is indistinguishable from an empty one.
 See [`registry.md`](./registry.md).
 
 ### Per-platform strategy bodies
@@ -233,6 +274,9 @@ at `community` or `untrusted` block those host commands. Path probes always run
 
 ## 7. Not yet
 
+- Bundle documents (`kind = "bundle"`: `recipes` / `[toolchains]` / `[[optional]]`)
+  are parsed by the wizard's `--from` only; the recipe loader skips them
+- `[[optional]]` recipe sets and cage-level `recipes = [...]` selection
 - HTTP registries and artifact signing — deferred after Phase 7 MVP
 - Full capability-ceiling enforcement at resolve time (install-time diff only today)
 - Wizard extras: full TUI, `@cage clone` / `@cage fix` (Phase 8 core is done —

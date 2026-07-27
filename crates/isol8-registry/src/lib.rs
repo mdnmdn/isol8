@@ -434,17 +434,30 @@ impl Lockfile {
     }
 }
 
+/// Project-local config markers in cwd (first match wins). Kept in sync with
+/// `isol8-cli` `cli::config::PROJECT_CONFIG_MARKERS`.
+pub const PROJECT_CONFIG_MARKERS: &[&str] =
+    &["isol8.toml", ".isol8.toml", "encage.toml", ".encage.toml"];
+
+const CONFIG_BASENAMES: &[&str] = &["isol8.toml", "isol8.yaml", "isol8.yml"];
+
 /// Discover the lockfile path.
 ///
 /// 1. `./isol8.lock` if it already exists  
-/// 2. `./isol8.lock` if a project config (`isol8.toml` / yaml) is in cwd  
+/// 2. `./isol8.lock` if a project config marker is in cwd  
 /// 3. else `~/.config/isol8/isol8.lock` (user-global registries)
 pub fn discover_lockfile_path() -> PathBuf {
     let cwd_lock = PathBuf::from("isol8.lock");
     if cwd_lock.is_file() {
         return cwd_lock;
     }
-    for name in ["isol8.toml", "isol8.yaml", "isol8.yml"] {
+    for name in PROJECT_CONFIG_MARKERS {
+        if PathBuf::from(name).is_file() {
+            return cwd_lock;
+        }
+    }
+    // Legacy: bare isol8.yaml in cwd (not in marker list) still pins lock locally.
+    for name in CONFIG_BASENAMES {
         if PathBuf::from(name).is_file() {
             return cwd_lock;
         }
@@ -452,7 +465,8 @@ pub fn discover_lockfile_path() -> PathBuf {
     config_isol8_dir().join("isol8.lock")
 }
 
-fn config_isol8_dir() -> PathBuf {
+/// OS config directory for isol8 (`~/.config/isol8` on macOS/Linux).
+pub fn config_isol8_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .filter(|h| !h.is_empty())
         .map(PathBuf::from)
@@ -461,8 +475,80 @@ fn config_isol8_dir() -> PathBuf {
                 .filter(|h| !h.is_empty())
                 .map(|h| PathBuf::from(h).join(".config"))
         })
+        .or_else(|| {
+            if cfg!(windows) {
+                std::env::var_os("APPDATA")
+                    .filter(|h| !h.is_empty())
+                    .map(PathBuf::from)
+            } else {
+                None
+            }
+        })
         .unwrap_or_else(|| real_home_path().join(".config"))
         .join("isol8")
+}
+
+fn resolve_config_location(path: &Path) -> Option<PathBuf> {
+    if path.is_file() {
+        return Some(path.to_path_buf());
+    }
+    if path.is_dir() {
+        for name in CONFIG_BASENAMES {
+            let c = path.join(name);
+            if c.is_file() {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
+fn find_config_in_dir(dir: &Path) -> Option<PathBuf> {
+    for name in CONFIG_BASENAMES {
+        let c = dir.join(name);
+        if c.is_file() {
+            return Some(c);
+        }
+    }
+    None
+}
+
+fn discover_local_marker() -> Option<PathBuf> {
+    for name in PROJECT_CONFIG_MARKERS {
+        let c = PathBuf::from(name);
+        if c.is_file() {
+            return Some(c);
+        }
+    }
+    None
+}
+
+/// Lightweight peek of `config_path` / `ignore_global` from a project marker.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct LocalConfigMeta {
+    config_path: Option<String>,
+    ignore_global: bool,
+}
+
+fn peek_local_meta(path: &Path) -> Option<LocalConfigMeta> {
+    let body = fs::read_to_string(path).ok()?;
+    toml::from_str(&body).ok()
+}
+
+/// Expand `@…` paths relative to `config_dir`. Non-`@` paths are unchanged.
+pub fn expand_at_path(path: &str, config_dir: &Path) -> String {
+    let Some(rest) = path.strip_prefix('@') else {
+        return path.to_string();
+    };
+    let rest = rest
+        .strip_prefix('/')
+        .or_else(|| rest.strip_prefix('\\'))
+        .unwrap_or(rest);
+    if rest.is_empty() {
+        return config_dir.display().to_string();
+    }
+    config_dir.join(rest).display().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -1251,9 +1337,12 @@ pub fn offline_recipe_roots(
 /// Returns `(source_label, recipes_dir)` where `source_label` is
 /// `registry:<trust>:<name>` for trust gating.
 ///
-/// Looks for registries in:
-/// 1. `ISOL8_CONFIG_PATH` / `./isol8.toml` / `~/.config/isol8/isol8.toml`
-/// 2. Lockfile for git pins
+/// Looks for registries in the same order as the CLI config loader:
+/// 1. `ISOL8_CONFIG_PATH`
+/// 2. Project markers (`isol8.toml` / `.isol8.toml` / `encage.toml` / …)
+///    with optional `config_path` redirect + local `[registries.*]` overlay
+/// 3. `~/.config/isol8/isol8.toml`
+/// 4. Lockfile for git pins
 ///
 /// Silently skips missing or unreadable config — builtins still work.
 pub fn discover_offline_recipe_dirs() -> Vec<(String, PathBuf)> {
@@ -1274,44 +1363,108 @@ pub fn discover_offline_recipe_dirs() -> Vec<(String, PathBuf)> {
 }
 
 /// Load `[registries]` tables from the same config discovery order as the CLI.
+///
+/// Merges base (env / `config_path` / OS) with local project marker overlays.
+/// Expands `@…` registry paths relative to the base config directory.
 pub fn load_registries_from_config() -> Result<BTreeMap<String, RegistrySpec>> {
-    let path = discover_config_file();
-    let Some(path) = path else {
-        return Ok(BTreeMap::new());
-    };
-    let body = fs::read_to_string(&path).ctx(|| format!("reading config '{}'", path.display()))?;
+    let (mut regs, config_dir) = load_registries_merged()?;
+    for spec in regs.values_mut() {
+        if let RegistrySpec::Path { path, .. } = spec {
+            *path = expand_at_path(path, &config_dir);
+        }
+    }
+    Ok(regs)
+}
+
+fn load_registries_from_file(path: &Path) -> Result<BTreeMap<String, RegistrySpec>> {
+    let body = fs::read_to_string(path).ctx(|| format!("reading config '{}'", path.display()))?;
     parse_registries_from_toml(&body)
 }
 
-fn discover_config_file() -> Option<PathBuf> {
+/// Base + local overlay registries and the config dir used for `@` expansion.
+fn load_registries_merged() -> Result<(BTreeMap<String, RegistrySpec>, PathBuf)> {
+    // 1. Explicit env — single file, no local merge.
     if let Ok(path) = std::env::var("ISOL8_CONFIG_PATH") {
-        let p = PathBuf::from(path);
-        if p.is_file() {
-            return Some(p);
+        let p = PathBuf::from(&path);
+        if let Some(file) = resolve_config_location(&p) {
+            let dir = file
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
+            return Ok((load_registries_from_file(&file)?, dir));
         }
-        if p.is_dir() {
-            for name in ["isol8.toml", "isol8.yaml", "isol8.yml"] {
-                let c = p.join(name);
-                if c.is_file() {
-                    return Some(c);
-                }
+        return Ok((BTreeMap::new(), PathBuf::from(".")));
+    }
+
+    let local = discover_local_marker();
+    let meta = local.as_ref().and_then(|p| peek_local_meta(p));
+
+    let (mut base, config_dir) = if meta.as_ref().is_some_and(|m| m.ignore_global) {
+        let dir = local
+            .as_ref()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from("."));
+        (BTreeMap::new(), dir)
+    } else if let Some(cp) = meta
+        .as_ref()
+        .and_then(|m| m.config_path.as_deref())
+        .filter(|s| !s.is_empty())
+    {
+        match resolve_config_location(Path::new(cp)) {
+            Some(file) => {
+                let dir = file
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("."));
+                (load_registries_from_file(&file).unwrap_or_default(), dir)
+            }
+            None => (BTreeMap::new(), PathBuf::from(".")),
+        }
+    } else if let Some(file) = find_config_in_dir(&config_isol8_dir()) {
+        let dir = file
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(config_isol8_dir);
+        (load_registries_from_file(&file).unwrap_or_default(), dir)
+    } else {
+        (BTreeMap::new(), config_isol8_dir())
+    };
+
+    if let Some(local_path) = local {
+        if let Ok(overlay) = load_registries_from_file(&local_path) {
+            for (k, v) in overlay {
+                base.insert(k, v);
             }
         }
     }
-    for name in ["isol8.toml", "isol8.yaml", "isol8.yml"] {
-        let c = PathBuf::from(name);
-        if c.is_file() {
-            return Some(c);
-        }
+
+    Ok((base, config_dir))
+}
+
+/// Resolved primary config file path (best-effort; for diagnostics).
+///
+/// Order matches CLI: `ISOL8_CONFIG_PATH` → local `config_path` / OS base →
+/// local marker → OS default file.
+pub fn discover_config_file() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("ISOL8_CONFIG_PATH") {
+        return resolve_config_location(Path::new(&path));
     }
-    let base = config_isol8_dir();
-    for name in ["isol8.toml", "isol8.yaml", "isol8.yml"] {
-        let c = base.join(name);
-        if c.is_file() {
-            return Some(c);
+    if let Some(local) = discover_local_marker() {
+        if let Some(meta) = peek_local_meta(&local) {
+            if meta.ignore_global {
+                return Some(local);
+            }
+            if let Some(cp) = meta.config_path.as_deref().filter(|s| !s.is_empty()) {
+                return resolve_config_location(Path::new(cp)).or(Some(local));
+            }
         }
+        if let Some(base) = find_config_in_dir(&config_isol8_dir()) {
+            return Some(base);
+        }
+        return Some(local);
     }
-    None
+    find_config_in_dir(&config_isol8_dir())
 }
 
 /// Parse only the `[registries.*]` tables from a TOML config body.

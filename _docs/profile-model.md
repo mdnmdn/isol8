@@ -23,7 +23,7 @@ portable profile core plus conditional filters. Anything not listed as parsed wi
 | File format | **One layer per file** (`profiles/**/*.toml`). Layer id = relative path without extension (e.g. `agents/claude-code`). The `[profile.<name>]` multi-layer form (§4) is **not** parsed yet. |
 | Embed | **`build.rs`** walks `profiles/` and emits `profiles_embedded.rs` (~70 Safehouse-derived layers). |
 | Layer sources | **Builtin** → **user config dir** (`$XDG_CONFIG_HOME/isol8/profiles/`) → **`profile_paths`** / `--profile-path` (later wins on name collision). |
-| Config file | **`isol8.toml` / `isol8.yaml`** (cwd, `ISOL8_CONFIG_PATH`, or `~/.config/isol8/`). `default_profiles`, `auto_profiles`, `profile_paths`, path overrides. |
+| Config file | **OS default** `~/.config/isol8/`; **`ISOL8_CONFIG_PATH`**; project markers (`isol8.toml` / `.isol8.toml` / `encage.toml` / `.encage.toml`) with `config_path` / `ignore_global` / merge overlay. `@` paths relative to config dir. |
 | Profile language | **TOML** for layers. **TOML or YAML** for the global config file. |
 | Fields parsed | `requires`/`extends`, `filter`, `[[policies]]`, `paths`, `env`, `home_replace` (incl. `path`), `rewrite` (`ensure_args`), `macos` (`capabilities`/`raw`). |
 | `access` | `none` / `ro` / `rw` / `metadata` — parsed; enforced on macOS (Seatbelt) and Linux (Landlock for ro/rw). |
@@ -189,7 +189,7 @@ A file may define one or many layers. Two forms (only the first is parsed — §
 ```toml
 # profiles/agents/claude-code.toml  → layer "agents/claude-code"
 filter = { executables = ["claude"] }
-requires = ["integrations/keychain", "integrations/browser-native-messaging"]
+requires = ["integrations/keychain", "integrations/browser-native-messaging", "integrations/macos-gui"]
 paths = [ { path = "~/.claude", access = "rw" } ]
 ```
 
@@ -497,7 +497,7 @@ composition bands (generalized cross-platform):
 | 30 toolchains | `toolchains/*` | `rust`, `node`, `python`, … |
 | 40 shared | `shared/*` | `agent-common`, `ipc-sysv-sem` |
 | 50–55 integrations | `integrations/*` | `git`, `keychain`, `macos-gui`, `electron`, … |
-| 60 agents | `agents/*` | `claude-code` (auto: `claude`), `codex`, … |
+| 60 agents | `agents/*` | `claude-code` (auto: `claude`), `codex`, … — every agent layer `requires` `integrations/macos-gui` (TUIs need HIToolbox / input methods / the window server); that layer carries `filter = { os = ["macos"] }`, so it contributes nothing off macOS |
 | 65 apps | `apps/*` | `claude-app`, `vscode-app`, … |
 | Linux-only | `linux/*` | `secret-service`, `gui` |
 

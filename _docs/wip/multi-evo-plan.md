@@ -1101,4 +1101,5 @@ No recipes, no materialization changes, no new dependencies.
 | 2026-07-24 | Phase 6 done: macOS log stream/show scrape, `--author` Seatbelt trace |
 | 2026-07-24 | Phase 7 done: offline registries (`src/registry.rs`), `@registry`, lockfile, trust, install diff |
 | 2026-07-24 | Phase 8 done: cage wizard (`src/wizard.rs`), `@cage new`/`edit`, managed sections, drift, bundles offline |
+| 2026-07-27 | Recipe schema extended (post-Phase-3 follow-up): `tags`, `requires` (profile layers → layer stack), strategy `summary` / `danger` / `path_prepend`; later recipe source overrides an overlapping variant; registry files declaring `kind = "recipe"` warn instead of being skipped silently. Unblocks external registries authored against the target schema. |
 | 2026-07-24 | Phase 9 done: Cargo workspace split (`isol8-core` / `isol8-registry` / `isol8-cli` + root facade); API-stable `use isol8::…`; registry provider hook; docs updated |

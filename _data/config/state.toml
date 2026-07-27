@@ -1,0 +1,6 @@
+# isol8 wizard state — managed-section hashes (Phase 8)
+# Safe to delete; the next @cage edit will re-seed entries.
+
+[cages.test]
+path = "@/cages/test.toml"
+managed_hash = "59851d9451e4199e65c771bd3d9072cf649f96313a1e48d64613e250f084c20e"

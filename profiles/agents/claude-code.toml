@@ -4,7 +4,7 @@
 
 filter = { executables = ["claude"] }
 
-requires = ["integrations/keychain", "integrations/browser-native-messaging", "integrations/microphone"]
+requires = ["integrations/keychain", "integrations/browser-native-messaging", "integrations/microphone", "integrations/macos-gui"]
 
 paths = [
   { path = "~/.local/bin/claude", access = "rw", match = "prefix" },

@@ -4,7 +4,7 @@
 
 filter = { executables = ["grok"] }
 
-requires = ["integrations/keychain"]
+requires = ["integrations/keychain", "integrations/macos-gui"]
 
 paths = [
   # ~/.grok is grok's home: config.toml, auth.json, sessions, projects, and the

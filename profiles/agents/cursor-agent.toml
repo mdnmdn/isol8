@@ -4,7 +4,7 @@
 
 filter = { executables = ["cursor-agent", "agent"] }
 
-requires = ["integrations/keychain"]
+requires = ["integrations/keychain", "integrations/macos-gui"]
 
 paths = [
   { path = "~/.local/bin/agent", access = "rw", match = "prefix" },
