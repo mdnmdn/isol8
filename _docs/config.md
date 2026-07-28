@@ -118,7 +118,7 @@ parsed separately.
 | `add_dirs_rw` | list of paths | `[]` | `--add-dirs-rw` / `ISOL8_ADD_DIRS_RW` | Extra read-write path grants. |
 | `add_dirs_ro` | list of paths | `[]` | `--add-dirs-ro` / `ISOL8_ADD_DIRS_RO` | Extra read-only path grants. |
 | `home` | string or omit | unset | `--home` / `ISOL8_HOME` | Replacement `$HOME` for the confined process. Unset means real home unless a cage/profile opts into replacement. |
-| `cage` | string or omit | unset | `-c` / `--cage` / `ISOL8_CAGE` | Named cage to load when CLI/env do not set one. Discovery of cage files is separate (see cages in [instructions.md](./instructions.md)). |
+| `cage` | string or omit | unset | `-c` / `--cage` / `ISOL8_CAGE` | Named cage to load when CLI/env do not set one. Cage **files** are loaded from `{effective_config_dir}/cages/` (and project `.isol8/cages/`); the effective dir follows `config_path` / `ISOL8_CONFIG_PATH`. See [instructions.md](./instructions.md). |
 | `dry_run` | bool | `false` | `--dry-run` / `--show-policies` / `ISOL8_DRY_RUN` | If true, print effective policy and exit (when CLI did not already request a dry-run). |
 | `[registries.<name>]` | tables | none | `@registry` CLI | Offline recipe sources. See [§6](#6-registries) and [registry.md](./registry.md). |
 
@@ -174,22 +174,23 @@ Written by `isol8 @init` as a starter template.
 
 ## 5. Path token `@`
 
-Any path string in config that **starts with `@`** is rewritten relative to the
-**config directory** (parent directory of the base config file; if there is no
-base file—e.g. `ignore_global` only—the marker’s parent, usually `.`).
+Any path that **starts with `@`** is rewritten relative to the **effective
+config directory** — the same root after `ISOL8_CONFIG_PATH` / project marker
+`config_path` / OS default. With `.isol8.toml` → `config_path = "./_data/config"`,
+that root is `./_data/config` (not `~/.config/isol8` and not XDG data).
 
-| Input | Config dir | Result |
-|-------|------------|--------|
-| `@/profiles` | `~/.config/isol8` | `~/.config/isol8/profiles` |
-| `@profiles` | same | same (`/` after `@` optional) |
-| `@` | same | the config directory itself |
-| `/abs/path` | — | unchanged |
-| `./rel` | — | unchanged (still relative to **process cwd** when used) |
+| Input | Meaning |
+|-------|---------|
+| `@/profiles` or `@profiles` | `{config_dir}/profiles` |
+| `@` | `{config_dir}` itself |
+| `@managed/<id>` | `{config_dir}/homes/<id>` (durable cage home) |
+| `/abs/path` | unchanged (already absolute) |
+| `./rel` (non-`@`) | absolutized against **process cwd at resolve time** |
 
-Applied to: `profile_paths`, `add_dirs_rw`, `add_dirs_ro`, `home`, and
-`[registries.*.path]`.
-
-`config_path` itself does **not** use `@` expansion; it is resolved from the cwd.
+**All resolved paths are absolute** (lexically normalized) so a later `chdir`
+cannot retarget config roots, `@managed` homes, profile paths, or registry
+paths. `config_path` itself is also absolutized when the effective config root
+is computed.
 
 ---
 
@@ -262,9 +263,16 @@ Under the OS config directory (`~/.config/isol8/` by default):
 | `isol8.toml` (or yaml) | Global config file |
 | `profiles/**/*.toml` | User profile layers (silent if missing) |
 | `recipes/**` | User recipe overlays |
-| `cages/*.toml` | User-level named cages |
+| `cages/*.toml` | Config-level named cages (`@cage list` / `-c`) |
+| `homes/<id>/` | `@managed/<id>` durable homes |
 | `state.toml` | Wizard managed-toolchain drift state |
 | `isol8.lock` | Registry pins when no project lockfile |
+
+When `ISOL8_CONFIG_PATH` or a project marker’s `config_path` redirects the config
+root (e.g. to `./_data/config`), **cages, state, registries, `@…` paths, and
+`@managed/<id>` homes** are resolved under that tree — not under
+`~/.config/isol8/` or `~/.local/share/isol8/`. Project walk-up paths such as
+`.isol8/cages/` still apply in addition.
 
 Project-local (cwd / git tree, not all under config):
 

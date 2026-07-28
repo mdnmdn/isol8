@@ -1,4 +1,4 @@
-//! `isol8` binary — installs the offline-registry provider, then runs the CLI.
+//! `isol8` binary — installs providers, then runs the CLI.
 
 fn main() -> anyhow::Result<()> {
     #[cfg(feature = "registry")]

@@ -97,12 +97,20 @@ pub fn resolve(spec: &Spec, layers: &[Profile], ctx: &Context) -> Result<Effecti
     })
 }
 
-/// Resolve a home path string: `@managed/<id>`, `~…`, or absolute/relative.
+/// Resolve a home path string: `@managed/<id>`, `@…` (config-relative), `~…`, or absolute.
+///
+/// Always returns an absolute path so later `chdir` cannot retarget it.
 fn resolve_home_spec(home: &str, ctx: &Context) -> Result<PathBuf> {
     if let Some(id) = home.strip_prefix(MANAGED_HOME_PREFIX) {
         return ctx.managed_home(id);
     }
-    Ok(PathBuf::from(expand_tilde(home, &ctx.real_home)))
+    if let Some(p) = ctx.expand_at(home) {
+        return Ok(p);
+    }
+    Ok(context::absolute_path(&PathBuf::from(expand_tilde(
+        home,
+        &ctx.real_home,
+    ))))
 }
 
 /// Create a unique scratch home under the OS temp dir (not predictable from PID alone).
@@ -228,11 +236,13 @@ mod tests {
     use crate::plan::HomeOpSpec;
 
     fn test_ctx(real: &str) -> Context {
+        let config_dir = PathBuf::from(format!("{real}/.config/isol8"));
         Context {
             real_home: PathBuf::from(real),
             cwd: PathBuf::from("/tmp"),
             platform: Platform::Linux,
-            managed_root: PathBuf::from(format!("{real}/.local/share/isol8/homes")),
+            managed_root: config_dir.join("homes"),
+            config_dir,
         }
     }
 
@@ -325,7 +335,7 @@ mod tests {
         let home = resolve(&run, &[], &ctx).unwrap();
         assert_eq!(
             home.path,
-            PathBuf::from("/real/home/.local/share/isol8/homes/work")
+            PathBuf::from("/real/home/.config/isol8/homes/work")
         );
     }
 
@@ -433,7 +443,8 @@ mod tests {
             real_home: real.clone(),
             cwd: tmp.clone(),
             platform: Platform::Linux,
-            managed_root: tmp.join("managed"),
+            config_dir: tmp.join("config"),
+            managed_root: tmp.join("config/homes"),
         };
         let run = Spec {
             home: Some(scratch.to_string_lossy().into_owned()),

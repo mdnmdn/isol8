@@ -51,9 +51,9 @@ pub use isol8_registry as registry;
 #[cfg(feature = "registry")]
 #[doc(inline)]
 pub use isol8_registry::{
-    default_cache_root, discover_lockfile_path, discover_offline_recipe_dirs, open_offline,
-    parse_registries_from_toml, update_registry, DirSource, Lockfile, ProfileSource, RegistryIndex,
-    RegistrySpec, TrustLevel,
+    default_cache_root, discover_lockfile_path, discover_offline_recipe_dirs, effective_cages_dir,
+    effective_config_dir, open_offline, parse_registries_from_toml, update_registry, DirSource,
+    Lockfile, ProfileSource, RegistryIndex, RegistrySpec, TrustLevel,
 };
 
 /// CLI surface (feature `cli`).
@@ -70,10 +70,11 @@ pub mod wizard {
     pub use isol8_cli::wizard::*;
 }
 
-/// Install offline-registry recipe discovery into the core recipe loader.
+/// Install offline-registry recipe discovery and config-dir resolution into core.
 ///
 /// The CLI binary calls this at startup. Library embedders that read
-/// `[registries]` from config should call it once before resolving recipes.
+/// `[registries]` / `config_path` should call it once before resolving recipes
+/// or `@managed` / `@…` paths.
 #[cfg(feature = "registry")]
 pub fn ensure_registry_provider() {
     use std::sync::Once;
@@ -82,5 +83,6 @@ pub fn ensure_registry_provider() {
         isol8_core::recipe::set_offline_registry_provider(
             isol8_registry::discover_offline_recipe_dirs,
         );
+        isol8_core::context::set_config_dir_provider(isol8_registry::effective_config_dir);
     });
 }

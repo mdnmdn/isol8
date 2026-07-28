@@ -186,7 +186,10 @@ named — not `data did not match any variant`.
 Bare cage keys normalize to `toolchains/<name>`:
 
 ```toml
-[toolchains.nvm]          # → toolchains/nvm
+[toolchains.nvm]                      # → toolchains/nvm
+strategy = "link"
+
+[toolchains."integrations/gh-cli"]    # id kept as-is; `/` needs a quoted TOML key
 strategy = "link"
 ```
 
@@ -260,6 +263,13 @@ version = "nvm --version"      # optional; host process when probe hits
 cmd = "node --version"         # run confined under the cage
 expect = "^v\\d+"              # optional stdout pattern (\d / \d+ / ^ / $)
 ```
+
+**`expect` matcher.** A tiny hand-rolled matcher, not the `regex` crate. Supported:
+literals, `.`, `\d` / `\d+` / `\d*`, `^` / `$`, and `\` to escape any of them.
+Each output line is tried; unanchored patterns match anywhere in a line, `^` / `$`
+pin to line start / end. Anything else — `(`, `|`, `[`, `?`, `+`, `*` — is a hard
+error naming the construct, never a silent mismatch. Write alternation as two
+recipe variants or drop it (`^/opt/homebrew$` → `homebrew`).
 
 | Surface | Action | Where | Side effects |
 |---------|--------|-------|--------------|

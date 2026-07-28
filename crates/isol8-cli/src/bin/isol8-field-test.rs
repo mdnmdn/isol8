@@ -519,7 +519,8 @@ fn main() {
             real_home: real.clone(),
             cwd: mat.clone(),
             platform: Platform::current(),
-            managed_root: mat.join("managed"),
+            config_dir: mat.join("config"),
+            managed_root: mat.join("config/homes"),
         };
         let specs = vec![
             HomeOpSpec::mkdir(eff.to_string_lossy().into_owned()),
@@ -548,7 +549,8 @@ fn main() {
             real_home: real.clone(),
             cwd: mat.clone(),
             platform: Platform::current(),
-            managed_root: mat.join("managed"),
+            config_dir: mat.join("config"),
+            managed_root: mat.join("config/homes"),
         };
         let specs = vec![HomeOpSpec::link("#HOME/.tool", "~/.tool")];
         let plan = HomePlan::compute(&specs, &ctx, &eff).unwrap();
@@ -598,7 +600,8 @@ fn main() {
             real_home: real.clone(),
             cwd: mat.clone(),
             platform: Platform::current(),
-            managed_root: mat.join("managed"),
+            config_dir: mat.join("config"),
+            managed_root: mat.join("config/homes"),
         };
         let plan =
             HomePlan::compute(&[HomeOpSpec::link("#HOME/.tool", "~/.tool")], &ctx, &eff).unwrap();

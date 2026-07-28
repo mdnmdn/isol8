@@ -85,6 +85,30 @@ profiles = ["base"]
         "list should include dev: {listed:?}"
     );
 
+    // Config-root cages dir (simulates ISOL8_CONFIG_PATH / project config_path).
+    let cfg = root.join("cfg-root");
+    let cfg_cages = cfg.join("cages");
+    std::fs::create_dir_all(&cfg_cages).unwrap();
+    std::fs::write(
+        cfg_cages.join("from-config.toml"),
+        r#"
+schema = 1
+name = "from-config"
+home = "inherit"
+profiles = ["base"]
+"#,
+    )
+    .unwrap();
+    let listed2 = cage::list_cages_in(&root, Some(&cfg)).unwrap();
+    assert!(
+        listed2.iter().any(|(n, _)| n == "from-config"),
+        "list_cages_in should include config-root cage: {listed2:?}"
+    );
+    assert!(
+        listed2.iter().any(|(n, _)| n == "dev"),
+        "list_cages_in still includes project .isol8 cages: {listed2:?}"
+    );
+
     let text = cage::format_show(&c);
     assert!(text.contains("ephemeral"));
     assert!(text.contains("dev"));

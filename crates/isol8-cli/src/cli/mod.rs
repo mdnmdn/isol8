@@ -519,6 +519,9 @@ use isol8_core::{backends, profile, resolve, sandbox};
 
 /// Entry point for the `isol8` binary (the `main.rs` shim calls this).
 pub fn main() -> Result<()> {
+    // Config root (`.isol8.toml` config_path / ISOL8_CONFIG_PATH) drives `@` paths
+    // and `@managed/<id>` → `{config}/homes/<id>`.
+    isol8_core::context::set_config_dir_provider(isol8_registry::effective_config_dir);
     // Wire offline registry dirs into the core recipe loader.
     isol8_core::recipe::set_offline_registry_provider(isol8_registry::discover_offline_recipe_dirs);
     match parse() {
@@ -900,6 +903,33 @@ fn prepare_opts(opts: &mut ProfileOpts) -> Result<()> {
     Ok(())
 }
 
+/// Effective isol8 config root (`ISOL8_CONFIG_PATH` / project `config_path` / OS).
+fn active_config_root() -> std::path::PathBuf {
+    isol8_registry::effective_config_dir()
+}
+
+/// Run toolchain detect; on a TTY, rewrite stderr with `3/22 checking nvm…`.
+fn detect_with_progress(
+    reg: &isol8_core::recipe::RecipeRegistry,
+    ctx: &isol8_core::filter::RunContext,
+    real: &std::path::Path,
+) -> Result<Vec<isol8_core::detect::DetectResult>> {
+    use std::io::Write;
+
+    if !std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        return isol8_core::detect::detect_all(reg, ctx, real).map_err(Into::into);
+    }
+    let mut progress = |i: usize, total: usize, name: &str| {
+        eprint!("\r\x1b[K{i}/{total} checking {name}...");
+        let _ = std::io::stderr().flush();
+    };
+    let rows = isol8_core::detect::detect_all_with(reg, ctx, real, Some(&mut progress))?;
+    // Clear the progress line before the final table.
+    eprint!("\r\x1b[K");
+    let _ = std::io::stderr().flush();
+    Ok(rows)
+}
+
 /// Resolve cage selection and merge into opts. CLI-set fields are never overwritten.
 ///
 /// Name resolution: `--cage` / `-c` → `ISOL8_CAGE` → config `cage` → default discovery.
@@ -919,7 +949,9 @@ fn apply_cage_to_opts(
         .or_else(|| cfg.cage.clone());
 
     let cwd = std::env::current_dir().context("resolving current directory for cage discovery")?;
-    let Some(cage) = isol8_core::cage::resolve(name.as_deref(), &cwd)? else {
+    let config_root = active_config_root();
+    let Some(cage) = isol8_core::cage::resolve_in(name.as_deref(), &cwd, Some(&config_root))?
+    else {
         return Ok(());
     };
 
@@ -951,15 +983,16 @@ fn apply_cage_to_opts(
 
 fn cage_cmd(args: CageArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("resolving current directory")?;
+    let config_root = active_config_root();
     match args.action.as_str() {
         "list" => {
-            let list = isol8_core::cage::list_cages(&cwd)?;
+            let list = isol8_core::cage::list_cages_in(&cwd, Some(&config_root))?;
             if list.is_empty() {
                 println!("(no cages found)");
-                if let Some(dir) = isol8_core::cage::user_cages_dir() {
-                    println!("# create one: isol8 @cage new <name> --yes");
-                    println!("# user dir:   {}", dir.display());
-                }
+                let dir = isol8_core::cage::cages_dir(Some(&config_root))
+                    .unwrap_or_else(|| config_root.join("cages"));
+                println!("# create one: isol8 @cage new <name> --yes");
+                println!("# cages dir:  {}", dir.display());
                 return Ok(());
             }
             for (name, path) in list {
@@ -972,7 +1005,7 @@ fn cage_cmd(args: CageArgs) -> Result<()> {
                 .name
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("@cage show requires a name"))?;
-            let cage = isol8_core::cage::resolve(Some(name), &cwd)?
+            let cage = isol8_core::cage::resolve_in(Some(name), &cwd, Some(&config_root))?
                 .ok_or_else(|| anyhow::anyhow!("cage '{name}' not found"))?;
             print!("{}", isol8_core::cage::format_show(&cage));
             Ok(())
@@ -1012,11 +1045,13 @@ fn cage_new_cmd(args: CageArgs, cwd: &std::path::Path, is_edit: bool) -> Result<
     let real = isol8_core::context::real_home_from_env();
 
     // Always show detection first (evo-repo §6.2) — even for --yes.
-    let detected = isol8_core::detect::detect_all(&reg, &run_ctx, &real)?;
+    // TTY: rewrite stderr with `3/22 checking nvm…` while probes run.
+    let detected = detect_with_progress(&reg, &run_ctx, &real)?;
     print!("{}", isol8_core::detect::format_detect_table(&detected));
 
+    let config_root = active_config_root();
     let existing = if is_edit {
-        let cage = isol8_core::cage::resolve(Some(&name), cwd)?
+        let cage = isol8_core::cage::resolve_in(Some(&name), cwd, Some(&config_root))?
             .ok_or_else(|| anyhow::anyhow!("cage '{name}' not found"))?;
         Some(cage)
     } else {
@@ -1159,6 +1194,13 @@ fn cage_new_cmd(args: CageArgs, cwd: &std::path::Path, is_edit: bool) -> Result<
 
     if args.preview {
         println!("# preview → {}", rendered.path.display());
+        if let Ok(ctx) = isol8_core::context::Context::from_environment() {
+            let home_token =
+                wizard::normalize_home(&name, &req.home).map_err(|e| anyhow::anyhow!("{e}"))?;
+            if let Ok(desc) = ctx.describe_home(&home_token) {
+                println!("# home: {desc}");
+            }
+        }
         print!("{}", rendered.body);
         return Ok(());
     }
@@ -1166,6 +1208,13 @@ fn cage_new_cmd(args: CageArgs, cwd: &std::path::Path, is_edit: bool) -> Result<
     if interactive {
         use dialoguer::Confirm;
         println!("# will write {}", rendered.path.display());
+        if let Ok(ctx) = isol8_core::context::Context::from_environment() {
+            let home_token =
+                wizard::normalize_home(&name, &req.home).map_err(|e| anyhow::anyhow!("{e}"))?;
+            if let Ok(desc) = ctx.describe_home(&home_token) {
+                println!("# home: {desc}");
+            }
+        }
         println!("{}", rendered.body);
         if !Confirm::new()
             .with_prompt("Write this cage?")
@@ -1180,6 +1229,14 @@ fn cage_new_cmd(args: CageArgs, cwd: &std::path::Path, is_edit: bool) -> Result<
     let state = wizard::state_path();
     let result = wizard::apply(&req, &state).map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("wrote {}", result.path.display());
+    // Resolve home token → on-disk path so users see where $HOME will live.
+    let home_token =
+        wizard::normalize_home(&name, &req.home).map_err(|e| anyhow::anyhow!("{e}"))?;
+    if let Ok(ctx) = isol8_core::context::Context::from_environment() {
+        if let Ok(desc) = ctx.describe_home(&home_token) {
+            println!("# home: {desc}");
+        }
+    }
     let hash_short = &result.managed_hash[..12.min(result.managed_hash.len())];
     println!("# managed hash {hash_short}");
 
@@ -1388,7 +1445,8 @@ fn cage_detect_cmd() -> Result<()> {
 
 fn cage_verify_cmd(name: Option<&str>) -> Result<()> {
     let cwd = std::env::current_dir().context("resolving current directory")?;
-    let cage = isol8_core::cage::resolve(name, &cwd)?.ok_or_else(|| {
+    let config_root = active_config_root();
+    let cage = isol8_core::cage::resolve_in(name, &cwd, Some(&config_root))?.ok_or_else(|| {
         if let Some(n) = name {
             anyhow::anyhow!("cage '{n}' not found")
         } else {

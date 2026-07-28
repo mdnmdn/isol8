@@ -505,11 +505,13 @@ mod tests {
     use crate::context::{Context, Platform};
 
     fn ambient(real: &str) -> Context {
+        let config_dir = PathBuf::from(format!("{real}/.config/isol8"));
         Context {
             real_home: PathBuf::from(real),
             cwd: PathBuf::from("/tmp"),
             platform: Platform::Macos,
-            managed_root: PathBuf::from(format!("{real}/.local/share/isol8/homes")),
+            managed_root: config_dir.join("homes"),
+            config_dir,
         }
     }
 

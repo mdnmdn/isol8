@@ -536,19 +536,76 @@ fn peek_local_meta(path: &Path) -> Option<LocalConfigMeta> {
     toml::from_str(&body).ok()
 }
 
-/// Expand `@…` paths relative to `config_dir`. Non-`@` paths are unchanged.
+/// Expand `@…` paths relative to `config_dir`. Non-`@` paths are absolutized
+/// when relative (cwd at call time) so they survive later `chdir`.
 pub fn expand_at_path(path: &str, config_dir: &Path) -> String {
-    let Some(rest) = path.strip_prefix('@') else {
-        return path.to_string();
-    };
-    let rest = rest
-        .strip_prefix('/')
-        .or_else(|| rest.strip_prefix('\\'))
-        .unwrap_or(rest);
-    if rest.is_empty() {
-        return config_dir.display().to_string();
+    if let Some(p) = isol8_core::context::expand_at_path(path, config_dir) {
+        return p.display().to_string();
     }
-    config_dir.join(rest).display().to_string()
+    isol8_core::absolute_path(Path::new(path))
+        .display()
+        .to_string()
+}
+
+/// Root directory of the effective isol8 config tree (`…/isol8` or a redirect).
+///
+/// Same discovery order as config load / registries:
+/// 1. `ISOL8_CONFIG_PATH` (file → parent dir; directory → as-is)
+/// 2. Project marker (`config_path` redirect, or marker parent if `ignore_global`)
+/// 3. OS default (`~/.config/isol8`, `$XDG_CONFIG_HOME/isol8`, …)
+///
+/// Always **absolute**. Cages live at `{dir}/cages/`, wizard state at
+/// `{dir}/state.toml`, `@managed/<id>` at `{dir}/homes/<id>`.
+pub fn effective_config_dir() -> PathBuf {
+    let raw = if let Ok(path) = std::env::var("ISOL8_CONFIG_PATH") {
+        config_root_from_location(Path::new(&path))
+    } else if let Some(local) = discover_local_marker() {
+        if let Some(meta) = peek_local_meta(&local) {
+            if meta.ignore_global {
+                local
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("."))
+            } else if let Some(cp) = meta.config_path.as_deref().filter(|s| !s.is_empty()) {
+                config_root_from_location(Path::new(cp))
+            } else {
+                config_isol8_dir()
+            }
+        } else {
+            config_isol8_dir()
+        }
+    } else {
+        config_isol8_dir()
+    };
+    isol8_core::absolute_path(&raw)
+}
+
+/// Map a config location (file or directory, may not exist yet) to its root dir
+/// (not yet absolutized — callers apply [`isol8_core::absolute_path`]).
+fn config_root_from_location(path: &Path) -> PathBuf {
+    if let Some(file) = resolve_config_location(path) {
+        return file
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+    }
+    if path.is_file() {
+        return path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+    }
+    // Directory (existing or intended) or bare path used as config root.
+    if path.as_os_str().is_empty() {
+        return PathBuf::from(".");
+    }
+    path.to_path_buf()
+}
+
+/// Config-level cages directory: `{effective_config_dir()}/cages` (absolute).
+pub fn effective_cages_dir() -> PathBuf {
+    effective_config_dir().join("cages")
 }
 
 // ---------------------------------------------------------------------------
@@ -1654,6 +1711,47 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn effective_config_dir_respects_env_and_marker() {
+        let root = tmp();
+        let cfg = root.join("my-config");
+        fs::create_dir_all(cfg.join("cages")).unwrap();
+        fs::write(cfg.join("isol8.toml"), "auto_profiles = true\n").unwrap();
+
+        let prev_env = std::env::var_os("ISOL8_CONFIG_PATH");
+        let prev_cwd = std::env::current_dir().unwrap();
+        std::env::set_var("ISOL8_CONFIG_PATH", &cfg);
+        let via_env = effective_config_dir();
+        assert_eq!(via_env.canonicalize().unwrap(), cfg.canonicalize().unwrap());
+        assert_eq!(
+            effective_cages_dir().canonicalize().unwrap(),
+            cfg.join("cages").canonicalize().unwrap()
+        );
+
+        std::env::remove_var("ISOL8_CONFIG_PATH");
+        let proj = root.join("proj");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(
+            proj.join(".isol8.toml"),
+            format!("config_path = \"{}\"\n", cfg.display()),
+        )
+        .unwrap();
+        std::env::set_current_dir(&proj).unwrap();
+        let via_marker = effective_config_dir();
+        assert_eq!(
+            via_marker.canonicalize().unwrap(),
+            cfg.canonicalize().unwrap(),
+            "marker config_path should redirect cages root"
+        );
+
+        std::env::set_current_dir(prev_cwd).unwrap();
+        match prev_env {
+            Some(v) => std::env::set_var("ISOL8_CONFIG_PATH", v),
+            None => std::env::remove_var("ISOL8_CONFIG_PATH"),
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

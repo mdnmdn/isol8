@@ -151,19 +151,16 @@ fn find_config_in_dir(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Expand `@…` paths relative to `config_dir`. Non-`@` paths are unchanged.
+/// Expand `@…` relative to `config_dir`; absolutize every path so results
+/// survive later `chdir`. Non-`@` relative paths join the process cwd.
 pub fn expand_at_path(path: &str, config_dir: &Path) -> String {
-    let Some(rest) = path.strip_prefix('@') else {
-        return path.to_string();
-    };
-    let rest = rest
-        .strip_prefix('/')
-        .or_else(|| rest.strip_prefix('\\'))
-        .unwrap_or(rest);
-    if rest.is_empty() {
-        return config_dir.display().to_string();
+    if let Some(p) = isol8_core::context::expand_at_path(path, config_dir) {
+        return p.display().to_string();
     }
-    config_dir.join(rest).display().to_string()
+    // Absolute stay absolute; relative → cwd-absolute (not config-relative).
+    isol8_core::absolute_path(Path::new(path))
+        .display()
+        .to_string()
 }
 
 fn expand_at_paths(paths: &mut [String], config_dir: &Path) {
@@ -173,15 +170,16 @@ fn expand_at_paths(paths: &mut [String], config_dir: &Path) {
 }
 
 fn expand_config_paths(cfg: &mut Config, config_dir: &Path) {
-    expand_at_paths(&mut cfg.profile_paths, config_dir);
-    expand_at_paths(&mut cfg.add_dirs_rw, config_dir);
-    expand_at_paths(&mut cfg.add_dirs_ro, config_dir);
+    let config_dir = isol8_core::absolute_path(config_dir);
+    expand_at_paths(&mut cfg.profile_paths, &config_dir);
+    expand_at_paths(&mut cfg.add_dirs_rw, &config_dir);
+    expand_at_paths(&mut cfg.add_dirs_ro, &config_dir);
     if let Some(ref home) = cfg.home {
-        cfg.home = Some(expand_at_path(home, config_dir));
+        cfg.home = Some(expand_at_path(home, &config_dir));
     }
     for spec in cfg.registries.values_mut() {
         if let RegistrySpec::Path { path, .. } = spec {
-            *path = expand_at_path(path, config_dir);
+            *path = expand_at_path(path, &config_dir);
         }
     }
 }
@@ -634,7 +632,13 @@ mod tests {
         );
         assert_eq!(expand_at_path("@", &dir), dir.display().to_string());
         assert_eq!(expand_at_path("/abs", &dir), "/abs");
-        assert_eq!(expand_at_path("rel", &dir), "rel");
+        // Non-@ relative → absolute against cwd (survives chdir).
+        let rel = expand_at_path("rel", &dir);
+        assert!(
+            PathBuf::from(&rel).is_absolute(),
+            "expected absolute, got {rel}"
+        );
+        assert!(rel.ends_with("rel"), "{rel}");
     }
 
     #[test]
@@ -725,13 +729,13 @@ cage = "work"
         let cfg = load().expect("load");
         assert!(!cfg.auto_profiles);
         assert_eq!(cfg.cage.as_deref(), Some("work"));
-        assert_eq!(
-            cfg.add_dirs_rw,
-            vec![global.join("data").display().to_string()]
-        );
+        // @ expansions are absolute (config root absolutized).
+        let data = isol8_core::absolute_path(&global.join("data"));
+        let home = isol8_core::absolute_path(&global.join("homes/g"));
+        assert_eq!(cfg.add_dirs_rw, vec![data.display().to_string()]);
         assert_eq!(
             cfg.home.as_deref(),
-            Some(global.join("homes/g").display().to_string().as_str())
+            Some(home.display().to_string().as_str())
         );
 
         std::env::set_current_dir(prev_cwd).unwrap();

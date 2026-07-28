@@ -246,8 +246,23 @@ pub fn load_from_path(path: &Path) -> Result<Cage> {
 }
 
 /// User-level cages directory: `$XDG_CONFIG_HOME/isol8/cages` (or platform equivalent).
+///
+/// Prefer [`cages_dir`] with the effective config root from the CLI (respects
+/// `ISOL8_CONFIG_PATH` and project `config_path` markers). This OS-only helper
+/// remains for embedders that do not load isol8 config discovery.
 pub fn user_cages_dir() -> Option<PathBuf> {
     config_home().map(|h| h.join("isol8").join("cages"))
+}
+
+/// Config-level cages directory.
+///
+/// - `Some(config_root)` → `{config_root}/cages`
+/// - `None` → [`user_cages_dir`] (OS default)
+pub fn cages_dir(config_root: Option<&Path>) -> Option<PathBuf> {
+    match config_root {
+        Some(root) => Some(root.join("cages")),
+        None => user_cages_dir(),
+    }
 }
 
 fn config_home() -> Option<PathBuf> {
@@ -291,10 +306,25 @@ fn walk_ancestors(start: &Path) -> Vec<PathBuf> {
 /// Resolve a cage by optional name using the discovery order in evo-repo §3.2
 /// (without CLI/env — those are applied by the caller when choosing `name`).
 ///
-/// When `name` is `Some("work")`, looks for project then user files named `work`.
+/// Uses the OS default cages dir (`~/.config/isol8/cages`). Prefer
+/// [`resolve_in`] with the effective config root so `ISOL8_CONFIG_PATH` /
+/// project `config_path` redirects apply.
+///
+/// When `name` is `Some("work")`, looks for project then config-level files named `work`.
 /// When `name` is `None`, looks for project default (`.isol8/cage.toml`) then
-/// `~/.config/isol8/cages/default.toml`.
+/// `{config}/cages/default.toml`.
 pub fn resolve(name: Option<&str>, cwd: &Path) -> Result<Option<Cage>> {
+    resolve_in(name, cwd, None)
+}
+
+/// Like [`resolve`], but config-level cages are read from `{config_root}/cages`
+/// when `config_root` is `Some` (instead of the OS default).
+pub fn resolve_in(
+    name: Option<&str>,
+    cwd: &Path,
+    config_root: Option<&Path>,
+) -> Result<Option<Cage>> {
+    let config_cages = cages_dir(config_root);
     if let Some(n) = name {
         if n.is_empty() {
             return Ok(None);
@@ -321,7 +351,7 @@ pub fn resolve(name: Option<&str>, cwd: &Path) -> Result<Option<Cage>> {
                 }
             }
         }
-        if let Some(user) = user_cages_dir() {
+        if let Some(user) = &config_cages {
             let c = user.join(format!("{n}.toml"));
             if c.is_file() {
                 return load_from_path(&c).map(Some);
@@ -329,7 +359,8 @@ pub fn resolve(name: Option<&str>, cwd: &Path) -> Result<Option<Cage>> {
         }
         return Err(Error::Message(format!(
             "cage '{n}' not found (looked under .isol8/cages/, .isol8/, and {})",
-            user_cages_dir()
+            config_cages
+                .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "~/.config/isol8/cages".into())
         )));
@@ -342,7 +373,7 @@ pub fn resolve(name: Option<&str>, cwd: &Path) -> Result<Option<Cage>> {
             return load_from_path(&c).map(Some);
         }
     }
-    if let Some(user) = user_cages_dir() {
+    if let Some(user) = &config_cages {
         let c = user.join("default.toml");
         if c.is_file() {
             return load_from_path(&c).map(Some);
@@ -351,8 +382,14 @@ pub fn resolve(name: Option<&str>, cwd: &Path) -> Result<Option<Cage>> {
     Ok(None)
 }
 
-/// List known cages: `(name, path)` from the user cages dir and project `.isol8/cages/`.
+/// List known cages: `(name, path)` from project `.isol8/cages/` and the
+/// config-level cages dir (OS default unless using [`list_cages_in`]).
 pub fn list_cages(cwd: &Path) -> Result<Vec<(String, PathBuf)>> {
+    list_cages_in(cwd, None)
+}
+
+/// Like [`list_cages`], with config-level cages under `{config_root}/cages`.
+pub fn list_cages_in(cwd: &Path, config_root: Option<&Path>) -> Result<Vec<(String, PathBuf)>> {
     let mut out: Vec<(String, PathBuf)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -381,7 +418,7 @@ pub fn list_cages(cwd: &Path) -> Result<Vec<(String, PathBuf)>> {
     for dir in walk_ancestors(cwd) {
         push_dir(&dir.join(".isol8").join("cages"));
     }
-    if let Some(user) = user_cages_dir() {
+    if let Some(user) = cages_dir(config_root) {
         push_dir(&user);
     }
 
@@ -431,7 +468,10 @@ profiles = []
     )
 }
 
-/// Write a new cage file under the user cages dir (or `dir` if given).
+/// Write a new cage file under the cages dir (or `dir` if given).
+///
+/// When `dir` is `None`, writes to the OS default cages dir. Callers that honor
+/// config redirects should pass `Some(&effective_cages_dir)`.
 pub fn write_new(name: &str, home: &str, dir: Option<&Path>) -> Result<PathBuf> {
     if name.is_empty() || name.contains('/') || name.contains('\\') {
         return Err(Error::Message(
@@ -473,6 +513,12 @@ pub fn format_show(cage: &Cage) -> String {
     out.push_str(&format!("schema = {}\n", cage.schema));
     out.push_str(&format!("name = {:?}\n", cage.name));
     out.push_str(&format!("home = {home:?}\n"));
+    // Resolved effective home (managed root / real $HOME / …).
+    if let Ok(ctx) = crate::context::Context::from_environment() {
+        if let Ok(desc) = ctx.describe_home(&home) {
+            out.push_str(&format!("# effective home: {desc}\n"));
+        }
+    }
     out.push_str(&format!("profiles = {:?}\n", cage.profiles));
     if cage.dirs.is_empty() {
         out.push_str("# dirs: (none)\n");
@@ -488,7 +534,7 @@ pub fn format_show(cage: &Cage) -> String {
     if !cage.toolchains.is_empty() {
         out.push('\n');
         for tc in &cage.toolchains {
-            let short = tc.id.strip_prefix("toolchains/").unwrap_or(tc.id.as_str());
+            let short = crate::recipe::toolchain_key(&tc.id);
             out.push_str(&format!(
                 "[toolchains.{short}]\nstrategy = {:?}\n",
                 tc.strategy.as_str()
@@ -707,6 +753,45 @@ profiles = ["base"]
         // Second write refuses overwrite.
         assert!(write_new("demo", "inherit", Some(&dir)).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_and_resolve_honor_config_root_cages() {
+        let root = tmp_dir();
+        let cwd = root.join("proj");
+        let cfg = root.join("cfg");
+        let cages = cfg.join("cages");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&cages).unwrap();
+        std::fs::write(
+            cages.join("local-only.toml"),
+            r#"
+schema = 1
+name = "local-only"
+home = "inherit"
+profiles = ["base"]
+"#,
+        )
+        .unwrap();
+
+        let listed = list_cages_in(&cwd, Some(&cfg)).unwrap();
+        assert!(
+            listed
+                .iter()
+                .any(|(n, p)| n == "local-only" && p.starts_with(&cages)),
+            "expected local-only under config cages: {listed:?}"
+        );
+
+        let c = resolve_in(Some("local-only"), &cwd, Some(&cfg))
+            .unwrap()
+            .expect("resolve local-only");
+        assert_eq!(c.name, "local-only");
+
+        // Without config_root, OS cages dir is used — local-only should not resolve.
+        let miss = resolve_in(Some("local-only"), &cwd, None);
+        assert!(miss.is_err() || miss.unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

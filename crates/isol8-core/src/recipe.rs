@@ -159,6 +159,24 @@ pub fn normalize_recipe_id(key: &str) -> String {
     }
 }
 
+/// Render a recipe id as a cage `[toolchains.<key>]` key.
+///
+/// Inverse of [`normalize_recipe_id`]: `toolchains/nvm` → `nvm`. Ids that keep a
+/// `/` (e.g. `integrations/gh-cli`) are not TOML bare keys and are quoted.
+pub fn toolchain_key(id: &str) -> String {
+    let short = id.strip_prefix("toolchains/").unwrap_or(id);
+    let bare = !short.is_empty()
+        && short
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if bare {
+        short.to_string()
+    } else {
+        // ponytail: Rust debug escaping == TOML basic string for `"` and `\`.
+        format!("{short:?}")
+    }
+}
+
 /// Compiled contribution of one recipe strategy (tokens still present where noted).
 #[derive(Debug, Clone)]
 pub struct RecipeContribution {

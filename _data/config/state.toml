@@ -4,3 +4,11 @@
 [cages.test]
 path = "@/cages/test.toml"
 managed_hash = "59851d9451e4199e65c771bd3d9072cf649f96313a1e48d64613e250f084c20e"
+
+[cages.test2]
+path = "./_data/config/cages/test2.toml"
+managed_hash = "6326357754bf0b18a508ae7faae5fad34f246f76ec11ed83b30eabd988f07c74"
+
+[cages.tmpcheck]
+path = "./_data/config/cages/tmpcheck.toml"
+managed_hash = "d2a671dbd288a6156ef7f7fd70e0b9aea568c161eaff37f526aa12d85817b42f"

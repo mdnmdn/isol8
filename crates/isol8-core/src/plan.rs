@@ -209,10 +209,13 @@ impl HomePlan {
 }
 
 /// Expand a path token string: `#HOME` → real home, `~` → effective home,
-/// `@managed/<id>` → managed root. Absolute paths pass through.
+/// `@managed/<id>` → `{config_dir}/homes/<id>`, other `@…` → config-relative.
+/// Absolute paths pass through.
 pub fn expand_tokens(raw: &str, ctx: &Context, effective_home: &Path) -> Result<PathBuf> {
     let s = if let Some(id) = raw.strip_prefix("@managed/") {
         return ctx.managed_home(id);
+    } else if let Some(p) = ctx.expand_at(raw) {
+        return Ok(p);
     } else if raw.contains(REAL_HOME_TOKEN) {
         raw.replace(REAL_HOME_TOKEN, &ctx.real_home.to_string_lossy())
     } else {
@@ -468,10 +471,20 @@ mod tests {
     }
 
     fn ctx(real: &Path, managed: &Path) -> Context {
+        // config_dir is parent of managed when managed ends in "homes"; else sibling.
+        let config_dir = if managed.ends_with("homes") {
+            managed
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| managed.to_path_buf())
+        } else {
+            managed.to_path_buf()
+        };
         Context {
             real_home: real.to_path_buf(),
             cwd: PathBuf::from("/tmp"),
             platform: Platform::Linux,
+            config_dir,
             managed_root: managed.to_path_buf(),
         }
     }
@@ -491,6 +504,10 @@ mod tests {
         assert_eq!(
             expand_tokens("@managed/work", &c, eff).unwrap(),
             PathBuf::from("/data/homes/work")
+        );
+        assert_eq!(
+            expand_tokens("@/profiles", &c, eff).unwrap(),
+            PathBuf::from("/data/profiles")
         );
     }
 

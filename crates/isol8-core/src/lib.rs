@@ -34,7 +34,9 @@ pub mod sandbox;
 
 pub use analyze::{AnalysisReport, Denial, DenialAccess};
 pub use cage::{Cage, CageOverlay, HomeMode};
-pub use context::{Context, Platform};
+pub use context::{
+    absolute_path, effective_config_dir, set_config_dir_provider, Context, Platform,
+};
 pub use error::{Error, Result};
 pub use plan::{HomeOpKind, HomeOpSpec, HomePlan, PlanAction, PlannedOp};
 pub use profile::{Access, MatchKind, PathGrant, Profile};

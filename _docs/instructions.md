@@ -444,7 +444,9 @@ isol8 -c work --show-policies -- echo hi
 isol8 --cage work claude
 ```
 
-**Cage file** (`~/.config/isol8/cages/work.toml` or project-local via `--path`):
+**Cage file** (`{config}/cages/work.toml` — under the [effective config
+dir](./config.md), e.g. `~/.config/isol8/cages/` or `./_data/config/cages/` when
+redirected — or project-local via `--path` / `.isol8/cages/`):
 
 ```toml
 schema = 1
@@ -468,7 +470,7 @@ strategy = "link"
 |-------|---------|
 | `inherit` | Real `$HOME` (default isol8 behaviour) |
 | `ephemeral` | Fresh temp dir per run |
-| `@managed/<id>` | Durable isol8-managed dir under the platform data dir (`~/.local/share/isol8/homes/<id>` on Unix) |
+| `@managed/<id>` | Durable isol8-managed dir under the **effective config root**: `{config_dir}/homes/<id>` (e.g. `./_data/config/homes/work` when `.isol8.toml` sets `config_path`, else `~/.config/isol8/homes/<id>`). Other `@…` paths are also config-relative. `@cage new` / `@cage show` print the resolved path. Created on first run, not at cage write time. |
 | absolute / `~/…` | Explicit replacement path |
 
 **Which cage is selected** (first match):

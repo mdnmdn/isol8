@@ -25,7 +25,8 @@ fn end_to_end_feed_to_report() {
         real_home: PathBuf::from("/Users/alice"),
         cwd: PathBuf::from("/tmp"),
         platform: Platform::Macos,
-        managed_root: PathBuf::from("/Users/alice/.local/share/isol8/homes"),
+        config_dir: PathBuf::from("/Users/alice/.config/isol8"),
+        managed_root: PathBuf::from("/Users/alice/.config/isol8/homes"),
     };
     let eff = Path::new("/tmp/scratch-home");
     let index = analyze::build_recipe_index(&reg, &ctx, &ambient, eff).unwrap();

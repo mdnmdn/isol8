@@ -443,11 +443,10 @@ pub struct CageStateEntry {
     pub managed_hash: String,
 }
 
-/// Default path: `$XDG_CONFIG_HOME/isol8/state.toml` or `~/.config/isol8/state.toml`.
+/// Default path: `{effective_config_dir}/state.toml` (respects `ISOL8_CONFIG_PATH`
+/// and project `config_path` markers).
 pub fn state_path() -> PathBuf {
-    isol8_core::cage::user_cages_dir()
-        .map(|p| p.parent().unwrap_or(p.as_path()).join("state.toml"))
-        .unwrap_or_else(|| PathBuf::from("isol8-state.toml"))
+    isol8_registry::effective_config_dir().join("state.toml")
 }
 
 /// Load wizard state (empty if missing).
@@ -553,11 +552,7 @@ fn dest_path(req: &WizardRequest) -> Result<PathBuf> {
     }
     let base = match &req.out_dir {
         Some(d) => d.clone(),
-        None => isol8_core::cage::user_cages_dir().ok_or_else(|| {
-            Error::Message(
-                "cannot determine cages dir (set HOME / XDG_CONFIG_HOME or pass --path)".into(),
-            )
-        })?,
+        None => isol8_registry::effective_cages_dir(),
     };
     Ok(base.join(format!("{}.toml", req.name)))
 }
@@ -651,7 +646,7 @@ fn render_fresh(
         out.push_str("# no toolchains — add with `@cage edit` or [toolchains.*]\n");
     } else {
         for tc in tools {
-            let short = tc.id.strip_prefix("toolchains/").unwrap_or(tc.id.as_str());
+            let short = isol8_core::recipe::toolchain_key(&tc.id);
             out.push_str(&format!("# {MANAGED_MARKER} — rewritten by `@cage edit`\n"));
             out.push_str(&format!(
                 "[toolchains.{short}]\nstrategy = \"{}\"\n\n",
@@ -856,6 +851,32 @@ mod tests {
         assert!(r.body.contains(MANAGED_MARKER));
         assert_eq!(r.managed_hash, managed_hash(&req.tools));
         let _ = fs::remove_dir_all(req.out_dir.unwrap());
+    }
+
+    #[test]
+    fn non_toolchain_ids_are_quoted_keys() {
+        let tools = vec![ToolchainChoice {
+            id: "integrations/gh-cli".into(),
+            strategy: StrategyName::Link,
+        }];
+        let dir = tmp();
+        let path = dir.join("work.toml");
+        let load = |body: &str| {
+            fs::write(&path, body).unwrap();
+            isol8_core::cage::load_from_path(&path).unwrap()
+        };
+
+        let body = render_fresh("work", "@managed/work", &[], &tools, &[]);
+        assert!(
+            body.contains("[toolchains.\"integrations/gh-cli\"]"),
+            "{body}"
+        );
+        assert_eq!(load(&body).toolchains[0].id, "integrations/gh-cli");
+
+        // …and the edit path round-trips it too.
+        let edited = rewrite_managed(&body, "work", "@managed/work", &[], &tools, &[]).unwrap();
+        assert_eq!(load(&edited).toolchains[0].id, "integrations/gh-cli");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

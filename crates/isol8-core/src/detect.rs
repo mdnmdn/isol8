@@ -139,12 +139,41 @@ pub fn detect_all(
     ctx: &RunContext,
     real_home: &Path,
 ) -> Result<Vec<DetectResult>> {
-    let mut out = Vec::new();
+    detect_all_with(reg, ctx, real_home, None)
+}
+
+/// Progress callback: `(index_1based, total, short_id)`.
+pub type DetectProgress<'a> = dyn FnMut(usize, usize, &str) + 'a;
+
+/// Like [`detect_all`], with optional progress: `(index_1based, total, short_id)`.
+///
+/// Called once per recipe **before** that recipe is probed. `short_id` strips a
+/// leading `toolchains/` prefix when present (e.g. `nvm`).
+pub fn detect_all_with(
+    reg: &RecipeRegistry,
+    ctx: &RunContext,
+    real_home: &Path,
+    mut on_progress: Option<&mut DetectProgress<'_>>,
+) -> Result<Vec<DetectResult>> {
+    // Resolve first so total is known before any probe (and for stable progress).
+    let mut recipes = Vec::new();
     for id in reg.ids() {
         match reg.resolve(&id, ctx) {
-            Ok(recipe) => out.push(detect_recipe(recipe, real_home)),
+            Ok(recipe) => recipes.push(recipe),
             Err(_) => continue, // platform mismatch — omit from detect list
         }
+    }
+    let total = recipes.len();
+    let mut out = Vec::with_capacity(total);
+    for (i, recipe) in recipes.into_iter().enumerate() {
+        let short = recipe
+            .id
+            .strip_prefix("toolchains/")
+            .unwrap_or(recipe.id.as_str());
+        if let Some(cb) = on_progress.as_mut() {
+            cb(i + 1, total, short);
+        }
+        out.push(detect_recipe(recipe, real_home));
     }
     Ok(out)
 }
@@ -437,7 +466,7 @@ fn run_host_command(cmd: &str) -> Result<String> {
 /// Tiny expect matcher (no `regex` crate). Supports `^`/`$`, literals, `.`, and
 /// `\d` / `\d+` / `\d*` — enough for recipe patterns like `^v\d+`.
 fn regex_is_match(pattern: &str, text: &str) -> Result<bool> {
-    let line = text.lines().next().unwrap_or(text).trim();
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
     let mut pat = pattern.trim();
     let from_start = if let Some(rest) = pat.strip_prefix('^') {
         pat = rest;
@@ -467,6 +496,12 @@ fn regex_is_match(pattern: &str, text: &str) -> Result<bool> {
     let b = pat.as_bytes();
     let mut i = 0;
     while i < b.len() {
+        if b[i] == b'\\' && i + 1 < b.len() && b[i + 1] != b'd' {
+            // Escaped metacharacter (`\.`, `\\`, `\$`) → literal.
+            lit.push(b[i + 1] as char);
+            i += 2;
+            continue;
+        }
         if b[i] == b'\\' && i + 1 < b.len() && b[i + 1] == b'd' {
             if !lit.is_empty() {
                 toks.push(Tok::Lit(std::mem::take(&mut lit)));
@@ -492,6 +527,17 @@ fn regex_is_match(pattern: &str, text: &str) -> Result<bool> {
             i += 1;
             continue;
         }
+        // Anything else regex-ish would silently degrade to a literal — say so instead.
+        if matches!(
+            b[i],
+            b'(' | b')' | b'|' | b'[' | b']' | b'{' | b'}' | b'?' | b'+' | b'*'
+        ) {
+            return Err(Error::Message(format!(
+                "unsupported construct '{}' (supported: ^ $ . \\d \\d+ \\d* and literals; \
+                 escape with \\{})",
+                b[i] as char, b[i] as char
+            )));
+        }
         lit.push(b[i] as char);
         i += 1;
     }
@@ -499,45 +545,51 @@ fn regex_is_match(pattern: &str, text: &str) -> Result<bool> {
         toks.push(Tok::Lit(lit));
     }
 
-    let tb = line.as_bytes();
-    let mut pos = 0;
-    for tok in &toks {
-        match tok {
-            Tok::Lit(s) => {
-                let sb = s.as_bytes();
-                if pos + sb.len() > tb.len() || &tb[pos..pos + sb.len()] != sb {
-                    return Ok(false);
-                }
-                pos += sb.len();
-            }
-            Tok::Any => {
-                if pos >= tb.len() {
-                    return Ok(false);
-                }
-                pos += 1;
-            }
-            Tok::Digits { min, greedy } => {
-                let start = pos;
-                if *greedy {
-                    while pos < tb.len() && tb[pos].is_ascii_digit() {
-                        pos += 1;
+    // Match the token list against `tb` starting exactly at `start`.
+    let match_at = |tb: &[u8], start: usize| -> bool {
+        let mut pos = start;
+        for tok in &toks {
+            match tok {
+                Tok::Lit(s) => {
+                    let sb = s.as_bytes();
+                    if pos + sb.len() > tb.len() || &tb[pos..pos + sb.len()] != sb {
+                        return false;
                     }
-                } else if pos < tb.len() && tb[pos].is_ascii_digit() {
+                    pos += sb.len();
+                }
+                Tok::Any => {
+                    if pos >= tb.len() {
+                        return false;
+                    }
                     pos += 1;
                 }
-                if pos - start < *min {
-                    return Ok(false);
+                Tok::Digits { min, greedy } => {
+                    let at = pos;
+                    if *greedy {
+                        while pos < tb.len() && tb[pos].is_ascii_digit() {
+                            pos += 1;
+                        }
+                    } else if pos < tb.len() && tb[pos].is_ascii_digit() {
+                        pos += 1;
+                    }
+                    if pos - at < *min {
+                        return false;
+                    }
                 }
             }
         }
+        !to_end || pos == tb.len()
+    };
+
+    for line in lines {
+        let tb = line.as_bytes();
+        // Unanchored patterns search the line; `^` pins the match to offset 0.
+        let last = if from_start { 0 } else { tb.len() };
+        if (0..=last).any(|s| match_at(tb, s)) {
+            return Ok(true);
+        }
     }
-    if to_end && pos != tb.len() {
-        return Ok(false);
-    }
-    if from_start {
-        // Matching always starts at index 0.
-    }
-    Ok(true)
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -613,6 +665,68 @@ paths = []
     fn expect_v_digits() {
         assert!(regex_is_match(r"^v\d+", "v22.3.0").unwrap());
         assert!(!regex_is_match(r"^v\d+", "nope").unwrap());
+    }
+
+    #[test]
+    fn detect_all_with_reports_progress() {
+        let dir = std::env::temp_dir().join(format!("isol8-detect-prog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("demo.toml"),
+            r##"
+schema = 1
+id = "toolchains/demo-prog"
+kind = "recipe"
+[detect]
+probe = { path = "~/.isol8-detect-progress-probe" }
+[strategies.isolate]
+paths = []
+"##,
+        )
+        .unwrap();
+        let reg =
+            RecipeRegistry::load_with_registry_dirs(&[], &[(String::new(), dir.clone())]).unwrap();
+        let ctx = RunContext::from_cmd(&[]);
+        let real = real_home_from_env();
+        let mut seen: Vec<(usize, usize, String)> = Vec::new();
+        let mut cb = |i: usize, total: usize, name: &str| {
+            seen.push((i, total, name.to_string()));
+        };
+        let rows = detect_all_with(&reg, &ctx, &real, Some(&mut cb)).unwrap();
+        // load_with_registry_dirs still loads builtins; filter to our id.
+        assert!(
+            seen.iter()
+                .any(|(i, t, n)| *i >= 1 && *t >= 1 && n == "demo-prog"),
+            "progress should mention demo-prog: {seen:?}"
+        );
+        assert!(rows.iter().any(|r| r.id == "toolchains/demo-prog"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expect_escaped_dot_is_literal() {
+        assert!(regex_is_match(r"^\d+\.", "1.3.4").unwrap());
+        assert!(regex_is_match(r"^cargo \d+\.", "cargo 1.96.0 (30a34c6)").unwrap());
+        assert!(regex_is_match(r"\d+\.\d+\.\d+", "8.0.100 [/usr/share]").unwrap());
+        // `\.` must not behave like `.`
+        assert!(!regex_is_match(r"^\d+\.", "1x3").unwrap());
+    }
+
+    #[test]
+    fn expect_is_unanchored_and_multiline() {
+        // No `^` → search anywhere in the line.
+        assert!(regex_is_match("version", r#"openjdk version "21.0.3" LTS"#).unwrap());
+        assert!(regex_is_match(r"Gradle \d+\.", "-----\n\nGradle 8.7\n\n").unwrap());
+        // `^` still pins to the start of a line.
+        assert!(!regex_is_match(r"^Gradle", "the Gradle build").unwrap());
+        assert!(regex_is_match(r"^/opt/homebrew$", "/opt/homebrew").unwrap());
+    }
+
+    #[test]
+    fn expect_rejects_unsupported_constructs() {
+        let e = regex_is_match(r"^/(opt/homebrew|usr/local)$", "/opt/homebrew").unwrap_err();
+        assert!(e.to_string().contains("unsupported construct"), "{e}");
     }
 
     #[test]
