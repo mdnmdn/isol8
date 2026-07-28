@@ -53,6 +53,7 @@ sandbox policy (dry-run style):
 ```sh
 isol8 --show-policies echo hi
 isol8 --show-policies --profile agents/claude-code claude --version
+isol8 --show-policies --json echo hi | jq '.profile.paths'
 ```
 
 `--dry-run` is an alias for `--show-policies`.
@@ -113,6 +114,7 @@ These flags apply to normal runs and to `--show-policies` / `--show-profiles`:
 | `--show-profiles` | no | List all layers, or show layers selected for the given command. |
 | `--dry-run` | no | Alias for `--show-policies`. |
 | `-v, --verbose` | no | Verbose layer listing (with `--show-profiles` or `@profiles-list`). |
+| `--json` | no | Machine-readable output for `--show-policies`, `--analyze`, `@cage detect`, `@cage verify`, `@registry list`. See [embedding.md](./embedding.md) §5. |
 
 When a flag accepts a path or profile name, you can repeat it.
 
@@ -343,86 +345,26 @@ isol8 --profile macos-system --show-policies date
 
 `isol8` is a Cargo workspace. Depend on the root **facade** package so
 `use isol8::…` stays stable. Engine modules live in `isol8-core` and are re-exported
-from the facade. Default features are `cli` + `registry`.
+from the facade.
 
-```toml
-# Cargo.toml — engine only (no clap / registry / wizard):
-isol8 = { path = "../isol8", default-features = false }
-
-# engine + offline registry types (no CLI binary surface):
-isol8 = { path = "../isol8", default-features = false, features = ["registry"] }
-```
-
-If you use config-backed `[registries.*]` recipe dirs **without** running the
-`isol8` CLI binary, call once at startup:
+| Feature | Adds | Default |
+|---------|------|:-------:|
+| *(none)* | `isol8-core`: profiles, config, resolve, home plan, recipes, detect, analyze, backends | |
+| `registry` | `isol8::registry::*`, `ensure_registry_provider()` | on |
+| `wizard` | `isol8::wizard::*` — cage authoring, no clap | |
+| `cli` | `isol8::cli::*`, the binary, interactive wizard | on |
 
 ```rust
-#[cfg(feature = "registry")]
-isol8::ensure_registry_provider();
-```
-
-(The shipped `isol8` binary does this for you.)
-
-### `Sandbox` builder
-
-The `isol8::Sandbox` builder mirrors the CLI flags. Choose one of three terminals:
-
-```rust
-// run — blocking, returns exit code
 let exit: i32 = isol8::Sandbox::new()
     .profile("base")
     .grant_rw("/my/project")
-    .home("/tmp/scratch")
     .run(["node", "script.js"])?;
-
-// spawn — non-blocking, returns SandboxChild
-let mut child = isol8::Sandbox::new()
-    .profile("base")
-    .spawn(["sleep", "5"])?;
-let code: i32 = child.wait()?;
-// child.kill()? to send kill signal
-
-// dry_run — structured policy data, no execution
-let dry: isol8::DryRun = isol8::Sandbox::new()
-    .profile("base")
-    .dry_run(["node", "x"])?;
-// dry.policy, dry.env, dry.layer_names, …
 ```
 
-Available builder methods:
-
-| Method | Equivalent CLI flag |
-|--------|---------------------|
-| `.profile("name")` | `--profile` |
-| `.profile_path(p)` | `--profile-path` |
-| `.auto_profiles(bool)` | `--auto-profiles` |
-| `.grant_rw(path)` | `--add-dirs-rw` |
-| `.grant_ro(path)` | `--add-dirs-ro` |
-| `.cwd_ro(bool)` | `--cwd-ro` |
-| `.home(path)` | `--home` |
-| `.no_seed()` | `--no-seed` |
-| `.env_pass(iter)` | `--env-pass` |
-| `.set_env("K=V")` | `--set-env` |
-
-### Error handling
-
-Engine functions return `isol8::Result<T>` where `isol8::Error` is a typed enum
-(via `thiserror`):
-
-```rust
-use isol8::{Error, Result};
-
-match isol8::Sandbox::new().run(["x"]) {
-    Err(Error::CommandNotFound(name)) => eprintln!("not found: {name}"),
-    Err(Error::NestedSandbox) => eprintln!("already inside isol8"),
-    Err(e) => return Err(e.into()),
-    Ok(code) => std::process::exit(code),
-}
-```
-
-Key variants: `CommandNotFound(String)`, `InvalidEnv(String)`, `NestedSandbox`,
-`UnsupportedOs(&'static str)`, `PolicyRejected(String)`, `Profile(String)`,
-`Io(io::Error)`, `Toml(toml::de::Error)`, `Message(String)`.
+Full API surface — the `Sandbox` builder's ~20 methods, hermetic `_in` variants
+for in-process hosts, `--json` / `Serialize` output, error handling, and the
+Windows injected-DLL caveat — is in the dedicated guide:
+[`embedding.md`](./embedding.md).
 
 ---
 
@@ -594,6 +536,8 @@ isol8 @cage detect
 #   ✓ cargo        /Users/you/.cargo
 #   ✓ nvm          /Users/you/.nvm
 #   · maven        /Users/you/.m2  not found
+
+isol8 @cage detect --json | jq '.[] | select(.found)'
 ```
 
 ### `@cage verify` — smoke-test a cage
@@ -607,6 +551,8 @@ isol8 @cage verify work
 #   ✓ home             materialized …
 #   ✓ nvm          [link] exit 0 → v22.3.0
 #   ✗ maven        [share] exit 1 → …
+
+isol8 @cage verify work --json | jq '.[] | select(.ok == false)'
 ```
 
 Cage resolution matches normal runs (name arg, discovery, or default). Recipes
@@ -633,6 +579,7 @@ path = "~/src/isol8-recipes"  # default trust: local
 
 ```sh
 isol8 @registry list
+isol8 @registry list --json
 isol8 @registry update                 # fetch/refresh + write isol8.lock
 isol8 @registry install                # offline open (or fetch), print diff, pin lock
 isol8 @registry install --strict       # fail on forbidden/ceiling flags
@@ -656,6 +603,9 @@ isol8 -c work --analyze -- claude
 
 # Offline / CI: feed synthetic denials (one JSON object per line)
 ISOL8_ANALYZE_FEED=denials.ndjson isol8 --analyze -- echo hi
+
+# Machine-readable report
+isol8 --analyze --json -- claude | jq '.report.items'
 ```
 
 | Platform | Live observation | Offline NDJSON feed |

@@ -1,7 +1,6 @@
 //! Integration tests for profile filters, auto-selection, and conditional layers.
 //! Exercises the public resolve pipeline without spawning a sandboxed process.
 
-use isol8::cli::{self, ProfileOpts};
 use isol8::filter::{self, RunContext};
 use isol8::profile::{self, LayerRegistry};
 use isol8::resolve;
@@ -16,17 +15,20 @@ fn os_system_profile() -> &'static str {
     }
 }
 
+/// Build a `Spec` with the given profiles + command; all other fields default.
+fn spec(profiles: &[&str], cmd: &[&str]) -> Spec {
+    let mut run = Spec::new(cmd.iter().map(|s| s.to_string()));
+    run.profiles = profiles.iter().map(|s| (*s).to_string()).collect();
+    run
+}
+
 fn run_with(cmd: &[&str], auto_profiles: bool, profiles: &[&str]) -> Spec {
-    let mut names = vec!["base".into(), os_system_profile().into()];
+    let mut names = vec!["base".to_string(), os_system_profile().to_string()];
     names.extend(profiles.iter().map(|s| (*s).to_string()));
-    cli::run_from(
-        ProfileOpts {
-            profiles: names,
-            auto_profiles,
-            ..Default::default()
-        },
-        cmd.iter().map(|s| s.to_string()).collect(),
-    )
+    let mut run = Spec::new(cmd.iter().map(|s| s.to_string()));
+    run.profiles = names;
+    run.auto_profiles = auto_profiles;
+    run
 }
 
 fn select_names(run: &Spec) -> Vec<String> {
@@ -158,22 +160,10 @@ paths = [{ path = "/only-special", access = "rw" }]
 "#,
     );
 
-    let matching = cli::run_from(
-        ProfileOpts {
-            profiles: vec!["overlay".into()],
-            profile_paths: vec![overlay.path()],
-            ..Default::default()
-        },
-        vec!["special".into()],
-    );
-    let other = cli::run_from(
-        ProfileOpts {
-            profiles: vec!["overlay".into()],
-            profile_paths: vec![overlay.path()],
-            ..Default::default()
-        },
-        vec!["other".into()],
-    );
+    let mut matching = spec(&["overlay"], &["special"]);
+    matching.profile_paths = vec![overlay.path()];
+    let mut other = spec(&["overlay"], &["other"]);
+    other.profile_paths = vec![overlay.path()];
 
     let match_paths = layer_paths(&matching);
     let other_paths = layer_paths(&other);
@@ -208,14 +198,7 @@ fn os_layer_filter_clears_paths_on_mismatch_but_keeps_requires() {
     );
 
     // Select only base + the foreign OS runtime (no matching system-runtime layer).
-    let run = cli::run_from(
-        ProfileOpts {
-            profiles: vec!["base".into(), mismatch_layer.into()],
-            auto_profiles: false,
-            ..Default::default()
-        },
-        vec!["echo".into(), "hi".into()],
-    );
+    let run = spec(&["base", mismatch_layer], &["echo", "hi"]);
     let effective = resolve::effective_policy(&run).unwrap();
     let granted: Vec<String> = effective
         .profile
@@ -275,14 +258,8 @@ paths = [{{ path = "/isol8-test-foreign-os-grant", access = "rw" }}]
 "#
         ),
     );
-    let run = cli::run_from(
-        ProfileOpts {
-            profiles: vec!["base".into(), "overlay".into()],
-            profile_paths: vec![overlay.path()],
-            ..Default::default()
-        },
-        vec!["echo".into(), "hi".into()],
-    );
+    let mut run = spec(&["base", "overlay"], &["echo", "hi"]);
+    run.profile_paths = vec![overlay.path()];
 
     let paths = layer_paths(&run);
     assert!(
@@ -305,14 +282,8 @@ filter = { executables = ["definitely-not-echo"] }
 rewrite = { ensure_args = ["--isol8-test-should-not-appear"] }
 "#,
     );
-    let run = cli::run_from(
-        ProfileOpts {
-            profiles: vec!["base".into(), "overlay".into()],
-            profile_paths: vec![overlay.path()],
-            ..Default::default()
-        },
-        vec!["echo".into(), "hi".into()],
-    );
+    let mut run = spec(&["base", "overlay"], &["echo", "hi"]);
+    run.profile_paths = vec![overlay.path()];
 
     let cmd = resolve::effective_policy(&run).unwrap().cmd;
     assert!(
@@ -321,14 +292,8 @@ rewrite = { ensure_args = ["--isol8-test-should-not-appear"] }
     );
 
     // ...and still applies when the filter *does* match.
-    let matching = cli::run_from(
-        ProfileOpts {
-            profiles: vec!["base".into(), "overlay".into()],
-            profile_paths: vec![overlay.path()],
-            ..Default::default()
-        },
-        vec!["definitely-not-echo".into()],
-    );
+    let mut matching = spec(&["base", "overlay"], &["definitely-not-echo"]);
+    matching.profile_paths = vec![overlay.path()];
     let cmd = resolve::effective_policy(&matching).unwrap().cmd;
     assert!(
         cmd.iter().any(|a| a == "--isol8-test-should-not-appear"),
@@ -367,14 +332,8 @@ fn layer_stack_tags_provenance_explicit_auto_required() {
         "linux" => "linux-system",
         _ => return, // only the two real backends ship these aliases
     };
-    let run = cli::run_from(
-        ProfileOpts {
-            profiles: vec![alias.into()],
-            auto_profiles: true,
-            ..Default::default()
-        },
-        vec!["claude".into()],
-    );
+    let mut run = spec(&[alias], &["claude"]);
+    run.auto_profiles = true;
     let stack = resolve::effective_policy(&run).unwrap().layer_names;
 
     let origin = |name: &str| stack.iter().find(|(n, _)| n == name).map(|(_, o)| *o);
@@ -466,14 +425,8 @@ fn profile_home_replace_overrides_home() {
             replacement.to_string_lossy()
         ),
     );
-    let run = cli::run_from(
-        ProfileOpts {
-            profiles: vec!["base".into(), os_system_profile().into(), "overlay".into()],
-            profile_paths: vec![overlay.path()],
-            ..Default::default()
-        },
-        vec!["echo".into(), "hi".into()],
-    );
+    let mut run = spec(&["base", os_system_profile(), "overlay"], &["echo", "hi"]);
+    run.profile_paths = vec![overlay.path()];
     let effective = resolve::effective_policy(&run).unwrap();
     assert_eq!(
         effective.home.path, replacement,
@@ -522,14 +475,7 @@ fn every_agent_layer_requires_macos_gui() {
         );
     }
     // And it actually lands in a resolved stack.
-    let run = cli::run_from(
-        ProfileOpts {
-            profiles: vec!["base".into(), agents[0].clone()],
-            auto_profiles: false,
-            ..Default::default()
-        },
-        vec!["echo".into(), "hi".into()],
-    );
+    let run = spec(&["base", &agents[0]], &["echo", "hi"]);
     let effective = resolve::effective_policy(&run).unwrap();
     assert!(
         effective

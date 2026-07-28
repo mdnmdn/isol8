@@ -18,11 +18,17 @@ use anyhow::Result;
 
 use isol8_core::sandbox::Spec;
 
+/// Diagnose a launch abort for `args` by minimizing the effective policy.
+///
+/// macOS-only; errors on every other platform.
 #[cfg(target_os = "macos")]
 pub fn run(args: &Spec) -> Result<()> {
     macos::run(args)
 }
 
+/// Diagnose a launch abort for `args` by minimizing the effective policy.
+///
+/// macOS-only; errors on every other platform.
 #[cfg(not(target_os = "macos"))]
 pub fn run(_args: &Spec) -> Result<()> {
     anyhow::bail!("@diag is only supported on macOS (the only enforcing backend so far)");

@@ -11,12 +11,14 @@
 //! See `_docs/wip/multi-evo-plan.md` Phase 2 and evo-repo §7.4.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+
+use serde::Serialize;
 
 use crate::error::{Error, Result};
 
 /// Platform label used for filter matching and managed-home layout notes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Platform {
     /// Apple macOS.
     Macos,
@@ -48,31 +50,6 @@ impl Platform {
             Platform::Other => "other",
         }
     }
-}
-
-/// Callback that returns the effective isol8 config root directory.
-///
-/// Installed by the CLI / facade so `config_path` from `.isol8.toml` and
-/// `ISOL8_CONFIG_PATH` apply without `isol8-core` depending on the registry crate.
-pub type ConfigDirProvider = fn() -> PathBuf;
-
-static CONFIG_DIR_PROVIDER: OnceLock<ConfigDirProvider> = OnceLock::new();
-
-/// Register the config-dir provider (idempotent; first wins).
-pub fn set_config_dir_provider(f: ConfigDirProvider) {
-    let _ = CONFIG_DIR_PROVIDER.set(f);
-}
-
-/// Effective config directory: provider if set, else OS default (`~/.config/isol8`).
-///
-/// Always absolute so later `chdir` cannot retarget `@…` / `@managed` paths.
-pub fn effective_config_dir() -> PathBuf {
-    let raw = if let Some(f) = CONFIG_DIR_PROVIDER.get() {
-        f()
-    } else {
-        default_os_config_dir(&real_home_from_env())
-    };
-    absolute_path(&raw)
 }
 
 /// Make `path` absolute and lexically normalized (`.` / `..` collapsed).
@@ -123,7 +100,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 ///
 /// Never read environment variables behind the host's back once constructed —
 /// build with [`Context::from_environment`] (CLI) or a test fixture.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Context {
     /// The user's real `$HOME` (`#HOME` token).
     pub real_home: PathBuf,
@@ -140,13 +117,13 @@ pub struct Context {
 impl Context {
     /// Build from the process environment (CLI entry point).
     ///
-    /// Uses the registered [`set_config_dir_provider`] when present so project
-    /// `config_path` / `ISOL8_CONFIG_PATH` redirect `@` and `@managed` paths.
+    /// The config root follows [`crate::config::effective_config_dir`], so a
+    /// project `config_path` / `ISOL8_CONFIG_PATH` redirects `@` and `@managed`.
     pub fn from_environment() -> Result<Self> {
         let real_home = absolute_path(&real_home_from_env());
         let cwd = std::env::current_dir()
             .map_err(|e| Error::Message(format!("cannot determine current directory: {e}")))?;
-        let config_dir = effective_config_dir(); // already absolute
+        let config_dir = crate::config::effective_config_dir(); // already absolute
         let managed_root = managed_root_for_config(&config_dir);
         Ok(Self {
             real_home,

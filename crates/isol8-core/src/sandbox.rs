@@ -4,6 +4,8 @@
 
 use std::collections::HashMap;
 
+use serde::Serialize;
+
 #[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
@@ -19,10 +21,15 @@ use crate::profile::Profile;
 /// A clap-free description of a confinement request.
 ///
 /// Mirrors the CLI `ProfileOpts` plus the command to run. The engine pipeline
-/// (`resolve::effective_policy`) reads this directly, so an embedder never has to
-/// construct a clap-derived type. Build one by hand, via [`crate::cli::ProfileOpts::into_spec`],
-/// or (ergonomically) through the [`Sandbox`] builder.
+/// ([`crate::resolve::effective_policy`]) reads this directly, so an embedder
+/// never has to construct a clap-derived type. Build one with [`Spec::new`],
+/// through the [`Sandbox`] builder, or from config via
+/// [`crate::resolve::spec_from_config`].
+///
+/// `#[non_exhaustive]`: use [`Spec::new`] or `..Default::default()` rather than a
+/// full struct literal, so added fields are not a breaking change.
 #[derive(Clone, Default, Debug)]
+#[non_exhaustive]
 pub struct Spec {
     /// Named profile layers to enable (deny-first merge order).
     pub profiles: Vec<String>,
@@ -57,6 +64,22 @@ pub struct Spec {
     pub set_env: Vec<String>,
     /// The command (and arguments) to confine.
     pub cmd: Vec<String>,
+}
+
+impl Spec {
+    /// A default `Spec` for `cmd`. Set the remaining fields directly.
+    ///
+    /// ```
+    /// let mut spec = isol8_core::Spec::new(["echo", "hi"]);
+    /// spec.profiles = vec!["base".into()];
+    /// assert_eq!(spec.cmd, vec!["echo".to_string(), "hi".to_string()]);
+    /// ```
+    pub fn new(cmd: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            cmd: cmd.into_iter().map(Into::into).collect(),
+            ..Default::default()
+        }
+    }
 }
 
 /// A handle to a launched, confined process.
@@ -275,6 +298,7 @@ fn delete_app_container_profile_by_name(_name: &str) -> crate::error::Result<()>
 /// provenance), the merged profile, the sanitized env, the (rewritten) command, and
 /// the rendered OS-native policy text. The CLI turns this into the `--show-policies`
 /// report; an embedder inspects the fields directly.
+#[derive(Debug, Clone, Serialize)]
 pub struct DryRun {
     /// The resolved layer stack (deps-first) tagged with provenance.
     pub layer_names: Vec<(String, crate::resolve::LayerOrigin)>,
@@ -299,7 +323,13 @@ pub struct DryRun {
 /// Resolve the effective policy for `spec` and render the OS-native policy text,
 /// without spawning. Pure data — no printing; does **not** apply the home plan.
 pub fn dry_run(spec: &Spec) -> Result<DryRun> {
-    let eff = crate::resolve::effective_policy(spec)?;
+    let ambient = crate::context::Context::from_environment()?;
+    dry_run_in(spec, &ambient)
+}
+
+/// [`dry_run`] against an explicit [`crate::Context`] (no ambient env reads).
+pub fn dry_run_in(spec: &Spec, ambient: &crate::context::Context) -> Result<DryRun> {
+    let eff = crate::resolve::effective_policy_in(spec, ambient)?;
     let policy = crate::backends::select().render_policy(&eff.profile);
     let policy_label = match std::env::consts::OS {
         "macos" => "generated Seatbelt policy (SBPL)",
@@ -330,7 +360,7 @@ pub fn ensure_not_nested() -> Result<()> {
 }
 
 /// Captured stdout/stderr from a confined run ([`run_captured`]).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CapturedRun {
     /// Process exit code (0 = success).
     pub code: i32,
@@ -566,5 +596,18 @@ mod tests {
         );
         assert!(!dry.policy.is_empty(), "rendered policy must be non-empty");
         assert_eq!(dry.cmd, vec!["echo", "hi"]);
+    }
+
+    // `DryRun` must round-trip through serde_json so embedders and `--json` output
+    // can serialize it directly (crate-as-lib-plan Step 5).
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn dry_run_serializes_to_json() {
+        let mut spec = Spec::new(["echo", "hi"]);
+        spec.profiles = vec!["base".into()];
+        let dry = dry_run(&spec).unwrap();
+        let json = serde_json::to_string(&dry).unwrap();
+        assert!(json.contains("\"layer_names\""), "json: {json}");
+        assert!(json.contains("\"profile\""), "json: {json}");
     }
 }

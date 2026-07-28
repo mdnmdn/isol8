@@ -32,7 +32,7 @@ completeness and future development; it is not part of the Phase 1 MVP.
 ### Analyze mode (`--analyze`)
 
 Phase 5 of the evolution track lands the **shared** denial → recipe-suggestion
-engine (`src/analyze.rs`) and `isol8 --analyze`. On Windows, **live path denials
+engine (`isol8-core` `analyze.rs`) and `isol8 --analyze`. On Windows, **live path denials
 are not produced yet**: profile path grants remain documentary, and there is no
 shipping `isol8-winhook` writing denials.
 
@@ -100,7 +100,7 @@ Windows uses to scope named objects, ACLs, and capability checks.
 
 ## 3. Current implementation
 
-### 3.1 What `src/backends/windows.rs` does
+### 3.1 What `crates/isol8-core/src/backends/windows.rs` does
 
 The backend follows the documented Tier 1 flow:
 
@@ -229,6 +229,29 @@ The decision on which path to take is deferred to Phase 5 planning.
 
 ---
 
+## 5a. Embedding on Windows
+
+Today, an embedder targeting Windows gets **process isolation only**
+(AppContainer, still a draft — see §3–4) and **no path enforcement**. R2
+(per-path ro/rw) is documentary on this backend: `Spec.add_dirs_rw` /
+`add_dirs_ro` and profile `paths` are recorded and shown by `--show-policies` /
+`DryRun`, but nothing stops the confined process from reading or writing
+outside them. Do not present a Windows run as path-confined to your own users.
+
+Enforcement will require an injected user-mode hook DLL (`isol8-winhook`),
+which does not exist yet — it is a **build artifact, not a crate item**;
+`cargo add isol8` will not produce it. When it lands, resolution order is:
+`Spec.win_hook_dll` → `ISOL8_WINHOOK_DLL` → next to `current_exe()` →
+`%LOCALAPPDATA%\isol8\bin`, arch-matched to the child process (an x64 host
+spawning an x86 or ARM64EC child needs the matching DLL). If the hook is
+required and cannot load, the run must fail with a typed error — **no silent
+downgrade** to an unconfined run.
+
+Full requirements and the in-process-host implications:
+[`embedding.md`](./embedding.md) §7.
+
+---
+
 ## 6. Limitations vs. macOS and Linux
 
 | Property | macOS (Seatbelt) | Linux (Landlock) | Windows (AppContainer) |
@@ -316,7 +339,7 @@ Items are listed in dependency order.
 
 | Path | Role |
 |------|------|
-| `src/backends/windows.rs` | Backend implementation (current draft) |
+| `crates/isol8-core/src/backends/windows.rs` | Backend implementation (current draft) |
 | `profiles/windows/system-runtime.toml` | System profile (`%SYSTEMROOT%`, `%TEMP%`, etc.) |
 | `_docs/wip/windows-support.md` | Original design doc (intended correct flow) |
 | `_docs/wip/windows-review.md` | Code review: concrete blockers and gaps |

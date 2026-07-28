@@ -106,6 +106,14 @@ pub struct ProfileOpts {
     #[arg(long = "author", default_value_t = false, action = clap::ArgAction::SetTrue)]
     pub author: bool,
 
+    /// Emit machine-readable JSON instead of the text report.
+    ///
+    /// Applies to `--show-policies`, `--analyze`, and the `@cage` / `@registry` /
+    /// `@profiles-*` meta-commands. The shape is the engine type itself, so a
+    /// non-Rust host parses exactly what an embedder would see.
+    #[arg(long = "json", default_value_t = false, action = clap::ArgAction::SetTrue)]
+    pub json: bool,
+
     /// Verbose output for --show-profiles (list mode).
     #[arg(long, short = 'v')]
     pub verbose: bool,
@@ -185,23 +193,20 @@ impl RunInvocation {
 impl ProfileOpts {
     /// Convert parsed CLI options + command into the clap-free engine [`Spec`](isol8_core::sandbox::Spec).
     pub fn into_spec(self, cmd: Vec<String>) -> isol8_core::sandbox::Spec {
-        isol8_core::sandbox::Spec {
-            profiles: self.profiles,
-            profile_paths: self.profile_paths,
-            auto_profiles: self.auto_profiles,
-            add_dirs_rw: self.add_dirs_rw,
-            add_dirs_ro: self.add_dirs_ro,
-            cwd_ro: self.cwd_ro,
-            home: self.home,
-            ephemeral_home: self.ephemeral_home,
-            no_seed: self.no_seed,
-            home_ops: Vec::new(),
-            toolchains: self.toolchains,
-            recipe_paths: Vec::new(),
-            env_pass: self.env_pass,
-            set_env: self.set_env,
-            cmd,
-        }
+        let mut spec = isol8_core::sandbox::Spec::new(cmd);
+        spec.profiles = self.profiles;
+        spec.profile_paths = self.profile_paths;
+        spec.auto_profiles = self.auto_profiles;
+        spec.add_dirs_rw = self.add_dirs_rw;
+        spec.add_dirs_ro = self.add_dirs_ro;
+        spec.cwd_ro = self.cwd_ro;
+        spec.home = self.home;
+        spec.ephemeral_home = self.ephemeral_home;
+        spec.no_seed = self.no_seed;
+        spec.toolchains = self.toolchains;
+        spec.env_pass = self.env_pass;
+        spec.set_env = self.set_env;
+        spec
     }
 }
 
@@ -301,6 +306,10 @@ pub struct CageArgs {
     /// Comma-separated profile layers (overrides empty default).
     #[arg(long = "profiles")]
     pub profiles: Option<String>,
+
+    /// Emit machine-readable JSON instead of the text report.
+    #[arg(long = "json", default_value_t = false, action = clap::ArgAction::SetTrue)]
+    pub json: bool,
 }
 
 /// Arguments for `@registry list|update|install|show`.
@@ -319,6 +328,10 @@ pub struct RegistryArgs {
     /// Treat ceiling / forbidden-path flags as hard errors on install.
     #[arg(long = "strict")]
     pub strict: bool,
+
+    /// Emit machine-readable JSON instead of the text report.
+    #[arg(long = "json", default_value_t = false, action = clap::ArgAction::SetTrue)]
+    pub json: bool,
 }
 
 /// Top-level parse result.
@@ -509,8 +522,8 @@ pub fn print_help() {
 
 // ===== CLI entry point and command glue (the `isol8` binary lives here) =====
 
-mod config;
-mod diag;
+pub mod config;
+pub mod diag;
 
 use anyhow::{bail, Context, Result};
 use std::io::Write;
@@ -519,10 +532,9 @@ use isol8_core::{backends, profile, resolve, sandbox};
 
 /// Entry point for the `isol8` binary (the `main.rs` shim calls this).
 pub fn main() -> Result<()> {
-    // Config root (`.isol8.toml` config_path / ISOL8_CONFIG_PATH) drives `@` paths
-    // and `@managed/<id>` → `{config}/homes/<id>`.
-    isol8_core::context::set_config_dir_provider(isol8_registry::effective_config_dir);
-    // Wire offline registry dirs into the core recipe loader.
+    // Wire offline registry dirs into the core recipe loader. (The config root —
+    // `.isol8.toml` config_path / ISOL8_CONFIG_PATH — is resolved by
+    // `isol8_core::config` directly; no provider needed.)
     isol8_core::recipe::set_offline_registry_provider(isol8_registry::discover_offline_recipe_dirs);
     match parse() {
         ParsedCli::Help => {
@@ -554,6 +566,9 @@ fn registry_cmd(args: RegistryArgs) -> Result<()> {
     };
 
     let cfg = config::load()?;
+    // Config stores registries as raw TOML tables; type them once here.
+    let registries =
+        isol8_registry::registries_from_config(&cfg).map_err(|e| anyhow::anyhow!("{e}"))?;
     let lock_path = args
         .lockfile
         .as_ref()
@@ -565,20 +580,24 @@ fn registry_cmd(args: RegistryArgs) -> Result<()> {
     let names: Vec<String> = match args.name.as_deref() {
         Some(n)
             if matches!(args.action.as_str(), "update" | "install" | "list")
-                && cfg.registries.contains_key(n) =>
+                && registries.contains_key(n) =>
         {
             vec![n.to_string()]
         }
         Some(_) if args.action == "show" => Vec::new(), // show uses name as id
         None if matches!(args.action.as_str(), "update" | "install" | "list") => {
-            cfg.registries.keys().cloned().collect()
+            registries.keys().cloned().collect()
         }
-        _ => cfg.registries.keys().cloned().collect(),
+        _ => registries.keys().cloned().collect(),
     };
 
     match args.action.as_str() {
         "list" => {
-            if cfg.registries.is_empty() {
+            if registries.is_empty() {
+                if args.json {
+                    println!("[]");
+                    return Ok(());
+                }
                 println!("# no registries configured");
                 println!("# add to isol8.toml:");
                 println!("#   [registries.official]");
@@ -587,9 +606,28 @@ fn registry_cmd(args: RegistryArgs) -> Result<()> {
                 println!("#   #     ref = \"v1\"");
                 return Ok(());
             }
+            if args.json {
+                let rows: Vec<_> = registries
+                    .iter()
+                    .map(|(name, spec)| {
+                        let entry = lock.registry(name);
+                        serde_json::json!({
+                            "name": name,
+                            "trust": entry
+                                .and_then(|r| r.trust.clone())
+                                .unwrap_or_else(|| spec.default_trust().as_str().to_string()),
+                            "pin": entry.map(|r| r.pin.clone()),
+                            "source": spec.source_label(),
+                            "cached": open_offline(name, spec, &cache_root, &lock).is_ok(),
+                        })
+                    })
+                    .collect();
+                println!("{}", to_json(&rows)?);
+                return Ok(());
+            }
             println!("{:<14} {:<10} {:<8} SOURCE", "NAME", "TRUST", "PINNED");
-            for name in cfg.registries.keys() {
-                let spec = &cfg.registries[name];
+            for name in registries.keys() {
+                let spec = &registries[name];
                 let pin = lock
                     .registry(name)
                     .map(|r| {
@@ -637,8 +675,7 @@ fn registry_cmd(args: RegistryArgs) -> Result<()> {
                 bail!("no registries configured — add [registries.*] to isol8.toml");
             }
             for name in &names {
-                let spec = cfg
-                    .registries
+                let spec = registries
                     .get(name)
                     .ok_or_else(|| anyhow::anyhow!("unknown registry '{name}'"))?;
                 println!("updating registry '{name}' ({}) …", spec.source_label());
@@ -674,8 +711,7 @@ fn registry_cmd(args: RegistryArgs) -> Result<()> {
             }
             let mut hard_fail = false;
             for name in &names {
-                let spec = cfg
-                    .registries
+                let spec = registries
                     .get(name)
                     .ok_or_else(|| anyhow::anyhow!("unknown registry '{name}'"))?;
                 // Prefer offline open; fall back to update for git.
@@ -765,7 +801,7 @@ fn registry_cmd(args: RegistryArgs) -> Result<()> {
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("@registry show requires a recipe/profile id"))?;
             let mut found = false;
-            for (name, spec) in &cfg.registries {
+            for (name, spec) in &registries {
                 let Ok(src) = open_offline(name, spec, &cache_root, &lock) else {
                     continue;
                 };
@@ -817,7 +853,7 @@ fn registry_cmd(args: RegistryArgs) -> Result<()> {
         }
         "verify" => {
             // Optional: check lockfile drift.
-            let drifts = verify_lock_against_disk(&cfg.registries, &cache_root, &lock)
+            let drifts = verify_lock_against_disk(&registries, &cache_root, &lock)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             if drifts.is_empty() {
                 println!("lockfile ok ({})", lock_path.display());
@@ -849,54 +885,23 @@ fn diag_cmd(d: DiagArgs) -> Result<()> {
 }
 
 fn prepare_run(run: &mut RunInvocation) -> Result<()> {
-    let cli_auto = run.opts.auto_profiles_cli_override();
-    let cfg = config::load()?;
-    // Capture CLI-only state before config/cage fill empty fields.
-    let cli_profiles = !run.opts.profiles.is_empty();
-    let cli_home = run.opts.home.is_some();
-    let cli_rw = !run.opts.add_dirs_rw.is_empty();
-    let cli_ro = !run.opts.add_dirs_ro.is_empty();
-    let cli_cage = run.opts.cage.clone();
-
-    apply_cage_to_opts(
-        &mut run.opts,
-        &cfg,
-        cli_cage.as_deref(),
-        cli_profiles,
-        cli_home,
-        cli_rw,
-        cli_ro,
-    )?;
-
-    config::apply_to_run(&cfg, &mut run.opts, cli_auto);
-    config::apply_env_overrides(&mut run.opts, cli_auto.is_some());
-    if let Some(v) = cli_auto {
-        run.opts.auto_profiles = v;
-    }
-    Ok(())
+    prepare_opts(&mut run.opts)
 }
 
+/// Resolve config → env → cage into `opts`, leaving CLI-set fields untouched.
+///
+/// Precedence ([`_docs/config.md`](../../../../_docs/config.md) §7): builtin
+/// defaults → config file (+ project marker overlay) → `ISOL8_*` → CLI flags →
+/// cage (fills what is still empty). The cage is applied before the config
+/// defaults because it is the more specific selection.
 fn prepare_opts(opts: &mut ProfileOpts) -> Result<()> {
     let cli_auto = opts.auto_profiles_cli_override();
-    let cfg = config::load()?;
-    let cli_profiles = !opts.profiles.is_empty();
-    let cli_home = opts.home.is_some();
-    let cli_rw = !opts.add_dirs_rw.is_empty();
-    let cli_ro = !opts.add_dirs_ro.is_empty();
-    let cli_cage = opts.cage.clone();
+    let mut cfg = config::load()?;
+    // Env overrides the config, not the command line.
+    config::apply_env_overrides(&mut cfg);
 
-    apply_cage_to_opts(
-        opts,
-        &cfg,
-        cli_cage.as_deref(),
-        cli_profiles,
-        cli_home,
-        cli_rw,
-        cli_ro,
-    )?;
-
+    apply_cage_to_opts(opts, &cfg)?;
     config::apply_to_run(&cfg, opts, cli_auto);
-    config::apply_env_overrides(opts, cli_auto.is_some());
     if let Some(v) = cli_auto {
         opts.auto_profiles = v;
     }
@@ -932,22 +937,10 @@ fn detect_with_progress(
 
 /// Resolve cage selection and merge into opts. CLI-set fields are never overwritten.
 ///
-/// Name resolution: `--cage` / `-c` → `ISOL8_CAGE` → config `cage` → default discovery.
-fn apply_cage_to_opts(
-    opts: &mut ProfileOpts,
-    cfg: &config::Config,
-    cli_cage: Option<&str>,
-    cli_profiles: bool,
-    cli_home: bool,
-    cli_rw: bool,
-    cli_ro: bool,
-) -> Result<()> {
-    let env_cage = std::env::var("ISOL8_CAGE").ok().filter(|s| !s.is_empty());
-    let name: Option<String> = cli_cage
-        .map(str::to_string)
-        .or(env_cage)
-        .or_else(|| cfg.cage.clone());
-
+/// Name resolution and the field merge both live in `isol8_core::cage`; this only
+/// bridges the clap-derived [`ProfileOpts`] to the engine's [`Spec`].
+fn apply_cage_to_opts(opts: &mut ProfileOpts, cfg: &config::Config) -> Result<()> {
+    let name = isol8_core::cage::select_name(opts.cage.as_deref(), cfg);
     let cwd = std::env::current_dir().context("resolving current directory for cage discovery")?;
     let config_root = active_config_root();
     let Some(cage) = isol8_core::cage::resolve_in(name.as_deref(), &cwd, Some(&config_root))?
@@ -955,29 +948,15 @@ fn apply_cage_to_opts(
         return Ok(());
     };
 
-    let overlay = cage.overlay();
-    if !cli_profiles && !overlay.profiles.is_empty() {
-        opts.profiles = overlay.profiles;
-    }
-    if !cli_home {
-        if let Some(h) = overlay.home {
-            opts.home = Some(h);
-        }
-        if overlay.ephemeral_home {
-            opts.ephemeral_home = true;
-        }
-    }
-    if !cli_rw && !overlay.add_dirs_rw.is_empty() {
-        opts.add_dirs_rw = overlay.add_dirs_rw;
-    }
-    if !cli_ro && !overlay.add_dirs_ro.is_empty() {
-        opts.add_dirs_ro = overlay.add_dirs_ro;
-    }
-    // Stash toolchains on a thread-local? Spec is built later via into_spec.
-    // ProfileOpts needs a toolchains field — store on opts.
-    if opts.toolchains.is_empty() && !overlay.toolchains.is_empty() {
-        opts.toolchains = overlay.toolchains;
-    }
+    // Round-trip through Spec so the merge rule has exactly one implementation.
+    let mut spec = opts.clone().into_spec(Vec::new());
+    isol8_core::cage::apply_overlay(&cage.overlay(), &mut spec);
+    opts.profiles = spec.profiles;
+    opts.home = spec.home;
+    opts.ephemeral_home = spec.ephemeral_home;
+    opts.add_dirs_rw = spec.add_dirs_rw;
+    opts.add_dirs_ro = spec.add_dirs_ro;
+    opts.toolchains = spec.toolchains;
     Ok(())
 }
 
@@ -995,6 +974,14 @@ fn cage_cmd(args: CageArgs) -> Result<()> {
                 println!("# cages dir:  {}", dir.display());
                 return Ok(());
             }
+            if args.json {
+                let rows: Vec<_> = list
+                    .iter()
+                    .map(|(name, path)| serde_json::json!({ "name": name, "path": path }))
+                    .collect();
+                println!("{}", to_json(&rows)?);
+                return Ok(());
+            }
             for (name, path) in list {
                 println!("{name}\t{}", path.display());
             }
@@ -1007,13 +994,17 @@ fn cage_cmd(args: CageArgs) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("@cage show requires a name"))?;
             let cage = isol8_core::cage::resolve_in(Some(name), &cwd, Some(&config_root))?
                 .ok_or_else(|| anyhow::anyhow!("cage '{name}' not found"))?;
+            if args.json {
+                println!("{}", to_json(&cage)?);
+                return Ok(());
+            }
             print!("{}", isol8_core::cage::format_show(&cage));
             Ok(())
         }
         "new" => cage_new_cmd(args, &cwd, false),
         "edit" => cage_new_cmd(args, &cwd, true),
-        "detect" => cage_detect_cmd(),
-        "verify" => cage_verify_cmd(args.name.as_deref()),
+        "detect" => cage_detect_cmd(args.json),
+        "verify" => cage_verify_cmd(args.name.as_deref(), args.json),
         other => {
             bail!(
                 "unknown @cage action '{other}' \
@@ -1241,7 +1232,7 @@ fn cage_new_cmd(args: CageArgs, cwd: &std::path::Path, is_edit: bool) -> Result<
     println!("# managed hash {hash_short}");
 
     if args.verify {
-        cage_verify_cmd(Some(&name))?;
+        cage_verify_cmd(Some(&name), false)?;
     } else {
         println!("# next: isol8 @cage verify {name}");
         println!("# run:  isol8 -c {name} <cmd>…");
@@ -1434,16 +1425,20 @@ fn cage_wizard_interactive(opts: InteractiveOpts<'_>) -> Result<InteractivePicks
     })
 }
 
-fn cage_detect_cmd() -> Result<()> {
+fn cage_detect_cmd(json: bool) -> Result<()> {
     let reg = isol8_core::recipe::RecipeRegistry::load(&[])?;
     let ctx = isol8_core::filter::RunContext::from_cmd(&[]);
     let real = isol8_core::context::real_home_from_env();
     let results = isol8_core::detect::detect_all(&reg, &ctx, &real)?;
+    if json {
+        println!("{}", to_json(&results)?);
+        return Ok(());
+    }
     print!("{}", isol8_core::detect::format_detect_table(&results));
     Ok(())
 }
 
-fn cage_verify_cmd(name: Option<&str>) -> Result<()> {
+fn cage_verify_cmd(name: Option<&str>, json: bool) -> Result<()> {
     let cwd = std::env::current_dir().context("resolving current directory")?;
     let config_root = active_config_root();
     let cage = isol8_core::cage::resolve_in(name, &cwd, Some(&config_root))?.ok_or_else(|| {
@@ -1456,25 +1451,21 @@ fn cage_verify_cmd(name: Option<&str>) -> Result<()> {
 
     let overlay = cage.overlay();
     let cfg = config::load()?;
-    let profiles = if overlay.profiles.is_empty() {
-        cfg.default_profiles.clone()
-    } else {
-        overlay.profiles
-    };
-    let spec = isol8_core::sandbox::Spec {
-        profiles,
-        home: overlay.home,
-        ephemeral_home: overlay.ephemeral_home,
-        add_dirs_rw: overlay.add_dirs_rw,
-        add_dirs_ro: overlay.add_dirs_ro,
-        toolchains: overlay.toolchains,
-        cmd: vec!["true".into()],
-        ..Default::default()
-    };
+    let mut spec = isol8_core::sandbox::Spec::new(["true"]);
+    isol8_core::cage::apply_overlay(&overlay, &mut spec);
+    if spec.profiles.is_empty() {
+        spec.profiles = cfg.default_profiles.clone();
+    }
 
-    println!("Verifying cage '{}' ({})", cage.name, cage.source.display());
+    if !json {
+        println!("Verifying cage '{}' ({})", cage.name, cage.source.display());
+    }
     let results = isol8_core::detect::verify_toolchains(&spec)?;
-    print!("{}", isol8_core::detect::format_verify_report(&results));
+    if json {
+        println!("{}", to_json(&results)?);
+    } else {
+        print!("{}", isol8_core::detect::format_verify_report(&results));
+    }
     if results.iter().any(|r| !r.ok) {
         std::process::exit(1);
     }
@@ -1486,9 +1477,14 @@ fn run_cmd(run: RunInvocation) -> Result<()> {
         if run.cmd.is_empty() {
             bail!("--show-policies requires a command (e.g. isol8 --show-policies -- echo hi)");
         }
+        let json = run.opts.json;
         let args = run_from(run.opts, run.cmd);
         let dry = sandbox::dry_run(&args)?;
-        print_dry_run(&dry);
+        if json {
+            println!("{}", to_json(&dry)?);
+        } else {
+            print_dry_run(&dry);
+        }
         return Ok(());
     }
 
@@ -1496,8 +1492,18 @@ fn run_cmd(run: RunInvocation) -> Result<()> {
         if run.cmd.is_empty() {
             return profiles_list(registry_from_run(&run)?, run.verbose());
         }
+        let json = run.opts.json;
         let args = run_from(run.opts, run.cmd);
         let effective = resolve::effective_policy(&args)?;
+        if json {
+            let rows: Vec<_> = effective
+                .layer_names
+                .iter()
+                .map(|(name, origin)| serde_json::json!({ "name": name, "origin": origin.label() }))
+                .collect();
+            println!("{}", to_json(&rows)?);
+            return Ok(());
+        }
         println!("== selected layers ==");
         for (name, origin) in &effective.layer_names {
             println!("  {name} ({})", origin.label());
@@ -1530,87 +1536,36 @@ fn run_cmd(run: RunInvocation) -> Result<()> {
 
 /// `--analyze`: run the command (best-effort), load denials, print suggestions.
 fn analyze_cmd(run: RunInvocation) -> Result<()> {
-    sandbox::ensure_not_nested()?;
     let author = run.opts.author;
+    let json = run.opts.json;
     if author && !run.opts.analyze {
         bail!("--author requires --analyze (explicit opt-in for Seatbelt trace mode)");
     }
-    let args = run_from(run.opts, run.cmd);
-    let mut effective = resolve::effective_policy(&args)?;
-    isol8_core::home::materialize(&effective.home)?;
-    resolve::confine_executable(&mut effective.profile, &mut effective.cmd)?;
+    if author && !cfg!(target_os = "macos") {
+        eprintln!("warning: --author is only implemented on macOS (Seatbelt trace); ignoring");
+    }
 
-    // Optional --author: Seatbelt trace (permissive) → draft allow profile path.
-    let mut trace_path: Option<std::path::PathBuf> = None;
-    #[cfg(target_os = "macos")]
-    if author {
-        let p = std::env::temp_dir().join(format!(
-            "isol8-analyze-trace-{}-{}.sbpl",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0)
-        ));
-        let directive = isol8_core::analyze_macos::seatbelt_trace_directive(&p);
-        let macos = effective.profile.macos.get_or_insert_with(Default::default);
-        macos.raw.push_str(&directive);
-        trace_path = Some(p);
+    let mut opts = isol8_core::analyze::AnalyzeOptions::default();
+    if author && cfg!(target_os = "macos") {
+        opts.author_trace = Some(isol8_core::analyze::default_trace_path());
         eprintln!(
             "warning: --author enables Seatbelt (trace …) — permissive observation, not production policy"
         );
     }
-    #[cfg(not(target_os = "macos"))]
-    if author {
-        eprintln!("warning: --author is only implemented on macOS (Seatbelt trace); ignoring");
+
+    let args = run_from(run.opts, run.cmd);
+    let ctx = isol8_core::context::Context::from_environment()?;
+    let outcome = isol8_core::analyze::run_and_analyze_with(&args, &ctx, &opts)?;
+
+    if json {
+        println!("{}", to_json(&outcome)?);
+        return Ok(());
     }
 
-    // Prefer explicit NDJSON feed over live observation.
-    let feed_pre = isol8_core::analyze::resolve_feed_path(None);
-
-    let (code, pid, denials, source_note) = if let Some(path) = feed_pre {
-        let backend = backends::select();
-        let mut child = backend.spawn(&effective.profile, &effective.env, &effective.cmd)?;
-        let pid = child.id();
-        let code = child.wait().unwrap_or(1);
-        let d = isol8_core::analyze::load_ndjson_file(&path)?;
-        (code, pid, d, format!("NDJSON feed {}", path.display()))
-    } else {
-        collect_denials_live(&effective)?
-    };
-
-    // Post-run per-pid file (Windows hook future) if live path was empty.
-    let (denials, source_note) = if denials.is_empty() {
-        if let Some(path) = isol8_core::analyze::resolve_feed_path(Some(pid)) {
-            let d = isol8_core::analyze::load_ndjson_file(&path)?;
-            if !d.is_empty() {
-                (d, format!("NDJSON feed {}", path.display()))
-            } else {
-                (denials, source_note)
-            }
-        } else {
-            (denials, source_note)
-        }
-    } else {
-        (denials, source_note)
-    };
-
-    let ambient = isol8_core::context::Context::from_environment()?;
-    let ctx = isol8_core::filter::RunContext::from_cmd(&effective.cmd);
-    let reg = isol8_core::recipe::RecipeRegistry::load(&args.recipe_paths)?;
-    let index =
-        isol8_core::analyze::build_recipe_index(&reg, &ctx, &ambient, &effective.home.path)?;
-    let report = isol8_core::analyze::analyze(
-        &denials,
-        &index,
-        &ambient,
-        &effective.home.path,
-        source_note,
-    );
     println!("== isol8 --analyze ==");
-    println!("command exit code: {code}");
-    print!("{}", report.render());
-    if let Some(p) = trace_path {
+    println!("command exit code: {}", outcome.code);
+    print!("{}", outcome.report.render());
+    if let Some(p) = &opts.author_trace {
         if p.is_file() {
             println!("\n--author trace profile written to {}", p.display());
             println!(
@@ -1626,59 +1581,9 @@ fn analyze_cmd(run: RunInvocation) -> Result<()> {
     Ok(())
 }
 
-/// Spawn the confined command, collecting denials from the platform observer.
-fn collect_denials_live(
-    effective: &resolve::EffectivePolicy,
-) -> Result<(i32, u32, Vec<isol8_core::analyze::Denial>, String)> {
-    #[cfg(target_os = "macos")]
-    {
-        let backend = backends::select();
-        match isol8_core::analyze_macos::observe_denials_during(|| {
-            let mut child = backend.spawn(&effective.profile, &effective.env, &effective.cmd)?;
-            let pid = child.id();
-            let code = child.wait().unwrap_or(1);
-            Ok((code, pid))
-        }) {
-            Ok((code, pid, denials)) => {
-                let note = if denials.is_empty() {
-                    isol8_core::analyze::no_observation_note().to_string()
-                } else {
-                    format!(
-                        "macOS unified log (log stream + log show; {} denial line(s); pid={pid})",
-                        denials.len()
-                    )
-                };
-                Ok((code, pid, denials, note))
-            }
-            Err(e) => {
-                eprintln!("warning: macOS log observer: {e}");
-                let mut child =
-                    backend.spawn(&effective.profile, &effective.env, &effective.cmd)?;
-                let pid = child.id();
-                let code = child.wait().unwrap_or(1);
-                Ok((
-                    code,
-                    pid,
-                    Vec::new(),
-                    format!("log observer unavailable: {e}"),
-                ))
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let backend = backends::select();
-        let mut child = backend.spawn(&effective.profile, &effective.env, &effective.cmd)?;
-        let pid = child.id();
-        let code = child.wait().unwrap_or(1);
-        Ok((
-            code,
-            pid,
-            Vec::new(),
-            isol8_core::analyze::no_observation_note().to_string(),
-        ))
-    }
+/// Render any serializable engine value as pretty JSON (`--json`).
+fn to_json<T: serde::Serialize>(value: &T) -> Result<String> {
+    serde_json::to_string_pretty(value).context("serializing --json output")
 }
 
 fn registry_from_run(run: &RunInvocation) -> Result<profile::LayerRegistry> {
@@ -1780,6 +1685,23 @@ fn profiles_list_cmd(list: ProfilesListArgs) -> Result<()> {
     let mut opts = list.opts;
     prepare_opts(&mut opts)?;
     let registry = profile::LayerRegistry::load(opts.profile_paths.as_slice())?;
+    if opts.json {
+        let rows: Vec<_> = registry
+            .list()
+            .into_iter()
+            .map(|(name, source)| {
+                let p = registry.get(&name);
+                serde_json::json!({
+                    "name": name,
+                    "source": format!("{source:?}"),
+                    "requires": p.map(|p| p.requires.clone()).unwrap_or_default(),
+                    "policies": p.map(|p| p.policies.len()).unwrap_or(0),
+                })
+            })
+            .collect();
+        println!("{}", to_json(&rows)?);
+        return Ok(());
+    }
     profiles_list(registry, opts.verbose)
 }
 

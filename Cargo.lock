@@ -243,6 +243,7 @@ dependencies = [
  "isol8-cli",
  "isol8-core",
  "isol8-registry",
+ "serde_json",
 ]
 
 [[package]]
@@ -271,6 +272,7 @@ dependencies = [
  "nix",
  "serde",
  "serde_json",
+ "serde_yaml",
  "thiserror 1.0.69",
  "toml",
  "windows",

@@ -14,6 +14,8 @@ pub mod analyze_macos;
 pub mod backends;
 /// Named local isolation units (cages).
 pub mod cage;
+/// User configuration: discovery, merge, `ISOL8_*` overrides.
+pub mod config;
 /// Injectable ambient context for path tokens and managed homes.
 pub mod context;
 /// Toolchain detection and cage verification.
@@ -34,9 +36,8 @@ pub mod sandbox;
 
 pub use analyze::{AnalysisReport, Denial, DenialAccess};
 pub use cage::{Cage, CageOverlay, HomeMode};
-pub use context::{
-    absolute_path, effective_config_dir, set_config_dir_provider, Context, Platform,
-};
+pub use config::{effective_cages_dir, effective_config_dir, Config};
+pub use context::{absolute_path, Context, Platform};
 pub use error::{Error, Result};
 pub use plan::{HomeOpKind, HomeOpSpec, HomePlan, PlanAction, PlannedOp};
 pub use profile::{Access, MatchKind, PathGrant, Profile};

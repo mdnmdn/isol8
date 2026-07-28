@@ -936,6 +936,12 @@ crates/isol8-cli/      # CLI library: cli/*, wizard (depends on core + registry)
 ### Rules (locked)
 
 - CLI contains **no** policy logic — only prompts, rendering, config, meta-commands.
+  This rule was violated in practice: config discovery/parse/merge and the
+  precedence chain (cage overlay → config → CLI) lived in `isol8-cli`
+  `cli/config.rs` / `prepare_run`, not in `isol8-core`, so an embedder could not
+  reproduce CLI behaviour without reimplementing it. Restored by the
+  crate-as-lib work (`isol8-core::config`, `resolve::spec_from_config`) — see
+  [`crate-as-lib-plan.md`](./crate-as-lib-plan.md).
 - Core does **not** depend on registry; discovery is wired via
   `recipe::set_offline_registry_provider` (facade/`ensure_registry_provider`).
 - Public API stability: `use isol8::…` still works (modules + types re-exported).
@@ -1103,3 +1109,4 @@ No recipes, no materialization changes, no new dependencies.
 | 2026-07-24 | Phase 8 done: cage wizard (`src/wizard.rs`), `@cage new`/`edit`, managed sections, drift, bundles offline |
 | 2026-07-27 | Recipe schema extended (post-Phase-3 follow-up): `tags`, `requires` (profile layers → layer stack), strategy `summary` / `danger` / `path_prepend`; later recipe source overrides an overlapping variant; registry files declaring `kind = "recipe"` warn instead of being skipped silently. Unblocks external registries authored against the target schema. |
 | 2026-07-24 | Phase 9 done: Cargo workspace split (`isol8-core` / `isol8-registry` / `isol8-cli` + root facade); API-stable `use isol8::…`; registry provider hook; docs updated |
+| 2026-07-28 | Embedding API (crate-as-lib, post-Phase-9 follow-up): `isol8-core::config` becomes the single config implementation (moved out of `isol8-cli`, de-duplicated from `isol8-registry`); `resolve::spec_from_config` + `cage::select_name`/`apply_overlay` give embedders the documented precedence chain; `resolve::effective_policy_in` / `sandbox::dry_run_in` hermetic `Context` variants; `Spec` `#[non_exhaustive]` + `Spec::new`; report types `Serialize` for `--json`; new `wizard` feature. Fixes a real behaviour bug along the way: `ISOL8_*` used to override explicit CLI flags, now it only overrides the config. Restores the Phase 9 "CLI contains no policy logic" rule. See [`crate-as-lib-plan.md`](./crate-as-lib-plan.md), [`../embedding.md`](../embedding.md). |

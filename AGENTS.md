@@ -63,6 +63,9 @@ Modules (see spec §7); crate ownership in parentheses:
 - `error` (**isol8-core**) — typed `pub enum Error` (thiserror) + `pub type Result<T>`.
   Engine modules return `isol8::Result`; the CLI layer keeps `anyhow` and upconverts
   at the boundary.
+- `config` (**isol8-core**) — config discovery, merge, `ISOL8_*` overrides; single
+  implementation, consumed by the CLI (`cli/config.rs` clap glue) and by
+  `isol8-registry` (re-exports it for `[registries.*]` / lockfile placement).
 - `sandbox` (**isol8-core**) — library entry surface: `Spec`, `Sandbox`
   (`run`/`spawn`/`dry_run`), `SandboxChild`, `DryRun`.
 - `profile` (**isol8-core**) — `Profile` / `PathGrant` / `Access` / `HomeReplace`,
@@ -83,6 +86,7 @@ Modules (see spec §7); crate ownership in parentheses:
   `(trace …)` for `--author`.
 - `backends/{linux,macos,windows}` (**isol8-core**) — render the merged profile into
   the OS-native policy and spawn. `Backend` trait: `spawn(...) -> Result<SandboxChild>`,
+  `output(...) -> Result<std::process::Output>` (used by `@cage verify`),
   `render_policy(&self, profile) -> String`.
 - `net` (future) — proxy config + N2/N3 helpers.
 
@@ -102,6 +106,21 @@ and full Windows path enforcement remain deferred.
 
 - **workspace (Phase 9)** — `isol8-core` / `isol8-registry` / `isol8-cli` + root facade
   package `isol8`. Behavior unchanged for the binary and for `use isol8::…` embedders.
+- **embedding API (crate-as-lib)** — `isol8-core::config` is now the single config
+  implementation (moved out of `isol8-cli` and de-duplicated from
+  `isol8-registry`); `resolve::spec_from_config` applies the documented
+  precedence chain in one function; `resolve::effective_policy_in` and
+  `sandbox::dry_run_in` are hermetic `Context`-explicit variants (the ambient
+  `effective_policy` / `dry_run` are now thin wrappers); `cage::select_name` /
+  `cage::apply_overlay` are public; `Spec` is `#[non_exhaustive]` with
+  `Spec::new(cmd)`; report types derive `Serialize` for `--json`; new `wizard`
+  feature exposes cage authoring without clap. Guide: [`_docs/embedding.md`](_docs/embedding.md),
+  plan: [`_docs/wip/crate-as-lib-plan.md`](_docs/wip/crate-as-lib-plan.md).
+- **`ISOL8_*` vs CLI flags (behaviour fix)** — env overrides used to be applied
+  after CLI flags and could silently clobber an explicit `--profile` (etc.).
+  `ISOL8_*` now overrides the *config*, before the cage and before CLI flags are
+  considered, so a flag the user actually typed always wins — matching what
+  [`_docs/config.md`](_docs/config.md) §7 documented all along.
 - **profile** — TOML load (`isol8-core` `build.rs` embeds all `profiles/**/*.toml` +
   user config dir + `--profile-path` overlays), `requires` inheritance, deny-first
   `merge`, layer/policy `filter` (executable/OS/arch), and auto-profile selection.
@@ -291,7 +310,8 @@ isol8 -c work -- echo hi
 ### Embedding isol8 as a library
 
 Prefer the root **facade** package (`isol8`) so `use isol8::…` stays stable across
-workspace splits.
+workspace splits. Full API surface (hermetic `_in` variants, `--json`, cages,
+recipes, wizard, Windows caveats): [`_docs/embedding.md`](_docs/embedding.md).
 
 ```toml
 # Cargo.toml — engine only (isol8-core re-exports; no clap / registry / wizard):
@@ -333,6 +353,7 @@ you need a stricter dependency graph; the facade remains the supported public AP
 | Doc | Contents |
 |-----|----------|
 | [`_docs/instructions.md`](_docs/instructions.md) | User guide: CLI, cages, wizard, registries, analyze |
+| [`_docs/embedding.md`](_docs/embedding.md) | Embedding guide: Rust library, subprocess `--json`, hermetic `_in` variants |
 | [`_docs/config.md`](_docs/config.md) | Config discovery, parameters, markers, env overrides |
 | [`_docs/profile-model.md`](_docs/profile-model.md) | Profile format, filters, inheritance, merge, status table |
 | [`_docs/project-structure.md`](_docs/project-structure.md) | Workspace layout and data flow |
@@ -344,5 +365,6 @@ you need a stricter dependency graph; the facade remains the supported public AP
 | [`_docs/recipes.md`](_docs/recipes.md) | Recipes, strategies, detect/verify |
 | [`_docs/registry.md`](_docs/registry.md) | Offline recipe registries: config, CLI, trust, lockfile |
 | [`_docs/wip/multi-evo-plan.md`](_docs/wip/multi-evo-plan.md) | Evolution Phases 0–9 done; Phase 10 deferred |
+| [`_docs/wip/crate-as-lib-plan.md`](_docs/wip/crate-as-lib-plan.md) | Embedding API (crate-as-lib) plan: config, precedence, `_in` variants, `--json` |
 | [`_docs/inbox/evo-repo.md`](_docs/inbox/evo-repo.md) | Evolution design source (Phases 1–9 implemented) |
 | [`AGENTS.md`](AGENTS.md) | Guide for contributors and agents |

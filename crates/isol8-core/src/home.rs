@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::Serialize;
+
 use crate::context::{self, Context};
 use crate::error::{Error, Result, ResultExt};
 use crate::plan::{self, HomeOpSpec, HomePlan};
@@ -23,6 +25,7 @@ pub const REAL_HOME_TOKEN: &str = "#HOME";
 pub const MANAGED_HOME_PREFIX: &str = "@managed/";
 
 /// The resolved effective home for a run, plus its materialization plan.
+#[derive(Debug, Clone, Serialize)]
 pub struct EffectiveHome {
     /// The resolved effective `$HOME` directory for the run.
     pub path: PathBuf,

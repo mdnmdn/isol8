@@ -12,12 +12,18 @@ build = "build.rs"
 name = "isol8_core"
 path = "src/lib.rs"
 
+[features]
+default = ["yaml"]
+# YAML config files (isol8.yaml / isol8.yml). TOML always works.
+yaml = ["dep:serde_yaml"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 anyhow = "1"
 thiserror = "1"
 serde_json = "1"
+serde_yaml = { version = "0.9", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"

@@ -20,6 +20,7 @@ use crate::error::{Error, Result, ResultExt};
 use crate::filter::RunContext;
 use crate::home::{expand_tilde, REAL_HOME_TOKEN};
 use crate::recipe::{RecipeRegistry, StrategyName};
+use crate::sandbox::Spec;
 
 /// Kind of denied access (normalized across backends).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -102,7 +103,7 @@ struct DenialLine {
 }
 
 /// A path prefix published by a recipe strategy (for matching denials).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RecipePathIndex {
     /// Recipe id (`toolchains/nvm`).
     pub id: String,
@@ -117,7 +118,7 @@ pub struct RecipePathIndex {
 }
 
 /// One collapsed denial root with a suggestion.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AnalysisItem {
     /// Collapsed path root.
     pub root: PathBuf,
@@ -136,7 +137,7 @@ pub struct AnalysisItem {
 }
 
 /// Full analysis report.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AnalysisReport {
     /// Sum of raw denial counts before collapse.
     pub total_denials: u32,
@@ -595,5 +596,169 @@ mod tests {
         let root = eff.join(".nvm");
         assert!(needs_home_link(&root, &eff, &real, None));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end: run a command and analyze what it was denied
+// ---------------------------------------------------------------------------
+
+/// Result of [`run_and_analyze`]: the confined run plus its denial report.
+#[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
+pub struct AnalyzeOutcome {
+    /// Exit code of the confined command.
+    pub code: i32,
+    /// Pid of the confined child (`0` if it never launched).
+    pub pid: u32,
+    /// Collapsed denials matched against the recipe index.
+    pub report: AnalysisReport,
+}
+
+/// Knobs for [`run_and_analyze_with`].
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct AnalyzeOptions {
+    /// macOS only: inject Seatbelt `(trace …)` and write a draft allow profile here.
+    ///
+    /// **Permissive** — a traced run is not confined. Explicit opt-in only; the
+    /// CLI gates it behind `--author`. Ignored on other platforms.
+    pub author_trace: Option<PathBuf>,
+}
+
+/// A unique temp path for an `--author` trace profile.
+pub fn default_trace_path() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "isol8-analyze-trace-{}-{}.sbpl",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    ))
+}
+
+/// Run `spec` confined, observe denials, and match them against recipes.
+///
+/// Always spawns (best-effort): a command that fails for its own reasons still
+/// produces a report. Denials come from, in order:
+///
+/// 1. `ISOL8_ANALYZE_FEED` — an explicit NDJSON file (offline / CI / tests)
+/// 2. the platform observer (macOS unified log; none elsewhere yet)
+/// 3. a post-run `$TMP/isol8-analyze-<pid>.ndjson` written by a backend hook
+///
+/// Observation is **non-exhaustive** on every platform;
+/// [`AnalysisReport::source_note`] records which source was used.
+pub fn run_and_analyze(spec: &Spec, ctx: &Context) -> Result<AnalyzeOutcome> {
+    run_and_analyze_with(spec, ctx, &AnalyzeOptions::default())
+}
+
+/// [`run_and_analyze`] with explicit options (`--author` trace).
+pub fn run_and_analyze_with(
+    spec: &Spec,
+    ctx: &Context,
+    opts: &AnalyzeOptions,
+) -> Result<AnalyzeOutcome> {
+    crate::sandbox::ensure_not_nested()?;
+
+    let mut effective = crate::resolve::effective_policy_in(spec, ctx)?;
+    crate::home::materialize(&effective.home)?;
+    crate::resolve::confine_executable(&mut effective.profile, &mut effective.cmd)?;
+
+    if let Some(path) = &opts.author_trace {
+        author_trace(&mut effective.profile, path);
+    }
+
+    // An explicit feed wins over live observation, so a test or a CI run is
+    // deterministic and never depends on the host log daemon.
+    let (code, pid, denials, source_note) = match resolve_feed_path(None) {
+        Some(path) => {
+            let (code, pid) = spawn_and_wait(&effective)?;
+            let d = load_ndjson_file(&path)?;
+            (code, pid, d, format!("NDJSON feed {}", path.display()))
+        }
+        None => collect_denials_live(&effective)?,
+    };
+
+    // A backend hook may have written a per-pid feed only after the child ran.
+    let (denials, source_note) = if denials.is_empty() {
+        match resolve_feed_path(Some(pid)) {
+            Some(path) => match load_ndjson_file(&path) {
+                Ok(d) if !d.is_empty() => (d, format!("NDJSON feed {}", path.display())),
+                _ => (denials, source_note),
+            },
+            None => (denials, source_note),
+        }
+    } else {
+        (denials, source_note)
+    };
+
+    let run_ctx = RunContext::from_cmd(&effective.cmd);
+    let reg = RecipeRegistry::load(&spec.recipe_paths)?;
+    let index = build_recipe_index(&reg, &run_ctx, ctx, &effective.home.path)?;
+    let report = analyze(&denials, &index, ctx, &effective.home.path, source_note);
+    Ok(AnalyzeOutcome { code, pid, report })
+}
+
+/// Append a Seatbelt `(trace "path")` directive to the merged profile (macOS).
+///
+/// The traced process runs **permissively** — Seatbelt records what it touches
+/// instead of denying. Never call this on a run whose confinement matters.
+#[cfg(target_os = "macos")]
+pub fn author_trace(profile: &mut crate::profile::Profile, trace_path: &Path) {
+    let directive = crate::analyze_macos::seatbelt_trace_directive(trace_path);
+    let macos = profile.macos.get_or_insert_with(Default::default);
+    macos.raw.push_str(&directive);
+}
+
+/// No-op off macOS: Seatbelt `(trace …)` has no equivalent on other backends.
+#[cfg(not(target_os = "macos"))]
+pub fn author_trace(_profile: &mut crate::profile::Profile, _trace_path: &Path) {}
+
+/// Spawn the confined command and wait, returning `(exit_code, pid)`.
+fn spawn_and_wait(effective: &crate::resolve::EffectivePolicy) -> Result<(i32, u32)> {
+    let backend = crate::backends::select();
+    let mut child = backend.spawn(&effective.profile, &effective.env, &effective.cmd)?;
+    let pid = child.id();
+    let code = child.wait().unwrap_or(1);
+    Ok((code, pid))
+}
+
+/// Spawn while the platform observer is running.
+fn collect_denials_live(
+    effective: &crate::resolve::EffectivePolicy,
+) -> Result<(i32, u32, Vec<Denial>, String)> {
+    #[cfg(target_os = "macos")]
+    {
+        match crate::analyze_macos::observe_denials_during(|| spawn_and_wait(effective)) {
+            Ok((code, pid, denials)) => {
+                let note = if denials.is_empty() {
+                    no_observation_note().to_string()
+                } else {
+                    format!(
+                        "macOS unified log (log stream + log show; {} denial line(s); pid={pid})",
+                        denials.len()
+                    )
+                };
+                Ok((code, pid, denials, note))
+            }
+            // The observer is best-effort: if the log daemon is unavailable the
+            // command still runs, it just runs unobserved.
+            Err(e) => {
+                let (code, pid) = spawn_and_wait(effective)?;
+                Ok((
+                    code,
+                    pid,
+                    Vec::new(),
+                    format!("log observer unavailable: {e}"),
+                ))
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let (code, pid) = spawn_and_wait(effective)?;
+        Ok((code, pid, Vec::new(), no_observation_note().to_string()))
     }
 }

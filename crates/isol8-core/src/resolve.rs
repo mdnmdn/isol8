@@ -2,6 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
+use crate::config::Config;
+use crate::context::Context;
 use crate::env;
 use crate::error::{Error, Result};
 use crate::filter::{self, RunContext};
@@ -10,7 +14,8 @@ use crate::profile::{self, Access, LayerRegistry, MatchKind, PathGrant, Profile}
 use crate::sandbox::Spec;
 
 /// How a layer entered the resolved stack (for `--show-policies` provenance).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LayerOrigin {
     /// Named via `--profile` (or config `default_profiles`).
     Explicit,
@@ -32,6 +37,7 @@ impl LayerOrigin {
 }
 
 /// Fully resolved policy for a confined command.
+#[derive(Debug, Clone, Serialize)]
 pub struct EffectivePolicy {
     /// Resolved layer stack in merge order (deps-first), tagged with provenance.
     pub layer_names: Vec<(String, LayerOrigin)>,
@@ -47,8 +53,78 @@ pub struct EffectivePolicy {
     pub recipes: Vec<(String, String)>,
 }
 
+/// Build a [`Spec`] from a loaded [`Config`], applying the documented precedence
+/// chain ([`_docs/config.md`](../../_docs/config.md) §7).
+///
+/// Order, lowest to highest: builtin defaults → config file (already merged with
+/// any project marker overlay by [`crate::config::load`]) → `ISOL8_*` overrides
+/// (apply [`crate::config::apply_env_overrides`] to `cfg` first) → **fields the
+/// caller pre-set on `base`** → the selected cage, which fills what is still
+/// empty.
+///
+/// Pass `Spec::default()` as `base` for "exactly what the config says"; pass a
+/// partially-filled `Spec` to model CLI flags, which win over the config.
+///
+/// ```no_run
+/// let ctx = isol8_core::Context::from_environment()?;
+/// let mut cfg = isol8_core::config::load()?;
+/// isol8_core::config::apply_env_overrides(&mut cfg);
+/// let spec = isol8_core::resolve::spec_from_config(
+///     &cfg,
+///     isol8_core::Spec::default(),
+///     vec!["echo".into(), "hi".into()],
+///     &ctx,
+/// )?;
+/// # Ok::<(), isol8_core::Error>(())
+/// ```
+pub fn spec_from_config(cfg: &Config, base: Spec, cmd: Vec<String>, ctx: &Context) -> Result<Spec> {
+    let mut spec = base;
+    spec.cmd = cmd;
+
+    // Cage first: it is the more specific selection, so it wins over the global
+    // config for anything the caller did not set explicitly.
+    let name = crate::cage::select_name(None, cfg);
+    if let Some(cage) = crate::cage::resolve_in(name.as_deref(), &ctx.cwd, Some(&ctx.config_dir))? {
+        crate::cage::apply_overlay(&cage.overlay(), &mut spec);
+    }
+
+    if spec.profiles.is_empty() {
+        spec.profiles = cfg.default_profiles.clone();
+    }
+    if spec.profile_paths.is_empty() {
+        spec.profile_paths = cfg.profile_paths.clone();
+    }
+    if spec.add_dirs_rw.is_empty() {
+        spec.add_dirs_rw = cfg.add_dirs_rw.clone();
+    }
+    if spec.add_dirs_ro.is_empty() {
+        spec.add_dirs_ro = cfg.add_dirs_ro.clone();
+    }
+    if spec.home.is_none() {
+        spec.home = cfg.home.clone();
+    }
+    if !spec.auto_profiles {
+        spec.auto_profiles = cfg.auto_profiles;
+    }
+    Ok(spec)
+}
+
 /// Resolve layer stack, home, merged profile, and env without spawning.
+///
+/// Reads ambient state from the process environment. In-process hosts and
+/// hermetic tests should use [`effective_policy_in`] with an explicit
+/// [`Context`] instead.
 pub fn effective_policy(spec: &Spec) -> Result<EffectivePolicy> {
+    let ambient = Context::from_environment()?;
+    effective_policy_in(spec, &ambient)
+}
+
+/// [`effective_policy`] against an explicit [`Context`].
+///
+/// Nothing in this path reads `HOME`, the cwd, or `ISOL8_CONFIG_PATH` behind the
+/// caller's back — every ambient value comes from `ambient`. This is the entry
+/// point for an embedder whose process environment belongs to the host.
+pub fn effective_policy_in(spec: &Spec, ambient: &Context) -> Result<EffectivePolicy> {
     let registry = LayerRegistry::load(&spec.profile_paths)?;
     let ctx = RunContext::from_cmd(&spec.cmd);
 
@@ -103,14 +179,13 @@ pub fn effective_policy(spec: &Spec) -> Result<EffectivePolicy> {
         .into_iter()
         .map(|(_, p)| filter::apply_layer_filter(p, &ctx))
         .collect();
-    let ambient = crate::context::Context::from_environment()?;
 
     let mut spec_for_home = spec.clone();
     for c in &contributions {
         spec_for_home.home_ops.extend(c.home_ops.iter().cloned());
     }
 
-    let effective_home = home::resolve(&spec_for_home, &layers, &ambient)?;
+    let effective_home = home::resolve(&spec_for_home, &layers, ambient)?;
     let mut merged = profile::load_merged(spec, &layers, &effective_home, &ctx)?;
 
     // Fold recipe path grants + env (token-expand env against Context + effective home).
@@ -196,7 +271,10 @@ fn apply_path_prepend(
 
 /// Parse `--set-env K=V` entries into pairs. Errors (no silent loss) on a missing
 /// `=` or an empty key.
-fn parse_set_env(raw: &[String]) -> Result<Vec<(String, String)>> {
+///
+/// Public because [`crate::env::build_minimal`] takes the parsed pairs — without
+/// this, an embedder calling it directly would have to reimplement the split.
+pub fn parse_set_env(raw: &[String]) -> Result<Vec<(String, String)>> {
     raw.iter()
         .map(|e| match e.split_once('=') {
             Some((k, v)) if !k.is_empty() => Ok((k.to_string(), v.to_string())),

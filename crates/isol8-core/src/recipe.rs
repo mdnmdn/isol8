@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result, ResultExt};
 use crate::filter::{self, RunContext};
@@ -21,7 +21,8 @@ use crate::profile::{Access, MatchKind, PathGrant, ProfileFilter};
 pub const RECIPE_SCHEMA: u32 = 1;
 
 /// Strategy names a recipe may define.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum StrategyName {
     /// Symlink to real path, rw on the real path (warm caches).
     Share,
@@ -55,7 +56,7 @@ impl StrategyName {
 }
 
 /// Optional detection metadata (`@cage detect` on the host).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Detect {
     /// Path probe (typically under real home, e.g. `~/.nvm` or `#HOME/.nvm`).
     pub probe_path: Option<String>,
@@ -64,7 +65,7 @@ pub struct Detect {
 }
 
 /// Optional verify metadata (`@cage verify` inside the cage).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Verify {
     /// Smoke-test command.
     pub cmd: Option<String>,
@@ -79,7 +80,7 @@ pub struct Verify {
 /// files — write `[[strategies.link]]` twice with different selectors. The
 /// selector is authoritative here exactly as it is for a recipe or a profile
 /// layer; a body with no filter matches every context.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Strategy {
     /// Platform selector for this body; `None` matches every run context.
     pub filter: Option<ProfileFilter>,
@@ -101,7 +102,7 @@ pub struct Strategy {
 }
 
 /// A loaded recipe document.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Recipe {
     /// Schema version.
     pub schema: u32,
@@ -129,7 +130,7 @@ pub struct Recipe {
 }
 
 /// Cage/Spec selection: recipe id + strategy name.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ToolchainChoice {
     /// Recipe id (`toolchains/nvm` or bare `nvm` → `toolchains/nvm`).
     pub id: String,
@@ -178,7 +179,7 @@ pub fn toolchain_key(id: &str) -> String {
 }
 
 /// Compiled contribution of one recipe strategy (tokens still present where noted).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RecipeContribution {
     /// Recipe id.
     pub id: String,

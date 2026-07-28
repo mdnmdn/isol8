@@ -25,6 +25,12 @@ description = "Lightweight cross-platform isolation sandbox for AI coding agents
 authors.workspace = true
 default-run = "isol8"
 
+# docs.rs: build every feature so `registry` / `wizard` / `cli` items are visible,
+# and enable doc_cfg so each carries its feature badge.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [lib]
 name = "isol8"
 path = "src/lib.rs"
@@ -43,8 +49,10 @@ required-features = ["field-test"]
 default = ["cli", "registry"]
 # Offline registry types + recipe auto-discovery provider.
 registry = ["dep:isol8-registry"]
-# CLI binary, wizard, meta-commands (implies registry).
-cli = ["registry", "dep:isol8-cli"]
+# Cage authoring API (render/apply/drift/bundles) without clap or dialoguer.
+wizard = ["registry", "dep:isol8-cli"]
+# CLI binary, meta-commands, interactive wizard (implies wizard + registry).
+cli = ["wizard", "isol8-cli/clap-cli"]
 # Real-sandbox field-test binary.
 field-test = ["cli"]
 
@@ -53,3 +61,41 @@ isol8-core = { path = "crates/isol8-core", version = "0.2.6" }
 isol8-registry = { path = "crates/isol8-registry", version = "0.2.6", optional = true }
 isol8-cli = { path = "crates/isol8-cli", version = "0.2.6", optional = true }
 anyhow = "1"
+
+# Examples only: serializing a DryRun is what a non-Rust host would do.
+[dev-dependencies]
+serde_json = "1"
+
+# Embedding examples (_docs/embedding.md §9). Built by `just ci` so they cannot rot.
+[[example]]
+name = "embed_minimal"
+path = "examples/embed_minimal.rs"
+
+[[example]]
+name = "embed_json"
+path = "examples/embed_json.rs"
+
+[[example]]
+name = "embed_config"
+path = "examples/embed_config.rs"
+required-features = ["registry"]
+
+[[example]]
+name = "embed_cage"
+path = "examples/embed_cage.rs"
+required-features = ["registry"]
+
+[[example]]
+name = "embed_recipes"
+path = "examples/embed_recipes.rs"
+required-features = ["registry"]
+
+[[example]]
+name = "embed_analyze"
+path = "examples/embed_analyze.rs"
+required-features = ["registry"]
+
+[[example]]
+name = "embed_wizard"
+path = "examples/embed_wizard.rs"
+required-features = ["wizard"]

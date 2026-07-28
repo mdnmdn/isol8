@@ -4,8 +4,11 @@ User-facing settings for default profiles, path grants, cages, and offline
 registries. Config is loaded once before each run (and by meta-commands such as
 `@registry` / `@cage`), then overlaid by environment variables and CLI flags.
 
-**Implementation:** `isol8-cli` `cli/config.rs` (load + merge),
-`isol8-registry` (same discovery for `[registries.*]` and lockfile placement).
+**Implementation:** `isol8-core` `config.rs` is the single implementation of
+discovery, parse, merge, `@`-expansion, and `ISOL8_*` overrides. `isol8-cli`
+`cli/config.rs` is clap glue only (`apply_to_run` maps a loaded `Config` onto the
+CLI's `ProfileOpts`); `isol8-registry` re-exports core's discovery for
+`[registries.*]` and lockfile placement — neither reimplements it.
 
 Related: [profile-model.md](./profile-model.md), [registry.md](./registry.md),
 [instructions.md](./instructions.md).
@@ -227,16 +230,32 @@ sources.
 
 ## 7. Precedence (config → env → CLI)
 
-For run options, later steps only fill **unset** CLI fields (except where noted):
+Each step below fills **only the fields still unset** by an earlier one — nothing
+is ever clobbered once set:
 
 ```
-builtin defaults
-  → base config file (OS / config_path / ISOL8_CONFIG_PATH)
-  → project marker overlay (if any)
-  → ISOL8_* environment overrides
-  → CLI flags (win for anything the user set)
-  → cage resolution (fills remaining empties; -c / ISOL8_CAGE / config cage)
+CLI flags (as typed — wins for anything the user set)
+  → cage overlay (-c / ISOL8_CAGE / config `cage`; fills fields still unset)
+  → config, already resolved:
+        builtin defaults
+          → base config file (OS / config_path / ISOL8_CONFIG_PATH)
+          → project marker overlay (if any)
+          → ISOL8_* environment overrides
 ```
+
+**Cage before config defaults.** The cage is the more specific selection, so its
+`profiles` / `home` / `add_dirs_*` / `toolchains` win over `default_profiles` and
+friends — but never over something the CLI (or an embedder's pre-set `Spec`
+fields) already set. `isol8_core::resolve::spec_from_config` and the CLI's
+`apply_cage_to_opts` + `apply_to_run` both implement this same fill-only-empty
+chain; see [embedding.md](./embedding.md) §3 "Build a Spec directly".
+
+**`ISOL8_*` applies to the config, not to CLI flags.** Env overrides are folded
+into the loaded `Config` (`apply_env_overrides`) *before* anything looks at CLI
+flags or the cage, so a flag you actually typed always wins over an `ISOL8_*`
+var. This was previously a bug: `ISOL8_PROFILE=base isol8 --profile
+toolchains/rust` silently dropped `--profile`. Env now only ever competes with
+the config file, never with something you typed on the command line.
 
 | Env var | Effect |
 |---------|--------|
@@ -248,7 +267,7 @@ builtin defaults
 | `ISOL8_HOME` | Replacement home |
 | `ISOL8_AUTO_PROFILES` | `1` / `true` / `yes` / `on` → true; ignored if CLI set `--auto-profiles` / `--no-auto-profiles` |
 | `ISOL8_DRY_RUN` | `1` / `true` / `yes` → dry-run |
-| `ISOL8_CAGE` | Named cage (applied in cage resolution, not in the config struct merge) |
+| `ISOL8_CAGE` | Named cage (consulted by cage-name resolution, not by the config struct merge) |
 
 List-valued env vars split on `,` or `:`.
 
@@ -299,3 +318,33 @@ ISOL8_CONFIG_PATH=./_data/config isol8 --show-policies -- echo hi
 # Inspect effective policy (includes config + env + flags)
 isol8 --show-policies -- my-agent
 ```
+
+---
+
+## 10. From a library
+
+`isol8_core::config` is the same discovery/merge/`ISOL8_*` implementation the CLI
+uses — no re-registration needed:
+
+```rust
+let mut cfg = isol8::config::load()?;          // env → project marker → OS default
+isol8::config::apply_env_overrides(&mut cfg);  // ISOL8_PROFILE, ISOL8_HOME, …
+```
+
+Reading `HOME` / cwd / `ISOL8_*` from the process environment is the *ambient*
+entry point; an in-process host with its own environment should use the
+hermetic variant instead:
+
+```rust
+let ctx = isol8::Context {
+    real_home: "/home/agent".into(),
+    cwd: "/srv/work".into(),
+    platform: isol8::Platform::Linux,
+    config_dir: "/etc/isol8".into(),
+    managed_root: "/var/lib/isol8/homes".into(),
+};
+let cfg = isol8::config::load_in(&ctx)?;
+```
+
+Full pipeline, error handling, and the `_in` hermetic variants:
+[embedding.md](./embedding.md).

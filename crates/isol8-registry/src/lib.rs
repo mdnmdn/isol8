@@ -7,6 +7,8 @@
 //! Design: [`_docs/inbox/evo-repo.md`](../_docs/inbox/evo-repo.md) §5 / §7.5.
 //! Plan: [`_docs/wip/multi-evo-plan.md`](../_docs/wip/multi-evo-plan.md) Phase 7.
 
+#![warn(missing_docs)]
+
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -434,12 +436,14 @@ impl Lockfile {
     }
 }
 
-/// Project-local config markers in cwd (first match wins). Kept in sync with
-/// `isol8-cli` `cli::config::PROJECT_CONFIG_MARKERS`.
-pub const PROJECT_CONFIG_MARKERS: &[&str] =
-    &["isol8.toml", ".isol8.toml", "encage.toml", ".encage.toml"];
-
-const CONFIG_BASENAMES: &[&str] = &["isol8.toml", "isol8.yaml", "isol8.yml"];
+// Config discovery lives in `isol8_core::config` — the single implementation of
+// the rules in `_docs/config.md`. Re-exported here so existing
+// `isol8::registry::…` and `isol8::…` paths keep working.
+pub use isol8_core::config::{
+    discover_config_file, discover_local_marker, effective_cages_dir, effective_config_dir,
+    expand_at_path, find_config_in_dir, resolve_config_location, CONFIG_BASENAMES,
+    PROJECT_CONFIG_MARKERS,
+};
 
 /// Discover the lockfile path.
 ///
@@ -466,146 +470,11 @@ pub fn discover_lockfile_path() -> PathBuf {
 }
 
 /// OS config directory for isol8 (`~/.config/isol8` on macOS/Linux).
+///
+/// The **OS default**, ignoring any `config_path` redirect — use
+/// [`effective_config_dir`] for the tree isol8 actually reads.
 pub fn config_isol8_dir() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|h| !h.is_empty())
-                .map(|h| PathBuf::from(h).join(".config"))
-        })
-        .or_else(|| {
-            if cfg!(windows) {
-                std::env::var_os("APPDATA")
-                    .filter(|h| !h.is_empty())
-                    .map(PathBuf::from)
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| real_home_path().join(".config"))
-        .join("isol8")
-}
-
-fn resolve_config_location(path: &Path) -> Option<PathBuf> {
-    if path.is_file() {
-        return Some(path.to_path_buf());
-    }
-    if path.is_dir() {
-        for name in CONFIG_BASENAMES {
-            let c = path.join(name);
-            if c.is_file() {
-                return Some(c);
-            }
-        }
-    }
-    None
-}
-
-fn find_config_in_dir(dir: &Path) -> Option<PathBuf> {
-    for name in CONFIG_BASENAMES {
-        let c = dir.join(name);
-        if c.is_file() {
-            return Some(c);
-        }
-    }
-    None
-}
-
-fn discover_local_marker() -> Option<PathBuf> {
-    for name in PROJECT_CONFIG_MARKERS {
-        let c = PathBuf::from(name);
-        if c.is_file() {
-            return Some(c);
-        }
-    }
-    None
-}
-
-/// Lightweight peek of `config_path` / `ignore_global` from a project marker.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct LocalConfigMeta {
-    config_path: Option<String>,
-    ignore_global: bool,
-}
-
-fn peek_local_meta(path: &Path) -> Option<LocalConfigMeta> {
-    let body = fs::read_to_string(path).ok()?;
-    toml::from_str(&body).ok()
-}
-
-/// Expand `@…` paths relative to `config_dir`. Non-`@` paths are absolutized
-/// when relative (cwd at call time) so they survive later `chdir`.
-pub fn expand_at_path(path: &str, config_dir: &Path) -> String {
-    if let Some(p) = isol8_core::context::expand_at_path(path, config_dir) {
-        return p.display().to_string();
-    }
-    isol8_core::absolute_path(Path::new(path))
-        .display()
-        .to_string()
-}
-
-/// Root directory of the effective isol8 config tree (`…/isol8` or a redirect).
-///
-/// Same discovery order as config load / registries:
-/// 1. `ISOL8_CONFIG_PATH` (file → parent dir; directory → as-is)
-/// 2. Project marker (`config_path` redirect, or marker parent if `ignore_global`)
-/// 3. OS default (`~/.config/isol8`, `$XDG_CONFIG_HOME/isol8`, …)
-///
-/// Always **absolute**. Cages live at `{dir}/cages/`, wizard state at
-/// `{dir}/state.toml`, `@managed/<id>` at `{dir}/homes/<id>`.
-pub fn effective_config_dir() -> PathBuf {
-    let raw = if let Ok(path) = std::env::var("ISOL8_CONFIG_PATH") {
-        config_root_from_location(Path::new(&path))
-    } else if let Some(local) = discover_local_marker() {
-        if let Some(meta) = peek_local_meta(&local) {
-            if meta.ignore_global {
-                local
-                    .parent()
-                    .filter(|p| !p.as_os_str().is_empty())
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| PathBuf::from("."))
-            } else if let Some(cp) = meta.config_path.as_deref().filter(|s| !s.is_empty()) {
-                config_root_from_location(Path::new(cp))
-            } else {
-                config_isol8_dir()
-            }
-        } else {
-            config_isol8_dir()
-        }
-    } else {
-        config_isol8_dir()
-    };
-    isol8_core::absolute_path(&raw)
-}
-
-/// Map a config location (file or directory, may not exist yet) to its root dir
-/// (not yet absolutized — callers apply [`isol8_core::absolute_path`]).
-fn config_root_from_location(path: &Path) -> PathBuf {
-    if let Some(file) = resolve_config_location(path) {
-        return file
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-    }
-    if path.is_file() {
-        return path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-    }
-    // Directory (existing or intended) or bare path used as config root.
-    if path.as_os_str().is_empty() {
-        return PathBuf::from(".");
-    }
-    path.to_path_buf()
-}
-
-/// Config-level cages directory: `{effective_config_dir()}/cages` (absolute).
-pub fn effective_cages_dir() -> PathBuf {
-    effective_config_dir().join("cages")
+    isol8_core::config::os_config_dir()
 }
 
 // ---------------------------------------------------------------------------
@@ -1419,109 +1288,21 @@ pub fn discover_offline_recipe_dirs() -> Vec<(String, PathBuf)> {
         .collect()
 }
 
-/// Load `[registries]` tables from the same config discovery order as the CLI.
+/// Typed registries from a loaded [`isol8_core::Config`].
 ///
-/// Merges base (env / `config_path` / OS) with local project marker overlays.
-/// Expands `@…` registry paths relative to the base config directory.
+/// `@…` registry paths are already expanded by the config loader.
+pub fn registries_from_config(cfg: &isol8_core::Config) -> Result<BTreeMap<String, RegistrySpec>> {
+    let mut out = BTreeMap::new();
+    for (name, value) in &cfg.registries {
+        out.insert(name.clone(), parse_registry_spec(name, value)?);
+    }
+    Ok(out)
+}
+
+/// Load `[registries.*]` using the shared config discovery
+/// ([`isol8_core::config::load`]): env → project marker overlay → OS base.
 pub fn load_registries_from_config() -> Result<BTreeMap<String, RegistrySpec>> {
-    let (mut regs, config_dir) = load_registries_merged()?;
-    for spec in regs.values_mut() {
-        if let RegistrySpec::Path { path, .. } = spec {
-            *path = expand_at_path(path, &config_dir);
-        }
-    }
-    Ok(regs)
-}
-
-fn load_registries_from_file(path: &Path) -> Result<BTreeMap<String, RegistrySpec>> {
-    let body = fs::read_to_string(path).ctx(|| format!("reading config '{}'", path.display()))?;
-    parse_registries_from_toml(&body)
-}
-
-/// Base + local overlay registries and the config dir used for `@` expansion.
-fn load_registries_merged() -> Result<(BTreeMap<String, RegistrySpec>, PathBuf)> {
-    // 1. Explicit env — single file, no local merge.
-    if let Ok(path) = std::env::var("ISOL8_CONFIG_PATH") {
-        let p = PathBuf::from(&path);
-        if let Some(file) = resolve_config_location(&p) {
-            let dir = file
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("."));
-            return Ok((load_registries_from_file(&file)?, dir));
-        }
-        return Ok((BTreeMap::new(), PathBuf::from(".")));
-    }
-
-    let local = discover_local_marker();
-    let meta = local.as_ref().and_then(|p| peek_local_meta(p));
-
-    let (mut base, config_dir) = if meta.as_ref().is_some_and(|m| m.ignore_global) {
-        let dir = local
-            .as_ref()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-            .filter(|d| !d.as_os_str().is_empty())
-            .unwrap_or_else(|| PathBuf::from("."));
-        (BTreeMap::new(), dir)
-    } else if let Some(cp) = meta
-        .as_ref()
-        .and_then(|m| m.config_path.as_deref())
-        .filter(|s| !s.is_empty())
-    {
-        match resolve_config_location(Path::new(cp)) {
-            Some(file) => {
-                let dir = file
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| PathBuf::from("."));
-                (load_registries_from_file(&file).unwrap_or_default(), dir)
-            }
-            None => (BTreeMap::new(), PathBuf::from(".")),
-        }
-    } else if let Some(file) = find_config_in_dir(&config_isol8_dir()) {
-        let dir = file
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(config_isol8_dir);
-        (load_registries_from_file(&file).unwrap_or_default(), dir)
-    } else {
-        (BTreeMap::new(), config_isol8_dir())
-    };
-
-    if let Some(local_path) = local {
-        if let Ok(overlay) = load_registries_from_file(&local_path) {
-            for (k, v) in overlay {
-                base.insert(k, v);
-            }
-        }
-    }
-
-    Ok((base, config_dir))
-}
-
-/// Resolved primary config file path (best-effort; for diagnostics).
-///
-/// Order matches CLI: `ISOL8_CONFIG_PATH` → local `config_path` / OS base →
-/// local marker → OS default file.
-pub fn discover_config_file() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("ISOL8_CONFIG_PATH") {
-        return resolve_config_location(Path::new(&path));
-    }
-    if let Some(local) = discover_local_marker() {
-        if let Some(meta) = peek_local_meta(&local) {
-            if meta.ignore_global {
-                return Some(local);
-            }
-            if let Some(cp) = meta.config_path.as_deref().filter(|s| !s.is_empty()) {
-                return resolve_config_location(Path::new(cp)).or(Some(local));
-            }
-        }
-        if let Some(base) = find_config_in_dir(&config_isol8_dir()) {
-            return Some(base);
-        }
-        return Some(local);
-    }
-    find_config_in_dir(&config_isol8_dir())
+    registries_from_config(&isol8_core::config::load()?)
 }
 
 /// Parse only the `[registries.*]` tables from a TOML config body.

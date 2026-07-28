@@ -41,14 +41,8 @@ access = "ro"
     let cage = cage::load_from_path(&path).unwrap();
     let o = cage.overlay();
 
-    let spec = Spec {
-        profiles: o.profiles,
-        home: o.home,
-        ephemeral_home: o.ephemeral_home,
-        add_dirs_rw: o.add_dirs_rw,
-        add_dirs_ro: o.add_dirs_ro,
-        ..Default::default()
-    };
+    let mut spec = Spec::default();
+    cage::apply_overlay(&o, &mut spec);
 
     assert_eq!(spec.profiles, ["base", "toolchains/rust"]);
     assert_eq!(spec.home.as_deref(), Some("/tmp/cage-home"));

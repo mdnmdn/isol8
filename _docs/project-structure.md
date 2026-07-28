@@ -47,6 +47,7 @@ isol8/                              # Cargo workspace (resolver = "2")
 │   │   └── src/
 │   │       ├── lib.rs              # pub mods + type re-exports
 │   │       ├── error.rs            # Error, Result, ResultExt
+│   │       ├── config.rs           # config discovery, merge, ISOL8_* overrides — single impl
 │   │       ├── sandbox.rs          # Spec, Sandbox, SandboxChild, DryRun
 │   │       ├── profile.rs          # Profile, Policy, LayerRegistry, merge, resolve_requires
 │   │       ├── filter.rs           # ProfileFilter matching, policies fold
@@ -77,8 +78,8 @@ isol8/                              # Cargo workspace (resolver = "2")
 │           ├── wizard.rs           # @cage new/edit managed sections, drift, bundles
 │           ├── cli/
 │           │   ├── mod.rs          # pub fn main(); run + meta commands
-│           │   ├── config.rs       # isol8.toml/yaml, markers, ISOL8_*, [registries.*]
-│           │   │                   # see _docs/config.md
+│           │   ├── config.rs       # clap glue only: apply_to_run(&Config, &mut ProfileOpts)
+│           │   │                   # discovery/merge/ISOL8_* live in isol8-core config.rs
 │           │   └── diag.rs         # @diag (macOS)
 │           └── bin/
 │               └── isol8-field-test.rs
@@ -147,18 +148,26 @@ file-capability `cap_net_admin+ep`). The main binary never needs root.
 cli::Cli::parse()  [feature = "cli"]
    │  ProfileOpts { cage, profiles, profile_paths, auto_profiles, add_dirs_rw/ro, home, … }
    ▼
-cli::config::load()                      ── ISOL8_CONFIG_PATH | project markers
-   │  Config { default_profiles, auto_profiles, profile_paths, cage, … }   (config_path / merge)
-   │                                           | ~/.config/isol8/
+config::load()                           ── isol8-core; ISOL8_CONFIG_PATH | project marker | OS default
+   │  Config { default_profiles, auto_profiles, profile_paths, cage, … }
    ▼
-cage::resolve + apply_cage_to_opts()     ── --cage / ISOL8_CAGE / config cage / .isol8 discovery
+config::apply_env_overrides(&mut cfg)    ── isol8-core; ISOL8_* overrides the loaded Config
+   ▼
+cage::select_name + resolve_in + apply_overlay   ── isol8-core; -c / ISOL8_CAGE / config cage
    │  fills empty opts fields only (CLI already set wins)
    ▼
-config::apply_to_run() + apply_env_overrides()   ── remaining empties + ISOL8_* overrides
+cli::config::apply_to_run()              ── isol8-cli clap glue; fills remaining empties from Config
    ▼
 ProfileOpts::into_spec() → Spec { …, ephemeral_home, cmd }
    ▼
-resolve::effective_policy(&Spec)          ← also called directly by Sandbox::run/spawn/dry_run
+resolve::effective_policy(&Spec)          ── ambient wrapper: also called directly by
+   │                                          Sandbox::run/spawn/dry_run; an embedder calls
+   │                                          resolve::effective_policy_in(&Spec, &Context) instead
+   ▼
+Context::from_environment()               ── real_home, cwd, platform, managed_root — resolved
+   │                                          once, up front (not mid-pipeline)
+   ▼
+resolve::effective_policy_in(&Spec, &Context)   ── hermetic core; reads no ambient env
    │
    ├─ profile::LayerRegistry::load(profile_paths)
    │     builtin (build.rs embed) → user config dir → profile-path overlays
@@ -175,17 +184,14 @@ resolve::effective_policy(&Spec)          ← also called directly by Sandbox::r
    ├─ profile::resolve_requires()           ── transitive requires, cycle detect, dedup
    ├─ filter::apply_layer_filter() per layer   ── skip grants when os/arch/executable mismatch;
    │     fold matching [[policies]] into layer
-   ├─ Context::from_environment()          ── real_home, cwd, platform, managed_root
-   │                                          (recipes already compiled above; no
-   │                                           network, missing git caches skipped)
-   ├─ home::resolve(&spec+recipe_ops, …)   ── R4: effective $HOME FIRST; @managed/<id>;
+   ├─ home::resolve(&spec+recipe_ops, layers, &ctx)   ── R4: effective $HOME FIRST; @managed/<id>;
    │                                          HomePlan (mkdir + seed-ro + recipe/spec ops)
    ├─ profile::load_merged()               ── ~ + #HOME expansion, --add-dirs-* override layer, merge
    │                                          + recipe path grants + expanded recipe env
    ├─ env::build_minimal()                 ── R3.1 allowlist, HOME first, then --env-pass / --set-env
    └─ apply_path_prepend()                 ── recipe path_prepend → front of PATH
                                               (globs resolved through planned links)
-   │  EffectivePolicy { layer_names, profile, env, home, recipes }
+   │  EffectivePolicy { layer_names, profile, env, home, cmd, recipes }
    ▼
 backends::select()
    │
@@ -207,6 +213,11 @@ child.wait() → i32 exit code
    ▼
 std::process::exit(code)
 ```
+
+**Library equivalent.** An embedder skips the `cli::*` steps and calls
+`resolve::spec_from_config(&cfg, base_spec, cmd, &ctx)` to get the same
+precedence chain (cage before config defaults, CLI/pre-set fields beat both) —
+see [`embedding.md`](./embedding.md) §2–3.
 
 Introspection (`--show-policies`, `--show-profiles`, `@profiles-list`, `@profiles-show`)
 reuses `LayerRegistry`, `select_layer_names`, and `resolve::effective_policy` without
@@ -314,7 +325,7 @@ deps; `filter::apply_layer_filter` strips non-matching grants (deps still pulled
 
 See [`profile-model.md`](./profile-model.md) for schema and merge rules.
 
-### `isol8-cli` — `cli/config.rs`
+### `isol8-core` — `config.rs` (single implementation)
 
 ```rust
 pub struct Config {
@@ -324,9 +335,18 @@ pub struct Config {
     pub add_dirs_rw: Vec<String>,
     pub add_dirs_ro: Vec<String>,
     pub home: Option<String>,
+    pub cage: Option<String>,
     pub dry_run: bool,
-    // + cage, registries, …
+    pub registries: BTreeMap<String, toml::Value>,  // raw; isol8-registry types these
 }
+
+pub fn load() -> Result<Config>;                    // ambient: reads env + cwd
+pub fn load_in(ctx: &Context) -> Result<Config>;     // hermetic: no ambient reads
+pub fn apply_env_overrides(cfg: &mut Config);        // ISOL8_* → cfg, before CLI/cage
+pub fn effective_config_dir() -> PathBuf;
+pub fn effective_cages_dir() -> PathBuf;
+pub fn expand_at_path(path: &str, config_dir: &Path) -> PathBuf;
+pub fn init_template(format: &str) -> Result<String>;  // `isol8 @init`
 ```
 
 Discovery: `ISOL8_CONFIG_PATH` (file or dir; no local merge) → project markers
@@ -334,7 +354,14 @@ Discovery: `ISOL8_CONFIG_PATH` (file or dir; no local merge) → project markers
 `config_path`, `ignore_global`, field overlay) → `~/.config/isol8/isol8.toml`.
 `@…` paths expand relative to the base config directory.
 `ISOL8_PROFILE`, `ISOL8_PROFILE_PATH`, `ISOL8_ADD_DIRS_RW`, `ISOL8_HOME`,
-`ISOL8_DRY_RUN`, etc. mirror CLI flags.
+`ISOL8_DRY_RUN`, etc. mirror CLI flags but apply to `Config`, not to CLI flags
+directly — see [`config.md`](./config.md) §7.
+
+Both the CLI and `isol8-registry` consume this module; neither reimplements
+discovery. `isol8-cli` `cli/config.rs` is now clap glue only —
+`apply_to_run(&Config, &mut ProfileOpts, cli_auto_profiles)` fills CLI-unset
+`ProfileOpts` fields from a loaded `Config` — plus re-exports of the functions
+above for existing call sites.
 
 ### `isol8-core` — `filter.rs`
 
@@ -343,38 +370,61 @@ Discovery: `ISOL8_CONFIG_PATH` (file or dir; no local merge) → project markers
 
 ### `isol8-core` — `resolve.rs`
 
-`effective_policy(&Spec) -> EffectivePolicy` — shared pipeline for `run`,
-`--show-policies`, and `--dry-run`. `EffectivePolicy.layer_names` is the resolved
-(deps-first) stack tagged with `LayerOrigin` (`Explicit` / `Auto` / `Required`) so
-`--show-policies` shows *why* each layer contributes. `parse_set_env(&[String])`
-parses `--set-env K=V` pairs (errors on a missing `=`, no silent drop) before
-`env::build_minimal`. `confine_executable(&mut Profile, &mut [String])`
-— called only on the exec paths (`run`, `@diag`): resolves `cmd[0]` execvp-style
-against the host `PATH` to an absolute path (clean `command "x" not found` on miss)
-and auto-grants the resolved binary `ro` so deny-by-default never hides the
-command's own executable (e.g. an agent under `~/.local/bin`).
+`effective_policy(&Spec) -> EffectivePolicy` — ambient wrapper: resolves
+`Context::from_environment()` once, up front, then calls `effective_policy_in`.
+Shared pipeline for `run`, `--show-policies`, and `--dry-run`.
+
+`effective_policy_in(&Spec, &Context) -> EffectivePolicy` — the hermetic core;
+reads no ambient env/cwd. Embedders and tests call this directly.
+
+`spec_from_config(&Config, base: Spec, cmd, &Context) -> Result<Spec>` — builds a
+`Spec` applying the full precedence chain in one function: cage overlay first
+(more specific, wins over config defaults), then config fills whatever `base`
+left unset. This is what an embedder calls instead of the CLI's `ProfileOpts` →
+`cage::apply_overlay` → `apply_to_run` → `into_spec` chain; see
+[`config.md`](./config.md) §7 and [`embedding.md`](./embedding.md) §3.
+
+`EffectivePolicy.layer_names` is the resolved (deps-first) stack tagged with
+`LayerOrigin` (`Explicit` / `Auto` / `Required`) so `--show-policies` shows *why*
+each layer contributes. `pub fn parse_set_env(&[String]) -> Result<Vec<(String,
+String)>>` parses `--set-env K=V` pairs (errors on a missing `=`, no silent drop)
+before `env::build_minimal` — public so an embedder calling `build_minimal`
+directly doesn't have to reimplement the split. `confine_executable(&mut
+Profile, &mut [String])` — called only on the exec paths (`run`, `@diag`):
+resolves `cmd[0]` execvp-style against the host `PATH` to an absolute path
+(clean `command "x" not found` on miss) and auto-grants the resolved binary `ro`
+so deny-by-default never hides the command's own executable (e.g. an agent
+under `~/.local/bin`).
 
 ### `isol8-core` — `home.rs` — R4, first-class
 
 ```rust
-pub struct EffectiveHome { pub path: PathBuf, pub seed: Vec<SeedEntry> }
+pub struct EffectiveHome {
+    pub path: PathBuf,        // resolved effective $HOME
+    pub real_home: PathBuf,   // for #HOME expansion (from Context)
+    pub seed: Vec<String>,    // real-home entries to seed (also reflected in `plan`)
+    pub plan: HomePlan,       // materialization plan — apply on spawn only
+}
 
-/// CLI --home > profile home_replace (path | auto_scratch) > the REAL home.
-/// HOME replacement is opt-in: with nothing requesting it, the real home is used.
-/// Resolved before profile merge.
-pub fn resolve(run: &RunArgs, layers: &[ProfileLayer]) -> Result<EffectiveHome>;
+/// Spec.home > highest layer's home_replace (path | auto_scratch) > ephemeral_home
+/// > the REAL home. HOME replacement is opt-in: with nothing requesting it, the
+/// real home is used. Resolved before profile merge.
+pub fn resolve(spec: &Spec, layers: &[Profile], ctx: &Context) -> Result<EffectiveHome>;
 
-/// Copy allowlisted real-home entries read-only into the home (R4.4).
-/// First-creation-only: an existing entry is left untouched (no re-copy, no error).
+/// Apply the home materialization plan (seed-ro, links, mkdir, copy). Idempotent.
+pub fn materialize(home: &EffectiveHome) -> Result<()>;
+
+/// Backward-compatible alias for `materialize`.
 pub fn seed(home: &EffectiveHome) -> Result<()>;
 
 /// Expand a grant path: substitute the `#HOME` real-home token, then expand a
 /// leading `~` against the effective home. Used for profile + --add-dirs-* paths.
 pub fn expand_grant(path: &str, effective_home: &Path) -> String;
+pub fn expand_grant_in(path: &str, effective_home: &Path, real: &Path) -> String;
 ```
 
-`--no-seed` (a `RunArgs` flag) clears `EffectiveHome.seed` in `resolve`, so the run
-seeds nothing regardless of profile seed lists.
+`--no-seed` (`Spec.no_seed`) clears the seed list before it's planned in
+`resolve`, so the run seeds nothing regardless of profile seed lists.
 
 ### `isol8-core` — `env.rs` — R3
 
@@ -399,15 +449,19 @@ shim) installs the provider. Core never depends on this crate.
 pub trait Backend {
     /// Apply OS policy and exec the command. Returns immediately with a non-blocking handle.
     fn spawn(&self, profile: &Profile, env: &HashMap<String,String>, cmd: &[String]) -> Result<SandboxChild>;
+    /// Apply OS policy, run to completion, and capture stdout/stderr (used by `@cage verify`).
+    /// Default falls back to spawn+wait without body capture; backends override when possible.
+    fn output(&self, profile: &Profile, env: &HashMap<String,String>, cmd: &[String]) -> Result<std::process::Output>;  // has a default impl
     /// Render the OS-native policy text for the given profile (used by DryRun).
     fn render_policy(&self, profile: &Profile) -> String;
 }
 
 pub fn select() -> Box<dyn Backend>;     // cfg(target_os) dispatch
-
-pub struct Caps { pub net_admin: bool, pub userns: bool, pub landlock_abi: Option<u32>, pub pasta: bool }
-pub fn probe() -> Caps;                   // feeds R5.7 tier auto-select + error UX
 ```
+
+**Future (Phase 3, not implemented):** `Caps { net_admin, userns, landlock_abi,
+pasta }` and `backends::probe() -> Caps`, to feed R5.7 tier auto-select + error
+UX — see `caps.rs` below.
 
 - `backends/linux.rs` — `LinuxBackend`. Build Landlock `Ruleset` from `paths`
   (deny-by-default; `AccessFs` ro/rw via `PathBeneath`), set `PR_SET_NO_NEW_PRIVS`,
@@ -465,9 +519,15 @@ main sandboxed process into the prepared namespace.
   cleaned on exit.
 - **Trust via transparency.** `--dry-run` / `--show-policies` render the layer
   stack and exact effective policy; `isol8 profiles resolve` shows which layers matched.
-- **Config precedence.** Built-in defaults < config file < `ISOL8_*` env < CLI flags.
+- **Config precedence.** Built-in defaults < config file < `ISOL8_*` env < cage
+  overlay < CLI flags / pre-set `Spec` fields — see [`config.md`](./config.md) §7.
 - **Profile-path overlay.** External dirs/files override same-named built-in layers;
   missing profile-path entries are hard errors (unlike the optional user config dir).
+- **Single config implementation.** `isol8-core` `config.rs` is the only place
+  discovery/merge/`ISOL8_*` overrides are implemented; `isol8-cli` `cli/config.rs`
+  is clap glue and `isol8-registry` re-exports core's discovery — neither
+  reimplements it (this was previously duplicated; see
+  [`wip/crate-as-lib-plan.md`](./wip/crate-as-lib-plan.md)).
 
 ---
 

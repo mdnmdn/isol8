@@ -146,11 +146,14 @@ just field-test  # real sandbox checks (macOS / Linux)
 Depend on the facade crate; paths like `isol8::Sandbox` stay stable.
 
 ```toml
-# Cargo.toml — engine only (no CLI / registry):
+# Cargo.toml — engine only (no CLI / registry / wizard):
 isol8 = { path = "../isol8", default-features = false }
 
 # engine + offline registries (optional):
 # isol8 = { path = "../isol8", default-features = false, features = ["registry"] }
+
+# + cage authoring API (render / apply / drift / bundles), still no clap:
+# isol8 = { path = "../isol8", default-features = false, features = ["wizard"] }
 ```
 
 ```rust
@@ -164,11 +167,17 @@ let code = isol8::Sandbox::new()
 // isol8::ensure_registry_provider();
 ```
 
+Full API surface — hermetic `_in` variants, `--json` / `Serialize` output,
+cages, recipes, detect/verify, the wizard, and Windows caveats:
+[`_docs/embedding.md`](_docs/embedding.md). Runnable examples (built by `just ci`):
+[`examples/`](examples/).
+
 ## Docs
 
 | Doc | Contents |
 |-----|----------|
 | [`_docs/instructions.md`](_docs/instructions.md) | CLI, cages, wizard, registries, analyze |
+| [`_docs/embedding.md`](_docs/embedding.md) | Rust / subprocess embedding guide |
 | [`_docs/config.md`](_docs/config.md) | Config discovery, parameters, markers, env |
 | [`_docs/profile-model.md`](_docs/profile-model.md) | Profile format, filters, merge |
 | [`_docs/recipes.md`](_docs/recipes.md) | Recipes & strategies |

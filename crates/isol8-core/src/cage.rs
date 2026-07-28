@@ -8,11 +8,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result, ResultExt};
 use crate::profile::Access;
 use crate::recipe::ToolchainChoice;
+use crate::sandbox::Spec;
 
 /// Current cage file schema version.
 pub const CAGE_SCHEMA: u32 = 1;
@@ -26,6 +27,22 @@ pub enum HomeMode {
     Ephemeral,
     /// Explicit path (may contain `~`; not expanded here — `home::resolve` expands).
     Path(String),
+}
+
+impl Serialize for HomeMode {
+    /// Serializes to the same string form used for display/config round-tripping
+    /// (`"inherit"` / `"ephemeral"` / the raw path), not a tagged representation —
+    /// mirrors the CLI's own `HomeMode` → `String` rendering.
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            HomeMode::Inherit => serializer.serialize_str("inherit"),
+            HomeMode::Ephemeral => serializer.serialize_str("ephemeral"),
+            HomeMode::Path(p) => serializer.serialize_str(p),
+        }
+    }
 }
 
 impl HomeMode {
@@ -55,7 +72,7 @@ impl HomeMode {
 }
 
 /// One path grant contributed by a cage's `[[dirs]]`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CageDir {
     /// Path (may use `~` / `#HOME` tokens; expanded later with the rest of the policy).
     pub path: String,
@@ -64,7 +81,7 @@ pub struct CageDir {
 }
 
 /// A loaded cage document plus the path it was loaded from.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Cage {
     /// Schema version from the file (`schema = 1`).
     pub schema: u32,
@@ -83,7 +100,7 @@ pub struct Cage {
 }
 
 /// Overlay of Spec/CLI fields produced by a cage (no ambient merge).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct CageOverlay {
     /// Profiles to set when the caller has none.
     pub profiles: Vec<String>,
@@ -101,6 +118,44 @@ pub struct CageOverlay {
     pub name: String,
     /// Source path (for messages).
     pub source: PathBuf,
+}
+
+/// Which cage name to load: explicit flag → `ISOL8_CAGE` → config `cage`.
+///
+/// `None` means "no named cage" — callers should still run default discovery
+/// ([`resolve_in`] with `None` finds `.isol8/cage.toml` / `cages/default.toml`).
+pub fn select_name(flag: Option<&str>, cfg: &crate::config::Config) -> Option<String> {
+    flag.map(str::to_string)
+        .or_else(|| std::env::var("ISOL8_CAGE").ok().filter(|s| !s.is_empty()))
+        .or_else(|| cfg.cage.clone())
+}
+
+/// Merge a cage overlay into `spec`, filling **only** fields the caller left empty.
+///
+/// This is the cage half of the precedence chain in
+/// [`_docs/config.md`](../../_docs/config.md) §7: anything already set (by CLI
+/// flags or by the embedder) is never overwritten.
+pub fn apply_overlay(overlay: &CageOverlay, spec: &mut Spec) {
+    if spec.profiles.is_empty() && !overlay.profiles.is_empty() {
+        spec.profiles = overlay.profiles.clone();
+    }
+    if spec.home.is_none() {
+        if let Some(h) = &overlay.home {
+            spec.home = Some(h.clone());
+        }
+        if overlay.ephemeral_home {
+            spec.ephemeral_home = true;
+        }
+    }
+    if spec.add_dirs_rw.is_empty() && !overlay.add_dirs_rw.is_empty() {
+        spec.add_dirs_rw = overlay.add_dirs_rw.clone();
+    }
+    if spec.add_dirs_ro.is_empty() && !overlay.add_dirs_ro.is_empty() {
+        spec.add_dirs_ro = overlay.add_dirs_ro.clone();
+    }
+    if spec.toolchains.is_empty() && !overlay.toolchains.is_empty() {
+        spec.toolchains = overlay.toolchains.clone();
+    }
 }
 
 impl Cage {

@@ -67,17 +67,14 @@ paths = [{ path = "~/.echo", access = "rw" }]
         "linux" => "linux/system-runtime",
         _ => "base",
     };
-    let spec = Spec {
-        profiles: vec!["base".into(), system.into()],
-        home: Some(home.to_string_lossy().into_owned()),
-        recipe_paths: vec![recipes.to_string_lossy().into_owned()],
-        toolchains: vec![ToolchainChoice {
-            id: "toolchains/echo".into(),
-            strategy: StrategyName::Isolate,
-        }],
-        cmd: vec!["true".into()],
-        ..Default::default()
-    };
+    let mut spec = Spec::new(["true"]);
+    spec.profiles = vec!["base".into(), system.into()];
+    spec.home = Some(home.to_string_lossy().into_owned());
+    spec.recipe_paths = vec![recipes.to_string_lossy().into_owned()];
+    spec.toolchains = vec![ToolchainChoice {
+        id: "toolchains/echo".into(),
+        strategy: StrategyName::Isolate,
+    }];
 
     let results = detect::verify_toolchains(&spec).unwrap();
     let report = detect::format_verify_report(&results);

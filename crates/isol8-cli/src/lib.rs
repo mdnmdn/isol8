@@ -5,7 +5,8 @@
 
 #![warn(missing_docs)]
 
-/// Clap parsing, config, diag, and the binary entry point.
+/// Clap parsing, config, diag, and the binary entry point (feature `clap-cli`).
+#[cfg(feature = "clap-cli")]
 pub mod cli;
 /// Cage wizard: managed sections, drift protection, non-interactive authoring.
 pub mod wizard;

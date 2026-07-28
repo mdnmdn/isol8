@@ -10,6 +10,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::Serialize;
+
 use crate::error::{Error, Result};
 use crate::filter::RunContext;
 use crate::home::{expand_tilde, REAL_HOME_TOKEN};
@@ -17,7 +19,7 @@ use crate::recipe::{Recipe, RecipeRegistry, ToolchainChoice};
 use crate::sandbox::Spec;
 
 /// Outcome of probing one recipe against the real home.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DetectResult {
     /// Recipe id.
     pub id: String,
@@ -36,7 +38,7 @@ pub struct DetectResult {
 }
 
 /// Outcome of verifying one recipe's smoke test inside a cage.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct VerifyResult {
     /// Recipe id.
     pub id: String,

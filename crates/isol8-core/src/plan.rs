@@ -6,12 +6,15 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use crate::context::Context;
 use crate::error::{Error, Result, ResultExt};
 use crate::home::{expand_tilde, REAL_HOME_TOKEN};
 
 /// Kind of filesystem materialization under a (possibly replaced) home.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum HomeOpKind {
     /// Symlink `to` → `from` (typically replaced-home path → real-home path).
     Link,
@@ -37,7 +40,7 @@ impl HomeOpKind {
 
 /// Unexpanded materialization op (tokens still present). Built from profile seeds,
 /// future recipes, or [`crate::sandbox::Spec::home_ops`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HomeOpSpec {
     /// Operation kind.
     pub kind: HomeOpKind,
@@ -92,18 +95,21 @@ impl HomeOpSpec {
 }
 
 /// What apply would do for one expanded op.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum PlanAction {
     /// Perform the operation on apply.
+    #[serde(rename = "apply")]
     Apply,
     /// Destination already in the desired state.
+    #[serde(rename = "skip-exists")]
     SkipExists,
     /// Source missing — best-effort skip (seed/copy/link).
+    #[serde(rename = "skip-missing")]
     SkipMissingSource,
 }
 
 /// One expanded, classified materialization step.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlannedOp {
     /// Operation kind.
     pub kind: HomeOpKind,
@@ -118,7 +124,7 @@ pub struct PlannedOp {
 }
 
 /// Idempotent home materialization plan (no side effects until [`HomePlan::apply`]).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct HomePlan {
     /// Ordered steps.
     pub ops: Vec<PlannedOp>,

@@ -42,15 +42,24 @@ fmt:
 lint:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features -- -D warnings
+    # Public API docs are the embedding contract — broken links fail the lint.
+    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
 
 # Type-check without building artifacts.
 check:
     cargo check --workspace --all-targets
+    cargo check -p isol8 --no-default-features
+    cargo check -p isol8 --no-default-features --features registry
 
 # Full pre-commit gate: everything CI runs.
 ci: fmt-check
     cargo clippy --workspace --all-targets --all-features -- -D warnings
+    # The advertised embedding tiers must actually compile (_docs/embedding.md §1).
+    cargo check -p isol8 --no-default-features
+    cargo check -p isol8 --no-default-features --features registry
+    cargo check -p isol8 --no-default-features --features wizard
     cargo build --workspace
+    cargo build --workspace --examples
     cargo test --workspace
 
 # Format check only (used by `ci`).

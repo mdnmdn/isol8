@@ -34,16 +34,13 @@ fn dry_run_applies_recipe_from_spec() {
     if matches!(std::env::consts::OS, "windows") {
         return;
     }
-    let spec = Spec {
-        profiles: vec!["base".into()],
-        home: Some("/tmp/isol8-recipe-home".into()),
-        toolchains: vec![ToolchainChoice {
-            id: "toolchains/nvm".into(),
-            strategy: StrategyName::Link,
-        }],
-        cmd: vec!["echo".into(), "hi".into()],
-        ..Default::default()
-    };
+    let mut spec = Spec::new(["echo", "hi"]);
+    spec.profiles = vec!["base".into()];
+    spec.home = Some("/tmp/isol8-recipe-home".into());
+    spec.toolchains = vec![ToolchainChoice {
+        id: "toolchains/nvm".into(),
+        strategy: StrategyName::Link,
+    }];
     let dry = sandbox::dry_run(&spec).unwrap();
     assert!(
         dry.recipes
@@ -102,13 +99,10 @@ strategy = "link"
         return;
     }
 
-    let spec = Spec {
-        profiles: o.profiles,
-        home: o.home,
-        toolchains: o.toolchains,
-        cmd: vec!["echo".into()],
-        ..Default::default()
-    };
+    let mut spec = Spec::new(["echo"]);
+    spec.profiles = o.profiles;
+    spec.home = o.home;
+    spec.toolchains = o.toolchains;
     let dry = sandbox::dry_run(&spec).unwrap();
     assert!(!dry.recipes.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
@@ -360,17 +354,14 @@ path_prepend = ["#HOME/.isol8-test-shims/*/bin", "~/.local/bin"]
     .unwrap();
 
     let home = dir.join("home");
-    let spec = Spec {
-        profiles: vec!["base".into()],
-        home: Some(home.to_string_lossy().into_owned()),
-        recipe_paths: vec![dir.to_string_lossy().into_owned()],
-        toolchains: vec![ToolchainChoice {
-            id: "toolchains/pp-test".into(),
-            strategy: StrategyName::Link,
-        }],
-        cmd: vec!["echo".into(), "hi".into()],
-        ..Default::default()
-    };
+    let mut spec = Spec::new(["echo", "hi"]);
+    spec.profiles = vec!["base".into()];
+    spec.home = Some(home.to_string_lossy().into_owned());
+    spec.recipe_paths = vec![dir.to_string_lossy().into_owned()];
+    spec.toolchains = vec![ToolchainChoice {
+        id: "toolchains/pp-test".into(),
+        strategy: StrategyName::Link,
+    }];
     let dry = sandbox::dry_run(&spec).unwrap();
 
     // `requires` pulled the layer in (tagged as required, not explicit).
