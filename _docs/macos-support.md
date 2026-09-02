@@ -189,6 +189,14 @@ resolved path are matched using the same `match` kind.
 The `[macos]` table in a profile layer can list typed capabilities and raw SBPL. The
 `capabilities` array accepts these values:
 
+> **`pseudo-tty` is implied by the pty seam.** `Sandbox::spawn_pty` /
+> `spawn_with_stdio` add `(allow pseudo-tty)` to the rendered policy whenever a
+> controlling terminal is requested, so no host has to remember it — a policy
+> without it fails pty operations in a way that looks like the harness crashing.
+> `sandbox-exec` `execve`s the command in place, so the descriptors and the
+> `TIOCSCTTY` claimed from `pre_exec` survive into the confined process, and there
+> is one pid per pane. Nothing else about the policy changes.
+
 | Capability | SBPL rule emitted | Notes |
 |------------|------------------|-------|
 | `mach-lookup` | `(allow mach-lookup)` | Mach service name lookups via the bootstrap server. |

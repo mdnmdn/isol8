@@ -19,6 +19,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::error::{Error, Result, ResultExt};
+use crate::pty::SandboxStdio;
 use crate::sandbox::SandboxChild;
 use landlock::{
     make_bitflags, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, Ruleset, RulesetAttr,
@@ -35,36 +36,17 @@ impl Backend for super::linux::LinuxBackend {
         env: &HashMap<String, String>,
         cmd: &[String],
     ) -> Result<SandboxChild> {
-        if cmd.is_empty() {
-            return Err(Error::Message(
-                "no command given to run under the sandbox".into(),
-            ));
-        }
+        spawn_inner(profile, env, cmd, None)
+    }
 
-        // Determine the replacement HOME for bind-mounting.
-        let effective_home = env
-            .get("HOME")
-            .cloned()
-            .unwrap_or_else(|| "/tmp".to_string());
-
-        // Build Landlock rules from path grants.
-        let rules = build_landlock_rules(profile)?;
-
-        // Fork so the child can set up namespaces + Landlock + exec; the parent
-        // returns a non-blocking handle around the child pid (reaped on wait()).
-        match unsafe { nix::unistd::fork() } {
-            Ok(nix::unistd::ForkResult::Parent { child }) => Ok(SandboxChild::forked(child)),
-            Ok(nix::unistd::ForkResult::Child) => {
-                // Child: set up isolation, apply policy, exec.
-                if let Err(e) = child_setup_and_exec(rules, &effective_home, env, cmd) {
-                    // eprintln! can't fail in the child after fork.
-                    eprintln!("isol8: child setup failed: {e}");
-                    std::process::exit(127);
-                }
-                unreachable!()
-            }
-            Err(e) => Err(Error::Message(format!("fork failed: {e}"))),
-        }
+    fn spawn_with_stdio(
+        &self,
+        profile: &Profile,
+        env: &HashMap<String, String>,
+        cmd: &[String],
+        stdio: SandboxStdio,
+    ) -> Result<SandboxChild> {
+        spawn_inner(profile, env, cmd, Some(stdio))
     }
 
     fn output(
@@ -86,16 +68,20 @@ impl Backend for super::linux::LinuxBackend {
             .unwrap_or_else(|| "/tmp".to_string());
         let rules = build_landlock_rules(profile)?;
 
-        use nix::unistd::{close, dup2, fork, pipe, ForkResult};
+        use nix::unistd::{fork, pipe, ForkResult};
         use std::io::Read;
         use std::os::fd::AsRawFd;
         use std::os::unix::process::ExitStatusExt;
 
-        let (mut reader, writer) = pipe().map_err(|e| Error::Message(format!("pipe: {e}")))?;
+        // `pipe()` yields `OwnedFd`s; read the parent end through a `File` and use
+        // raw `dup2`/`close` in the child (nix's typed `dup2` wants an `OwnedFd`
+        // target, which fds 1/2 are not).
+        let (reader, writer) = pipe().map_err(|e| Error::Message(format!("pipe: {e}")))?;
         match unsafe { fork() } {
             Ok(ForkResult::Parent { child }) => {
                 drop(writer);
                 let mut buf = Vec::new();
+                let mut reader = std::fs::File::from(reader);
                 let _ = reader.read_to_end(&mut buf);
                 drop(reader);
                 let status = nix::sys::wait::waitpid(child, None)
@@ -115,10 +101,12 @@ impl Backend for super::linux::LinuxBackend {
             Ok(ForkResult::Child) => {
                 drop(reader);
                 let wfd = writer.as_raw_fd();
-                let _ = dup2(wfd, 1);
-                let _ = dup2(wfd, 2);
-                let _ = close(wfd);
-                if let Err(e) = child_setup_and_exec(rules, &effective_home, env, cmd) {
+                unsafe {
+                    libc::dup2(wfd, 1);
+                    libc::dup2(wfd, 2);
+                    libc::close(wfd);
+                }
+                if let Err(e) = child_setup_and_exec(rules, &effective_home, env, cmd, None) {
                     eprintln!("isol8: child setup failed: {e}");
                     std::process::exit(127);
                 }
@@ -130,6 +118,55 @@ impl Backend for super::linux::LinuxBackend {
 
     fn render_policy(&self, profile: &Profile) -> String {
         render_policy(profile)
+    }
+}
+
+/// Fork, set up isolation in the child, apply the policy and exec.
+///
+/// The parent returns a non-blocking handle around the child pid (reaped on
+/// `wait()`). Landlock must be applied *inside* the target process between `fork`
+/// and `exec`, which is why a host cannot wire a pty from outside — hence the
+/// `stdio` parameter: it is installed in the forked child **before** the policy,
+/// so `TIOCSCTTY` is not itself denied. Exactly one fork happens, so the returned
+/// pid is the harness's own.
+fn spawn_inner(
+    profile: &Profile,
+    env: &HashMap<String, String>,
+    cmd: &[String],
+    stdio: Option<SandboxStdio>,
+) -> Result<SandboxChild> {
+    if cmd.is_empty() {
+        return Err(Error::Message(
+            "no command given to run under the sandbox".into(),
+        ));
+    }
+
+    // Determine the replacement HOME for bind-mounting.
+    let effective_home = env
+        .get("HOME")
+        .cloned()
+        .unwrap_or_else(|| "/tmp".to_string());
+
+    // Build Landlock rules from path grants.
+    let rules = build_landlock_rules(profile)?;
+
+    match unsafe { nix::unistd::fork() } {
+        Ok(nix::unistd::ForkResult::Parent { child }) => {
+            // The parent's copies of the slave must go, or the pty master never
+            // sees EOF after the confined session exits.
+            drop(stdio);
+            Ok(SandboxChild::forked(child))
+        }
+        Ok(nix::unistd::ForkResult::Child) => {
+            // Child: set up isolation, apply policy, exec.
+            if let Err(e) = child_setup_and_exec(rules, &effective_home, env, cmd, stdio) {
+                // eprintln! can't fail in the child after fork.
+                eprintln!("isol8: child setup failed: {e}");
+                std::process::exit(127);
+            }
+            unreachable!()
+        }
+        Err(e) => Err(Error::Message(format!("fork failed: {e}"))),
     }
 }
 
@@ -360,12 +397,22 @@ fn apply_landlock(rules: &[LandlockRule]) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Set up isolation, Landlock, and exec the target command.
+///
+/// Ordering is load-bearing: `stdio` → `no_new_privs` → Landlock → `exec`.
 fn child_setup_and_exec(
     rules: Vec<LandlockRule>,
     _effective_home: &str,
     env: &HashMap<String, String>,
     cmd: &[String],
+    stdio: Option<SandboxStdio>,
 ) -> Result<()> {
+    // 0. Standard streams and the controlling terminal FIRST: `dup2` and the
+    //    `TIOCSCTTY` ioctl must land while the process is still unconfined —
+    //    after `restrict_self()` the ioctl would be denied.
+    if let Some(stdio) = stdio {
+        stdio.apply_to_current_process()?;
+    }
+
     // 1. Prevent privilege escalation.
     set_no_new_privs()?;
 

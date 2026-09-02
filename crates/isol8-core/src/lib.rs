@@ -29,6 +29,9 @@ pub mod home;
 pub mod plan;
 /// Profile model, TOML loading, deny-first merge.
 pub mod profile;
+/// Pseudo-terminal seam for hosts: `SandboxStdio`, `PtyChild` (unix only).
+#[cfg(unix)]
+pub mod pty;
 /// Toolchain recipes: strategies → grants + home ops + env.
 pub mod recipe;
 pub mod resolve;
@@ -44,3 +47,6 @@ pub use profile::{Access, MatchKind, PathGrant, Profile};
 pub use recipe::{Recipe, RecipeRegistry, StrategyName, ToolchainChoice};
 pub use resolve::{confine_executable, effective_policy, EffectivePolicy, LayerOrigin};
 pub use sandbox::{DryRun, Sandbox, SandboxChild, Spec};
+
+#[cfg(unix)]
+pub use pty::{open_pty, PtyChild, PtySize, SandboxStdio};

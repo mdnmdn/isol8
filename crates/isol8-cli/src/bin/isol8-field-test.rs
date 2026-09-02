@@ -24,6 +24,8 @@ use isol8_core::profile::{
     apply_rewrite, Access, Capability, MacosExtra, MatchKind, PathGrant, Profile, Rewrite,
     WindowsCapability, WindowsExtra,
 };
+#[cfg(unix)]
+use isol8_core::pty::{PtyChild, PtySize, SandboxStdio};
 use isol8_core::resolve::confine_executable;
 
 fn grant(path: &str, access: Access, m: MatchKind) -> PathGrant {
@@ -121,6 +123,78 @@ fn run(profile: &Profile, home: &Path, cmd: &[&str]) -> i32 {
             -1
         }
     }
+}
+
+/// Run `cmd` confined **on a pseudo-terminal** and return `(exit code, PtyChild)`.
+///
+/// Mirrors `run` but goes through the pty seam: `open_pty` → `SandboxStdio::from_tty`
+/// → `Backend::spawn_with_stdio`. `before_wait` runs while the child is live (used
+/// to exercise `resize`). The master is drained on a thread so a chatty child can
+/// never block on a full pty buffer.
+#[cfg(unix)]
+fn run_pty(
+    profile: &Profile,
+    home: &Path,
+    cmd: &[&str],
+    size: PtySize,
+    before_wait: impl FnOnce(&PtyChild),
+) -> i32 {
+    let mut profile = profile.clone();
+    let mut cmd: Vec<String> = cmd.iter().map(|s| s.to_string()).collect();
+    if let Err(e) = confine_executable(&mut profile, &mut cmd) {
+        eprintln!("    confine_executable error: {e:#}");
+        return -1;
+    }
+    let env = build_minimal(&profile, home, &[], &[]);
+
+    let (master, slave) = match isol8_core::pty::open_pty(size) {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("    open_pty error: {e:#}");
+            return -1;
+        }
+    };
+    let stdio = match SandboxStdio::from_tty(slave) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("    from_tty error: {e:#}");
+            return -1;
+        }
+    };
+    let child = match backends::select().spawn_with_stdio(&profile, &env, &cmd, stdio) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("    spawn_with_stdio error: {e:#}");
+            return -1;
+        }
+    };
+    let mut pty = PtyChild::from_parts(child, master);
+
+    // Drain the master until EOF so the child never blocks writing to the tty.
+    let drain = pty.try_clone_reader().ok().map(|mut r| {
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut sink = Vec::new();
+            let _ = r.read_to_end(&mut sink);
+        })
+    });
+
+    before_wait(&pty);
+
+    let code = match pty.child().wait() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("    wait error: {e:#}");
+            -1
+        }
+    };
+    // Dropping the master closes the last reference; the drain thread then sees EOF.
+    let (_child, master) = pty.into_parts();
+    drop(master);
+    if let Some(t) = drain {
+        let _ = t.join();
+    }
+    code
 }
 
 struct Outcome {
@@ -638,6 +712,147 @@ fn main() {
             pass,
             note,
         });
+    }
+
+    // ===== Pseudo-terminal seam (20–22) — unix only =====
+    //
+    // The seam must give the confined command a real controlling terminal at the
+    // requested geometry, propagate a host resize, and NOT widen the policy.
+    // macOS needs `pseudo-tty` in the SBPL and `/dev` readable for ttyname(3).
+
+    #[cfg(unix)]
+    {
+        let pty_supported = matches!(platform, "macos" | "linux");
+        let pty_profile = || {
+            let mut p = profile_with(vec![
+                grant(ws, Access::Rw, MatchKind::Subpath),
+                grant("/dev", Access::Ro, MatchKind::Subpath),
+            ]);
+            if platform == "macos" {
+                if let Some(m) = p.macos.as_mut() {
+                    m.capabilities.push(Capability::PseudoTty);
+                }
+            }
+            p
+        };
+
+        // 20. the confined child has a real pty as fd 0 at the requested size.
+        {
+            let (pass, note) = if pty_supported {
+                let tty_out = format!("{ws}/tty20.txt");
+                let size_out = format!("{ws}/size20.txt");
+                let code = run_pty(
+                    &pty_profile(),
+                    &home,
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        &format!("tty > {tty_out}; stty size > {size_out}"),
+                    ],
+                    PtySize {
+                        cols: 100,
+                        rows: 42,
+                    },
+                    |_| {},
+                );
+                let tty = fs::read_to_string(&tty_out).unwrap_or_default();
+                let size = fs::read_to_string(&size_out).unwrap_or_default();
+                let is_pty = tty.contains("/dev/pts/") || tty.contains("/dev/ttys");
+                let right_size = size.trim() == "42 100";
+                (
+                    Some(code == 0 && is_pty && right_size),
+                    if code == 0 && is_pty && right_size {
+                        ""
+                    } else {
+                        "expected a pty at 42 rows x 100 cols"
+                    },
+                )
+            } else {
+                (None, "pty seam not available on this platform")
+            };
+            results.push(Outcome {
+                name: "20 pty-controlling-terminal-and-size",
+                pass,
+                note,
+            });
+        }
+
+        // 21. a host resize reaches the kernel, so the child observes the new size.
+        //     The child sleeps first; the host resizes while it is live.
+        {
+            let (pass, note) = if pty_supported {
+                let size_out = format!("{ws}/size21.txt");
+                let code = run_pty(
+                    &pty_profile(),
+                    &home,
+                    &["/bin/sh", "-c", &format!("sleep 1; stty size > {size_out}")],
+                    PtySize { cols: 80, rows: 24 },
+                    |pty| {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        if let Err(e) = pty.resize(PtySize {
+                            cols: 132,
+                            rows: 50,
+                        }) {
+                            eprintln!("    resize error: {e:#}");
+                        }
+                    },
+                );
+                let size = fs::read_to_string(&size_out).unwrap_or_default();
+                let resized = size.trim() == "50 132";
+                (
+                    Some(code == 0 && resized),
+                    if resized {
+                        ""
+                    } else {
+                        "child did not observe the resized geometry"
+                    },
+                )
+            } else {
+                (None, "pty seam not available on this platform")
+            };
+            results.push(Outcome {
+                name: "21 pty-resize-observed-by-child",
+                pass,
+                note,
+            });
+        }
+
+        // 22. the seam does NOT widen the policy: a write outside the grants is
+        //     still denied even with a controlling terminal.
+        {
+            let (pass, note) = if pty_supported && path_enforced {
+                let code = run_pty(
+                    &pty_profile(),
+                    &home,
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        &format!("echo pwned > {out}/pty-breakout.txt"),
+                    ],
+                    PtySize::default(),
+                    |_| {},
+                );
+                let leaked = Path::new(&format!("{out}/pty-breakout.txt")).exists();
+                (
+                    Some(code != 0 && !leaked),
+                    if leaked {
+                        "WROTE OUTSIDE THE GRANTS"
+                    } else {
+                        ""
+                    },
+                )
+            } else {
+                (
+                    None,
+                    "pty seam / path enforcement not available on this platform",
+                )
+            };
+            results.push(Outcome {
+                name: "22 pty-does-not-widen-policy",
+                pass,
+                note,
+            });
+        }
     }
 
     // ===== Report =====

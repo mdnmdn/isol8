@@ -36,7 +36,7 @@ Full specification: [`_docs/project-description.md`](_docs/project-description.m
 
 | Crate | Path | Role |
 |-------|------|------|
-| `isol8-core` | `crates/isol8-core/` | Engine: profiles, resolve, home, backends, detect, analyze, recipe, cage, plan, context, env, filter, error, sandbox |
+| `isol8-core` | `crates/isol8-core/` | Engine: profiles, resolve, home, backends, detect, analyze, recipe, cage, plan, context, env, filter, error, sandbox, pty |
 | `isol8-registry` | `crates/isol8-registry/` | Offline registries: `ProfileSource`, `DirSource`, lockfile, cache, trust (depends on core only) |
 | `isol8-cli` | `crates/isol8-cli/` | CLI library: `cli/*`, wizard (depends on core + registry) |
 | `isol8` (facade) | repo root | Re-exports the above; binary shim. Features: `default = ["cli", "registry"]` |
@@ -67,7 +67,9 @@ Modules (see spec §7); crate ownership in parentheses:
   implementation, consumed by the CLI (`cli/config.rs` clap glue) and by
   `isol8-registry` (re-exports it for `[registries.*]` / lockfile placement).
 - `sandbox` (**isol8-core**) — library entry surface: `Spec`, `Sandbox`
-  (`run`/`spawn`/`dry_run`), `SandboxChild`, `DryRun`.
+  (`run`/`spawn`/`dry_run`/`spawn_with_stdio`/`spawn_pty`), `SandboxChild`, `DryRun`.
+- `pty` (**isol8-core**, unix) — pseudo-terminal seam for hosts: `SandboxStdio`,
+  `PtySize`, `PtyChild`, `open_pty`. Re-exported under `sandbox::…`.
 - `profile` (**isol8-core**) — `Profile` / `PathGrant` / `Access` / `HomeReplace`,
   TOML (de)serialization, deny-first `merge`. **Drives everything.**
 - `env` (**isol8-core**) — minimal sanitized environment construction (HOME first).
@@ -101,7 +103,8 @@ Modules (see spec §7); crate ownership in parentheses:
 
 **v0.2.6 — macOS + Linux MVP + evolution Phases 1–9.** Path/HOME/env enforcement works
 on macOS (Seatbelt) and Linux (Landlock). Cages, recipes, offline registries, cage
-wizard, `--analyze`, and the **crate split** (workspace) are in tree. Network tiers
+wizard, `--analyze`, and the **crate split** (workspace) are in tree. A pty seam for
+embedding hosts (`spawn_pty` / `spawn_with_stdio`) landed on unix. Network tiers
 and full Windows path enforcement remain deferred.
 
 - **workspace (Phase 9)** — `isol8-core` / `isol8-registry` / `isol8-cli` + root facade
@@ -162,7 +165,8 @@ and full Windows path enforcement remain deferred.
   `isol8::Result`. The CLI layer uses `anyhow` and upconverts at the boundary. A
   `ResultExt::ctx` helper adds context without a full `anyhow` dependency in engine code.
 - **library API** — facade `src/lib.rs` re-exports engine types from `isol8-core`
-  (`Sandbox`, `Spec`, `SandboxChild`, `DryRun`, profile/recipe/cage/context/plan/
+  (`Sandbox`, `Spec`, `SandboxChild`, `DryRun`, `SandboxStdio`, `PtyChild`,
+  `PtySize`, `open_pty` (unix), profile/recipe/cage/context/plan/
   analyze types, `confine_executable`, `effective_policy`, …); with `registry`,
   re-exports registry types and `ensure_registry_provider()`; with `cli`, exposes
   `isol8::cli` and `isol8::wizard`. Builder: `Sandbox::new()` → `profile` /
@@ -171,6 +175,21 @@ and full Windows path enforcement remain deferred.
   `Sandbox::spawn`); methods: `id() -> u32`, `wait() -> Result<i32>`, `kill() ->
   Result<()>`. macOS wraps `std::process::Child`; Linux uses a forked `Pid`
   (`waitpid` on wait); Windows resolves synchronously.
+- **pty seam (unix)** — `isol8-core` `pty.rs` adds `SandboxStdio`
+  (`from_tty` / `from_fds`), `PtySize`, `open_pty`, and `PtyChild`
+  (`child`/`master`/`into_parts`/`from_parts`, `resize`/`get_size`,
+  `try_clone_reader`/`take_writer`). Entry points: `Sandbox::spawn_with_stdio` /
+  `spawn_pty` plus hermetic `sandbox::spawn_with_stdio_in` / `spawn_pty_in`;
+  `Backend` gained `spawn_with_stdio` (closed trait, so not a breaking change).
+  **One process per pty, no shim** — `sandbox-exec` execs in place, Linux forks
+  once. macOS wires stdio on the `Command` and claims the tty from `pre_exec`;
+  Linux installs the descriptors + `TIOCSCTTY` in the forked child **before**
+  `no_new_privs`/Landlock, or the ioctl would itself be denied. A controlling
+  terminal implies exactly two policy/env additions and nothing else: `TERM` /
+  `COLORTERM` pass through as *defaults*, and macOS gets the `pseudo-tty`
+  capability. Windows (ConPTY) is out — the seam is `cfg(unix)`.
+  Docs: [`_docs/embedding.md`](_docs/embedding.md) §3,
+  [`_docs/integration.md`](_docs/integration.md) §7.1.
 - **structured dry-run** — `DryRun { layer_names, profile, env, cmd, policy,
   policy_label }` is returned by `Sandbox::dry_run` — pure data, no printing. The
   CLI calls `print_dry_run(&DryRun)` to render the text report.
@@ -222,7 +241,8 @@ and full Windows path enforcement remain deferred.
 - **tests** — unit + integration (`cargo test --workspace`, including
   `tests/{registry,wizard,recipe,cage,analyze}.rs`) and a real-sandbox field-test
   binary (`just field-test`, scenarios 1–9 cross-platform, 10–16 Linux-specific,
-  17–19 home materialization) prove the OS enforces the policy.
+  17–19 home materialization, 20–22 pty seam on unix) prove the OS enforces the
+  policy.
 
 **Not yet:** `--env-file`, resource limits, and network tiers are unstarted. The
 Windows (AppContainer) backend is an early draft — it compiles and wires through

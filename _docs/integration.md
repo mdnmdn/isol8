@@ -446,19 +446,57 @@ let code = child.wait()?;       // or child.kill()?
   spawning and auto-granted `ro`, so a typo fails as `command "x" not found`
   rather than as a confusing denial.
 
+### 7.1 A session on a pseudo-terminal (unix)
+
+An interactive agent harness needs a controlling terminal, and its geometry has to
+reach the kernel or it redraws at the wrong size. Use the hermetic pty entry point
+so the pane never inherits the host's own cwd or `HOME`:
+
+```rust
+let mut pty = isol8::sandbox::spawn_pty_in(&spec, &ctx, isol8::PtySize { cols, rows })?;
+let reader  = pty.try_clone_reader()?;   // File → the host's pump
+let writer  = pty.take_writer()?;        // File → keystrokes
+// host SIGWINCH → pty.resize(PtySize { cols, rows })?
+let code    = pty.child().wait()?;       // or pty.child().kill()? when the tab closes
+```
+
+- **One process per pane, no shim.** macOS `sandbox-exec` `execve`s in place and
+  Linux forks exactly once, so `pty.child().id()` is the harness's own pid. Closing
+  a tab kills the harness directly — nothing to forward signals through, nothing to
+  orphan, and the exit code is the agent's, not a supervisor's.
+- **A host that already owns a pty** (`portable-pty`, or its own `openpty`) passes
+  the slave: `SandboxStdio::from_tty(slave)?` → `sandbox::spawn_with_stdio_in`.
+  Note that `portable-pty` 0.9 cannot *adopt* a foreign master (`UnixMasterPty` and
+  its fields are private, `PtySystem::openpty` always mints its own pair), which is
+  why `PtyChild` carries reader / writer / `resize` itself — the same three calls
+  `MasterPty` offers, so one host abstraction covers both the confined and the
+  unconfined path.
+- **The seam does not widen the policy**, with two exceptions that apply only when
+  a controlling terminal is requested: `TERM` / `COLORTERM` pass through as
+  *defaults* (a TUI harness with no `TERM` starts blank or refuses to run), and on
+  macOS the `pseudo-tty` capability joins the rendered SBPL. Both are failures that
+  look like the harness crashing rather than like denials, so neither is left to
+  each host to remember.
+- **Probe nesting once, at startup** (see the bullet above). A pty host is exactly
+  where a per-pane `Error::NestedSandbox` would be most confusing.
+- **Windows is not supported** — ConPTY is separate work, and a Windows pane
+  enforces no path grants anyway (§8).
+
 ---
 
 ## 8. Known limits
 
 State these to your users rather than discovering them in production.
 
-- **`spawn` / `run` use the ambient `Context`.** The hermetic `_in` variants
-  exist for `config::load_in`, `resolve::effective_policy_in` and
-  `sandbox::dry_run_in` — there is no `spawn_in`. `Sandbox::spawn` calls
-  `Context::from_environment()` internally, so the *spawning* process's `HOME`
-  and cwd are what the run sees. For a harness: set the process cwd to the
-  session workspace before spawning (or spawn from a thin child process per
-  session), and audit with `dry_run_in` where hermeticity is guaranteed.
+- **`Sandbox::spawn` / `run` use the ambient `Context`.** `Sandbox::spawn` calls
+  `Context::from_environment()` internally, so the *spawning* process's `HOME` and
+  cwd are what a plain `spawn` sees. The hermetic `_in` variants cover
+  `config::load_in`, `resolve::effective_policy_in`, `sandbox::dry_run_in` and —
+  for a confined session — `sandbox::spawn_with_stdio_in` /
+  `sandbox::spawn_pty_in` (§7.1). There is still no `spawn_in` for the plain
+  inherited-stdio case: use `spawn_with_stdio_in` with
+  `SandboxStdio::from_fds(...)`, or set the process cwd to the session workspace
+  before spawning.
 - **User-config overlays are still ambient.** Even on the `_in` path,
   `LayerRegistry` and `RecipeRegistry` pick up
   `$XDG_CONFIG_HOME/isol8/{profiles,recipes}` (else `$HOME/.config/isol8/…`) from
@@ -495,6 +533,8 @@ State these to your users rather than discovering them in production.
 6. `sandbox::dry_run_in` → audit, log, or show the effective policy. Store it —
    it is the record of what the session was allowed to do.
 7. `Sandbox::from_spec(spec).spawn(cmd)` → keep the `SandboxChild` for `wait` / `kill`.
+   For an interactive pane use `sandbox::spawn_pty_in(&spec, &ctx, size)` instead
+   and keep the `PtyChild` (§7.1).
 8. Retire the session: remove `{managed_root}/<id>` and its generated layer.
 
 Then read [embedding.md](./embedding.md) for the per-call details, and

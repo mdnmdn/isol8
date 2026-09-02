@@ -18,6 +18,11 @@ use crate::error::ResultExt;
 use crate::error::{Error, Result};
 use crate::profile::Profile;
 
+/// The pseudo-terminal seam, re-exported so `sandbox::SandboxStdio` and friends
+/// sit next to [`Sandbox`] and [`SandboxChild`]. Defined in [`crate::pty`].
+#[cfg(unix)]
+pub use crate::pty::{open_pty, PtyChild, PtySize, SandboxStdio};
+
 /// A clap-free description of a confinement request.
 ///
 /// Mirrors the CLI `ProfileOpts` plus the command to run. The engine pipeline
@@ -387,6 +392,113 @@ pub fn run_captured(spec: Spec) -> Result<CapturedRun> {
     })
 }
 
+/// Launch `spec`'s command confined with its standard streams wired to `stdio`.
+///
+/// The ambient-[`crate::Context`] variant of [`spawn_with_stdio_in`]; see
+/// [`Sandbox::spawn_with_stdio`] for the behaviour a controlling terminal implies.
+#[cfg(unix)]
+pub fn spawn_with_stdio(spec: &Spec, stdio: SandboxStdio) -> Result<SandboxChild> {
+    let ambient = crate::context::Context::from_environment()?;
+    spawn_with_stdio_in(spec, &ambient, stdio)
+}
+
+/// [`spawn_with_stdio`] against an explicit [`crate::Context`] (no ambient reads
+/// beyond the env passthrough documented on [`Sandbox::spawn_with_stdio`]).
+///
+/// The hermetic entry point for an embedding host, matching
+/// [`crate::resolve::effective_policy_in`] and [`dry_run_in`].
+#[cfg(unix)]
+pub fn spawn_with_stdio_in(
+    spec: &Spec,
+    ambient: &crate::context::Context,
+    stdio: SandboxStdio,
+) -> Result<SandboxChild> {
+    ensure_not_nested()?;
+    let mut eff = crate::resolve::effective_policy_in(spec, ambient)?;
+    crate::home::materialize(&eff.home)?;
+    crate::resolve::confine_executable(&mut eff.profile, &mut eff.cmd)?;
+    if stdio.controlling_terminal {
+        apply_tty_defaults(&mut eff);
+    }
+    crate::backends::select().spawn_with_stdio(&eff.profile, &eff.env, &eff.cmd, stdio)
+}
+
+/// Open a pty sized to `size`, launch `spec`'s command confined on it, and return
+/// the child together with the master side.
+///
+/// The ambient-[`crate::Context`] variant of [`spawn_pty_in`].
+#[cfg(unix)]
+pub fn spawn_pty(spec: &Spec, size: PtySize) -> Result<PtyChild> {
+    let ambient = crate::context::Context::from_environment()?;
+    spawn_pty_in(spec, &ambient, size)
+}
+
+/// [`spawn_pty`] against an explicit [`crate::Context`].
+///
+/// `openpty(size)` → [`SandboxStdio::from_tty`] → [`spawn_with_stdio_in`] → drop
+/// this process's copies of the slave, so the master sees EOF once the confined
+/// harness has exited.
+#[cfg(unix)]
+pub fn spawn_pty_in(
+    spec: &Spec,
+    ambient: &crate::context::Context,
+    size: PtySize,
+) -> Result<PtyChild> {
+    let (master, slave) = open_pty(size)?;
+    let stdio = SandboxStdio::from_tty(slave)?;
+    let child = spawn_with_stdio_in(spec, ambient, stdio)?;
+    Ok(PtyChild::from_parts(child, master))
+}
+
+/// Terminal-only policy/env additions applied when a controlling terminal is asked
+/// for. Deliberately narrow — the seam must not otherwise widen the policy.
+///
+/// 1. **`TERM` / `COLORTERM` passthrough.** [`crate::env::build_minimal`] allowlists
+///    only `HOME PATH SHELL TMPDIR USER LOGNAME PWD`, so a confined TUI harness
+///    would start with no `TERM` and could not decide what it may draw — it
+///    degrades to unusable, or refuses to start, which reads as a crash rather than
+///    as a policy denial. Folded in as *defaults*, so profile env, `--env-pass` and
+///    `--set-env` still win.
+/// 2. **macOS `pseudo-tty` capability.** A Seatbelt policy that omits
+///    `(allow pseudo-tty)` fails pty operations the same confusing way.
+#[cfg(unix)]
+fn apply_tty_defaults(eff: &mut crate::resolve::EffectivePolicy) {
+    tty_env_defaults(&mut eff.env);
+    tty_policy_defaults(&mut eff.profile);
+}
+
+/// Fold `TERM` / `COLORTERM` in from the host env as *defaults* — `or_insert`, so
+/// anything the profile, `env_pass` or `set_env` already decided still stands.
+#[cfg(unix)]
+fn tty_env_defaults(env: &mut HashMap<String, String>) {
+    for name in ["TERM", "COLORTERM"] {
+        if let Some(v) = std::env::var_os(name) {
+            env.entry(name.to_string())
+                .or_insert_with(|| v.to_string_lossy().into_owned());
+        }
+    }
+}
+
+/// Add the macOS `pseudo-tty` capability (idempotent). A no-op elsewhere: Landlock
+/// governs paths only, so a Linux pty needs nothing added to the policy.
+#[cfg(unix)]
+fn tty_policy_defaults(profile: &mut Profile) {
+    #[cfg(target_os = "macos")]
+    {
+        let macos = profile.macos.get_or_insert_with(Default::default);
+        if !macos
+            .capabilities
+            .contains(&crate::profile::Capability::PseudoTty)
+        {
+            macos
+                .capabilities
+                .push(crate::profile::Capability::PseudoTty);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = profile;
+}
+
 /// Ergonomic builder over [`Spec`] for embedding isol8.
 ///
 /// ```no_run
@@ -527,6 +639,46 @@ impl Sandbox {
         crate::backends::select().spawn(&eff.profile, &eff.env, &eff.cmd)
     }
 
+    /// Launch `cmd` confined with its standard streams wired to `stdio`.
+    ///
+    /// The pseudo-terminal seam (unix only). The pipeline is identical to
+    /// [`Sandbox::spawn`] — `ensure_not_nested`, resolve, home materialization,
+    /// `confine_executable` — and the policy is **not** widened, with two narrow
+    /// exceptions that only apply when `stdio.controlling_terminal` is set:
+    ///
+    /// - `TERM` and `COLORTERM` are passed through from the host environment as
+    ///   *defaults* (profile env, `env_pass` and `set_env` still override), because
+    ///   a TUI harness with no `TERM` cannot decide what it may draw.
+    /// - on macOS the `pseudo-tty` capability is added to the rendered Seatbelt
+    ///   policy, since a policy without it fails pty operations in a way that looks
+    ///   like the harness crashing.
+    ///
+    /// A host that is itself confined cannot confine a session at all: probe
+    /// [`ensure_not_nested`] **once at startup** and report it as a capability,
+    /// rather than surfacing [`Error::NestedSandbox`] per pane.
+    #[cfg(unix)]
+    pub fn spawn_with_stdio(
+        self,
+        cmd: impl IntoIterator<Item = impl Into<String>>,
+        stdio: SandboxStdio,
+    ) -> Result<SandboxChild> {
+        spawn_with_stdio(&self.spec_with(cmd), stdio)
+    }
+
+    /// Open a pty sized to `size` and launch `cmd` confined on it, returning the
+    /// child plus the master side ([`PtyChild`]).
+    ///
+    /// A thin wrapper over [`Sandbox::spawn_with_stdio`]; see it for what a
+    /// controlling terminal implies.
+    #[cfg(unix)]
+    pub fn spawn_pty(
+        self,
+        cmd: impl IntoIterator<Item = impl Into<String>>,
+        size: PtySize,
+    ) -> Result<PtyChild> {
+        spawn_pty(&self.spec_with(cmd), size)
+    }
+
     /// Launch `cmd` confined and block until it exits, returning its exit code.
     pub fn run(self, cmd: impl IntoIterator<Item = impl Into<String>>) -> Result<i32> {
         self.spawn(cmd)?.wait()
@@ -597,6 +749,43 @@ mod tests {
         );
         assert!(!dry.policy.is_empty(), "rendered policy must be non-empty");
         assert_eq!(dry.cmd, vec!["echo", "hi"]);
+    }
+
+    // The pty seam passes TERM/COLORTERM through as DEFAULTS only: a value the
+    // profile / --env-pass / --set-env already decided must survive.
+    #[cfg(unix)]
+    #[test]
+    fn tty_env_defaults_do_not_clobber_explicit_values() {
+        std::env::set_var("TERM", "xterm-256color");
+        let mut env: HashMap<String, String> = HashMap::new();
+        tty_env_defaults(&mut env);
+        assert_eq!(env["TERM"], "xterm-256color");
+
+        let mut explicit: HashMap<String, String> =
+            HashMap::from([("TERM".to_string(), "dumb".to_string())]);
+        tty_env_defaults(&mut explicit);
+        assert_eq!(
+            explicit["TERM"], "dumb",
+            "--set-env must win over the default"
+        );
+    }
+
+    // A controlling terminal implies `(allow pseudo-tty)` on macOS, exactly once —
+    // a policy without it fails pty ops in a way that looks like a harness crash.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn tty_policy_defaults_imply_pseudo_tty_idempotently() {
+        use crate::profile::Capability;
+        let mut profile = Profile::default();
+        tty_policy_defaults(&mut profile);
+        tty_policy_defaults(&mut profile);
+        let caps = &profile.macos.as_ref().unwrap().capabilities;
+        assert_eq!(
+            caps.iter().filter(|c| **c == Capability::PseudoTty).count(),
+            1
+        );
+        let rendered = crate::backends::macos::render_policy(&profile);
+        assert!(rendered.contains("(allow pseudo-tty)"), "{rendered}");
     }
 
     // `DryRun` must round-trip through serde_json so embedders and `--json` output

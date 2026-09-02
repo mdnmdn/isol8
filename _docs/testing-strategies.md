@@ -14,6 +14,7 @@ enforces it.
 > are documentary on AppContainer), scenario **08** skips until net tiers land.
 > Linux-specific scenarios **10–16** compile only on Linux.
 > Home materialization scenarios **17–19** (plan/apply + symlink grant semantics).
+> Pseudo-terminal seam scenarios **20–22** compile only on unix.
 > See [`AGENTS.md`](../AGENTS.md).
 
 ---
@@ -216,6 +217,40 @@ enforcement) and 6/7 (env actually delivered to the child) already prove the OS
 honours. The new logic is therefore covered by unit/integration tests (§2), and a
 fresh field scenario would only re-exercise the already-proven substrate. A field
 scenario is still mandatory for any **new grant type or matcher** (§6).
+
+### 3.2.1 Pseudo-terminal scenarios (20–22, unix)
+
+The pty seam (`isol8-core` `pty.rs` + `Backend::spawn_with_stdio`) is enforcement,
+not resolution: only the OS can say whether the confined process really got a
+controlling terminal, whether a host resize reached it, and whether the seam left
+the policy alone. So it gets field scenarios rather than resting on §2.
+
+| # | Setup | Probe | Expect (macOS/Linux) |
+|---|-------|-------|----------------------|
+| 20 | `open_pty(100×42)` → `SandboxStdio::from_tty` → `spawn_with_stdio` | `tty` and `stty size` inside the sandbox | fd 0 names a pty (`/dev/ttys…` / `/dev/pts/…`) and `stty` reports `42 100` |
+| 21 | same, started at 80×24; host calls `PtyChild::resize(132×50)` while the child sleeps | `stty size` after the sleep | `50 132` — the child observed the new geometry |
+| 22 | same, plus a controlling terminal | write to a path outside every grant | **Denied**, and the file does not exist |
+
+Scenario 22 is the load-bearing one: the seam must not widen the policy. Scenario
+21 is what proves the geometry reaches the *kernel* rather than only the master —
+a pane that resizes while its harness believes the old size is the classic
+corruption bug.
+
+Both need `/dev` readable for `ttyname(3)`, and macOS needs the `pseudo-tty`
+capability in the SBPL; the field profile adds both explicitly, while
+`Sandbox::spawn_pty` adds the capability itself (unit-tested in
+`sandbox::tests::tty_policy_defaults_imply_pseudo_tty_idempotently`).
+
+On **Linux specifically** these scenarios also prove the ordering inside
+`child_setup_and_exec`: the descriptors and the `TIOCSCTTY` ioctl land *before*
+`set_no_new_privs()` and `restrict_self()`. Applied in the other order the ioctl is
+itself denied, and scenario 20 fails with the child unable to claim its tty.
+
+The primitives are additionally covered without a backend by
+`pty::tests::child_on_the_seam_gets_a_ctty_at_the_requested_size`, which wires a
+plain `/bin/sh` onto `SandboxStdio::from_tty` and asserts the same tty / size /
+resize facts — useful because it runs everywhere, including where nested
+sandboxing blocks the field tests.
 
 ### 3.3 Output
 

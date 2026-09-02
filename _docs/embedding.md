@@ -76,6 +76,7 @@ HomePlan        effective.home.plan             mutations, not yet applied
    ▼
 spawn           backends::select().spawn()      OS policy applied, process running
    │            SandboxChild { id, wait, kill }
+   │            …or spawn_with_stdio() / spawn_pty() for a confined pty (unix)
 ```
 
 **Invariant:** the effective `$HOME` is resolved *before* any path grant is
@@ -105,7 +106,72 @@ let code = child.wait()?;      // or child.kill()?
 Builder methods: `profile`, `profile_path`, `auto_profiles`, `grant_rw`,
 `grant_ro`, `cwd_ro`, `home`, `ephemeral_home`, `home_op`, `toolchain`,
 `recipe_path`, `no_seed`, `env_pass`, `set_env`, plus `from_spec` / `spec_mut`
-to drop down to the raw [`Spec`]. Terminals: `run`, `spawn`, `dry_run`.
+to drop down to the raw [`Spec`]. Terminals: `run`, `spawn`, `dry_run`,
+`spawn_with_stdio`, `spawn_pty`.
+
+### Run a command on a pseudo-terminal (unix)
+
+An interactive agent harness drives a full screen — alternate screen, absolute
+cursor addressing, raw keystrokes, resize redraw — so it needs a **controlling
+terminal** and its geometry has to reach the kernel, or it redraws at the wrong
+size. `spawn_pty` opens the pty for you:
+
+```rust
+use isol8::{PtySize, Sandbox};
+
+let mut pty = Sandbox::new()
+    .profile("base")
+    .grant_rw("/my/project")
+    .spawn_pty(["claude"], PtySize { cols: 120, rows: 40 })?;
+
+let reader = pty.try_clone_reader()?;      // File — feed the host's pump
+let writer = pty.take_writer()?;           // File — keystrokes in
+pty.resize(PtySize { cols: 132, rows: 50 })?;   // on the host's SIGWINCH
+let code = pty.child().wait()?;            // or pty.child().kill()?
+```
+
+`PtyChild` also has `master()` (a `BorrowedFd`), `get_size()` and `into_parts()`.
+Dropping it closes the master (SIGHUP to the session) but neither waits for nor
+kills the child — own that lifecycle explicitly.
+
+**There is no supervisor shim.** macOS `sandbox-exec` `execve`s in place and Linux
+forks exactly once, so `pty.child().id()` is the harness's own pid: `kill` and
+`wait` behave exactly as for an unconfined pane, with no signal forwarding and no
+orphaning when a tab closes.
+
+If the host already owns a pty (`portable-pty`, or its own `openpty`), hand over
+the slave instead:
+
+```rust
+use isol8::{SandboxStdio, Sandbox};
+
+let stdio = SandboxStdio::from_tty(slave)?;    // dup'd 3×, ctty requested
+let mut child = Sandbox::new().profile("base").spawn_with_stdio(["claude"], stdio)?;
+```
+
+`SandboxStdio::from_fds(stdin, stdout, stderr)` is the non-tty form (pipes, files)
+— same wiring, no controlling terminal. `isol8::open_pty(size)` is public if you
+want the pair without the `PtyChild` wrapper, and `PtyChild::from_parts` re-attaches
+one afterwards.
+
+Two narrow behaviours apply **only** when `controlling_terminal` is set; the seam
+does not otherwise widen the policy:
+
+- `TERM` and `COLORTERM` are passed through from the host environment as
+  *defaults*. The env allowlist ([§R3](project-description.md)) drops them, and a
+  TUI harness with no `TERM` cannot decide what it may draw — it starts blank or
+  refuses to run, which reads as a crash rather than as a denial. Profile env,
+  `env_pass` and `set_env` still override.
+- On macOS the `pseudo-tty` capability is added to the rendered Seatbelt policy,
+  since a policy without `(allow pseudo-tty)` fails pty operations the same
+  confusing way.
+
+**Nesting is per-process.** `sandbox::ensure_not_nested()` fails when
+`ISOL8_SANDBOXED` is set, so a host that is itself confined can never confine a
+session. Probe it **once at startup** and report it as a capability — a per-pane
+`Error::NestedSandbox` is exactly the confusing failure a pty host should avoid.
+
+Windows (ConPTY) is not supported: the whole seam is `cfg(unix)`.
 
 ### Build a Spec directly
 
@@ -262,6 +328,8 @@ read below the table:
 | `config::load()` | `config::load_in(&ctx)` |
 | `resolve::effective_policy(&spec)` | `resolve::effective_policy_in(&spec, &ctx)` |
 | `sandbox::dry_run(&spec)` | `sandbox::dry_run_in(&spec, &ctx)` |
+| `sandbox::spawn_with_stdio(&spec, stdio)` | `sandbox::spawn_with_stdio_in(&spec, &ctx, stdio)` |
+| `sandbox::spawn_pty(&spec, size)` | `sandbox::spawn_pty_in(&spec, &ctx, size)` |
 
 ```rust
 let ctx = isol8::Context {
@@ -384,6 +452,8 @@ except long-lived `SandboxChild` handles, which the binary owns anyway.
   object-safe, but `Backend::spawn` must return a `SandboxChild` whose
   constructors are `pub(crate)`. Third-party backends are deliberately not
   supported — a sandbox with a pluggable enforcement layer is not a sandbox.
+  Because the trait is closed, *adding* a method to it (as `spawn_with_stdio`
+  did) is not a breaking change for embedders.
 - **Profiles are data, not code.** Extend policy through TOML layers
   (`--profile-path` / `Spec::profile_paths`), not by patching the merge.
 - **`@registry` orchestration and `@diag`'s minimizer stay in the CLI.** Their

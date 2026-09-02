@@ -3,6 +3,8 @@ use std::process::Output;
 
 use crate::error::Result;
 use crate::profile::Profile;
+#[cfg(unix)]
+use crate::pty::SandboxStdio;
 use crate::sandbox::SandboxChild;
 
 #[cfg(target_os = "linux")]
@@ -24,6 +26,27 @@ pub trait Backend {
         profile: &Profile,
         env: &HashMap<String, String>,
         cmd: &[String],
+    ) -> Result<SandboxChild>;
+
+    /// Apply the policy and launch `cmd` with the child's standard streams wired
+    /// to `stdio`, returning a non-blocking handle.
+    ///
+    /// This is the pseudo-terminal seam (unix only): a host that owns a pty hands
+    /// over the slave via [`SandboxStdio::from_tty`], and the confined process gets
+    /// a controlling terminal established **before** the policy is applied, so the
+    /// `TIOCSCTTY` ioctl is not itself denied. There is no supervisor shim — macOS
+    /// `sandbox-exec` execs in place and Linux forks exactly once, so the returned
+    /// handle is the harness's own pid.
+    ///
+    /// `Backend` is closed to external implementation ([`SandboxChild`]'s
+    /// constructors are `pub(crate)`), so this method has no default body.
+    #[cfg(unix)]
+    fn spawn_with_stdio(
+        &self,
+        profile: &Profile,
+        env: &HashMap<String, String>,
+        cmd: &[String],
+        stdio: SandboxStdio,
     ) -> Result<SandboxChild>;
 
     /// Apply the policy, run `cmd` to completion, and capture stdout/stderr.

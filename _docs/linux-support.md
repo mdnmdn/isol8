@@ -58,6 +58,8 @@ isol8 [OPTIONS] <COMMAND>
        │    ├─ Parent → waitpid() → exit code
        │    │
        │    └─ Child:
+       │         0. stdio.apply_to_current_process()  ← pty seam only:
+       │              dup2 → 0/1/2, setsid + TIOCSCTTY   (MUST precede 1–2)
        │         1. set_no_new_privs()
        │         2. apply_landlock(rules)    ← Ruleset + PathBeneath + restrict_self()
        │         3. execvp(command, env)     ← replaces process
@@ -79,6 +81,14 @@ restricts which directory FDs can be opened.
 `literal` (exact-match), `prefix`, and `regex` match kinds cannot be
 faithfully represented. Only `MatchKind::Subpath` grants are emitted;
 other match kinds are silently skipped.
+
+**The pty seam applies stdio first.** `Backend::spawn_with_stdio` reuses the same
+single `fork()` — no supervisor shim, so the pid the host holds is the harness's
+own. The descriptors and the `TIOCSCTTY` ioctl are installed in the forked child
+*before* `set_no_new_privs()` and `restrict_self()`: after Landlock is enforced the
+ioctl would itself be denied, and the pane would come up without a controlling
+terminal. Landlock governs paths only, so nothing is added to the ruleset for a
+pty — the seam does not widen the policy (field scenarios 20–22).
 
 **ABI probing.** `probe_landlock_abi()` issues a `landlock_create_ruleset` with
 the `LANDLOCK_CREATE_RULESET_VERSION` flag (no ruleset is installed and

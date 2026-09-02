@@ -35,6 +35,11 @@ pub use isol8_core::{
     recipe, resolve, sandbox,
 };
 
+/// Pseudo-terminal seam for hosts (unix only).
+#[cfg(unix)]
+#[doc(inline)]
+pub use isol8_core::pty;
+
 #[cfg(target_os = "macos")]
 #[doc(inline)]
 pub use isol8_core::analyze_macos;
@@ -50,6 +55,10 @@ pub use isol8_core::{
 
 #[doc(inline)]
 pub use isol8_core::{confine_executable, effective_policy};
+
+#[cfg(unix)]
+#[doc(inline)]
+pub use isol8_core::{open_pty, PtyChild, PtySize, SandboxStdio};
 
 /// Offline recipe/profile registries (feature `registry`).
 #[cfg(feature = "registry")]
