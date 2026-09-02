@@ -12,12 +12,12 @@ default-members = ["."]
 # rewrites `[workspace.package] version` and these three pins together, so a
 # release can never ship a facade requiring a version its members don't have.
 [workspace.dependencies]
-isol8-core = { path = "crates/isol8-core", version = "0.2.6" }
-isol8-registry = { path = "crates/isol8-registry", version = "0.2.6" }
-isol8-cli = { path = "crates/isol8-cli", version = "0.2.6" }
+isol8-core = { path = "crates/isol8-core", version = "0.3.0" }
+isol8-registry = { path = "crates/isol8-registry", version = "0.3.0" }
+isol8-cli = { path = "crates/isol8-cli", version = "0.3.0" }
 
 [workspace.package]
-version = "0.2.6"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/mdnmdn/isol8"
