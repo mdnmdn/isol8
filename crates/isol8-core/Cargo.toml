@@ -1,11 +1,11 @@
 [package]
 name = "isol8-core"
-version = "0.2.6"
-edition = "2021"
-license = "MIT"
-repository = "https://github.com/mdnmdn/isol8"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "isol8 engine: profiles, resolve, home plan, sandbox backends"
-authors = ["Marco De Nittis"]
+authors.workspace = true
 build = "build.rs"
 
 [lib]

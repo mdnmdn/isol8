@@ -299,6 +299,7 @@ fn delete_app_container_profile_by_name(_name: &str) -> crate::error::Result<()>
 /// the rendered OS-native policy text. The CLI turns this into the `--show-policies`
 /// report; an embedder inspects the fields directly.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct DryRun {
     /// The resolved layer stack (deps-first) tagged with provenance.
     pub layer_names: Vec<(String, crate::resolve::LayerOrigin)>,

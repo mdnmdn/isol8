@@ -26,8 +26,16 @@ test:
 # Field tests: real sandbox checks on an ad-hoc env/profile (see _docs/testing-strategies.md).
 # Pass --keep to retain the temp workspace.
 field-test *args:
-    cargo run --features field-test --bin isol8-field-test -- {{args}}
+    cargo run -p isol8-cli --features field-test --bin isol8-field-test -- {{args}}
 
+
+# Dry-run the crates.io publish (ordering + packaging; uploads nothing).
+publish-dry:
+    ./_devops/scripts/publish.sh --dry-run
+
+# Publish the whole workspace to crates.io, leaves first. Needs CARGO_REGISTRY_TOKEN.
+publish:
+    ./_devops/scripts/publish.sh
 
 local-publish:
     cargo build

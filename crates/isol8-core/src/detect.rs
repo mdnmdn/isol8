@@ -20,6 +20,7 @@ use crate::sandbox::Spec;
 
 /// Outcome of probing one recipe against the real home.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct DetectResult {
     /// Recipe id.
     pub id: String,
@@ -39,6 +40,7 @@ pub struct DetectResult {
 
 /// Outcome of verifying one recipe's smoke test inside a cage.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct VerifyResult {
     /// Recipe id.
     pub id: String,

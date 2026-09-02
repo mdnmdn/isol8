@@ -1,11 +1,11 @@
 [package]
 name = "isol8-cli"
-version = "0.2.6"
-edition = "2021"
-license = "MIT"
-repository = "https://github.com/mdnmdn/isol8"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "isol8 CLI library: meta-commands, wizard (binary is the root isol8 package)"
-authors = ["Marco De Nittis"]
+authors.workspace = true
 
 [lib]
 name = "isol8_cli"
@@ -15,10 +15,12 @@ path = "src/lib.rs"
 default = []
 # Argument parsing + interactive prompts (the `isol8` binary needs this).
 clap-cli = ["dep:clap", "dep:dialoguer", "dep:serde_yaml"]
+# Real-sandbox field tests. Uses isol8-core only — no clap.
+field-test = []
 
 [dependencies]
-isol8-core = { path = "../isol8-core", version = "0.2.6" }
-isol8-registry = { path = "../isol8-registry", version = "0.2.6" }
+isol8-core = { workspace = true }
+isol8-registry = { workspace = true }
 clap = { version = "4", features = ["derive"], optional = true }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
@@ -27,3 +29,8 @@ dialoguer = { version = "0.11", optional = true }
 anyhow = "1"
 serde_json = "1"
 toml_edit = "0.22"
+
+[[bin]]
+name = "isol8-field-test"
+path = "src/bin/isol8-field-test.rs"
+required-features = ["field-test"]

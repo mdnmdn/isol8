@@ -38,6 +38,7 @@ impl LayerOrigin {
 
 /// Fully resolved policy for a confined command.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct EffectivePolicy {
     /// Resolved layer stack in merge order (deps-first), tagged with provenance.
     pub layer_names: Vec<(String, LayerOrigin)>,
@@ -186,7 +187,7 @@ pub fn effective_policy_in(spec: &Spec, ambient: &Context) -> Result<EffectivePo
     }
 
     let effective_home = home::resolve(&spec_for_home, &layers, ambient)?;
-    let mut merged = profile::load_merged(spec, &layers, &effective_home, &ctx)?;
+    let mut merged = profile::load_merged(spec, &layers, &effective_home, ambient)?;
 
     // Fold recipe path grants + env (token-expand env against Context + effective home).
     for c in &contributions {

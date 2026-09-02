@@ -8,6 +8,14 @@ members = [
 ]
 default-members = ["."]
 
+# Internal crate versions live here ONLY — `_devops/scripts/version.sh bump`
+# rewrites `[workspace.package] version` and these three pins together, so a
+# release can never ship a facade requiring a version its members don't have.
+[workspace.dependencies]
+isol8-core = { path = "crates/isol8-core", version = "0.2.6" }
+isol8-registry = { path = "crates/isol8-registry", version = "0.2.6" }
+isol8-cli = { path = "crates/isol8-cli", version = "0.2.6" }
+
 [workspace.package]
 version = "0.2.6"
 edition = "2021"
@@ -40,11 +48,6 @@ name = "isol8"
 path = "src/bin_shim.rs"
 required-features = ["cli"]
 
-[[bin]]
-name = "isol8-field-test"
-path = "crates/isol8-cli/src/bin/isol8-field-test.rs"
-required-features = ["field-test"]
-
 [features]
 default = ["cli", "registry"]
 # Offline registry types + recipe auto-discovery provider.
@@ -53,13 +56,13 @@ registry = ["dep:isol8-registry"]
 wizard = ["registry", "dep:isol8-cli"]
 # CLI binary, meta-commands, interactive wizard (implies wizard + registry).
 cli = ["wizard", "isol8-cli/clap-cli"]
-# Real-sandbox field-test binary.
-field-test = ["cli"]
+# Real-sandbox field-test binary (lives in isol8-cli, where its source is).
+field-test = ["cli", "isol8-cli/field-test"]
 
 [dependencies]
-isol8-core = { path = "crates/isol8-core", version = "0.2.6" }
-isol8-registry = { path = "crates/isol8-registry", version = "0.2.6", optional = true }
-isol8-cli = { path = "crates/isol8-cli", version = "0.2.6", optional = true }
+isol8-core = { workspace = true }
+isol8-registry = { workspace = true, optional = true }
+isol8-cli = { workspace = true, optional = true }
 anyhow = "1"
 
 # Examples only: serializing a DryRun is what a non-Rust host would do.
@@ -93,6 +96,11 @@ required-features = ["registry"]
 [[example]]
 name = "embed_analyze"
 path = "examples/embed_analyze.rs"
+required-features = ["registry"]
+
+[[example]]
+name = "embed_harness"
+path = "examples/embed_harness.rs"
 required-features = ["registry"]
 
 [[example]]

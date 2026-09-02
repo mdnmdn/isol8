@@ -81,7 +81,11 @@ pub struct CageDir {
 }
 
 /// A loaded cage document plus the path it was loaded from.
+///
+/// Engine-produced (`load_from_path` / `resolve_in`), so `#[non_exhaustive]`;
+/// [`CageOverlay`] stays constructible because embedders build one by hand.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct Cage {
     /// Schema version from the file (`schema = 1`).
     pub schema: u32,

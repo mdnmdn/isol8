@@ -11,7 +11,11 @@
 use thiserror::Error;
 
 /// The typed error returned by the isol8 engine.
+///
+/// `#[non_exhaustive]`: match on the named variants you act on and keep a
+/// `_ =>` arm — new variants are not a breaking change.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// `cmd[0]` could not be resolved to an executable on the host `PATH`.
     #[error("command {0:?} not found")]

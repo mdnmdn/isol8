@@ -366,6 +366,12 @@ for in-process hosts, `--json` / `Serialize` output, error handling, and the
 Windows injected-DLL caveat — is in the dedicated guide:
 [`embedding.md`](./embedding.md).
 
+Building a **host** that runs agents under isol8 (agent manager, task harness,
+CI runner)? [`integration.md`](./integration.md) covers the architecture: which
+traits you may implement, owning the config instead of discovering it,
+generating a per-session profile layer, creating per-session homes, driving
+registries programmatically, and what to reuse rather than rebuild.
+
 ---
 
 ## Cages (named selection units)

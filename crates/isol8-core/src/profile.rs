@@ -681,11 +681,12 @@ pub fn apply_rewrite(cmd: &[String], rewrite: &Option<Rewrite>) -> Vec<String> {
 ///
 /// The cwd grant is pushed first so an explicit `--add-dirs-*` on the same path
 /// still wins (within a layer the later grant for a `(path, match)` key overrides).
-fn overrides_layer(spec: &Spec) -> Profile {
+fn overrides_layer(spec: &Spec, cwd: &std::path::Path) -> Profile {
     let mut paths = Vec::new();
-    // cwd auto-grant: read-write by default, read-only with `--cwd-ro`. Skipped if
-    // the cwd can't be read (e.g. it was deleted) — no grant, no panic.
-    if let Ok(cwd) = std::env::current_dir() {
+    // cwd auto-grant: read-write by default, read-only with `--cwd-ro`. The
+    // directory comes from the caller's `Context`, never from the process — an
+    // embedded host's own cwd must not leak into the confined session.
+    if !cwd.as_os_str().is_empty() {
         paths.push(PathGrant {
             path: cwd.to_string_lossy().into_owned(),
             access: if spec.cwd_ro { Access::Ro } else { Access::Rw },
@@ -713,11 +714,15 @@ fn overrides_layer(spec: &Spec) -> Profile {
 }
 
 /// Merge resolved layers + invocation overrides into one effective profile.
+///
+/// `ambient` supplies the cwd for the automatic working-directory grant, so the
+/// result depends only on the caller's [`crate::Context`] — see
+/// [`crate::resolve::effective_policy_in`].
 pub fn load_merged(
     spec: &Spec,
     layers: &[Profile],
     home: &EffectiveHome,
-    _ctx: &RunContext,
+    ambient: &crate::context::Context,
 ) -> Result<Profile> {
     let mut expanded: Vec<Profile> = layers
         .iter()
@@ -730,7 +735,7 @@ pub fn load_merged(
         })
         .collect();
 
-    let mut over = overrides_layer(spec);
+    let mut over = overrides_layer(spec, &ambient.cwd);
     for grant in &mut over.paths {
         grant.path = home::expand_grant_in(&grant.path, &home.path, &home.real_home);
     }
@@ -909,24 +914,31 @@ mod tests {
 
     #[test]
     fn overrides_layer_grants_cwd_rw_by_default() {
-        let cwd = std::env::current_dir()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let layer = overrides_layer(&run_args(false));
-        let g = find(&layer, &cwd).expect("cwd granted");
+        let cwd = std::path::Path::new("/srv/session-1");
+        let layer = overrides_layer(&run_args(false), cwd);
+        let g = find(&layer, "/srv/session-1").expect("cwd granted");
         assert_eq!(g.access, Access::Rw);
     }
 
     #[test]
     fn overrides_layer_cwd_ro_downgrades() {
-        let cwd = std::env::current_dir()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let layer = overrides_layer(&run_args(true));
-        let g = find(&layer, &cwd).expect("cwd granted");
+        let cwd = std::path::Path::new("/srv/session-1");
+        let layer = overrides_layer(&run_args(true), cwd);
+        let g = find(&layer, "/srv/session-1").expect("cwd granted");
         assert_eq!(g.access, Access::Ro);
+    }
+
+    /// The cwd grant follows the caller's `Context`, not the process — an
+    /// embedded host's own working directory must never leak into a session.
+    #[test]
+    fn overrides_layer_cwd_comes_from_context_not_process() {
+        let process_cwd = std::env::current_dir().unwrap();
+        let layer = overrides_layer(&run_args(false), std::path::Path::new("/srv/session-1"));
+        assert!(find(&layer, "/srv/session-1").is_some());
+        assert!(
+            find(&layer, &process_cwd.to_string_lossy()).is_none(),
+            "process cwd leaked into the grants"
+        );
     }
 
     #[test]

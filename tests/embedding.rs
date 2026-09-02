@@ -367,6 +367,47 @@ fn effective_policy_in_and_dry_run_in_thread_context_home() {
 // serde: DryRun structure + stable wire-contract enum spellings for `--json`.
 // ---------------------------------------------------------------------------
 
+/// `dry_run_in` must grant the `Context` cwd and nothing else ambient: a host
+/// embedding isol8 would otherwise hand every confined session read-write
+/// access to the host's own working directory.
+#[test]
+fn dry_run_in_grants_context_cwd_not_process_cwd() {
+    let root = tmp_dir("ctx-cwd");
+    let real_home = root.join("home");
+    let cwd = root.join("session-workspace");
+    let config_dir = root.join("cfg");
+    for d in [&real_home, &cwd, &config_dir] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+
+    let ctx = Context {
+        real_home,
+        cwd: cwd.clone(),
+        platform: Platform::current(),
+        config_dir: config_dir.clone(),
+        managed_root: config_dir.join("homes"),
+    };
+
+    let mut spec = Spec::new(["echo", "hi"]);
+    spec.profiles = vec!["base".into()];
+
+    let dry = sandbox::dry_run_in(&spec, &ctx).expect("dry_run_in");
+    let granted: Vec<&str> = dry.profile.paths.iter().map(|g| g.path.as_str()).collect();
+
+    assert!(
+        granted.iter().any(|p| *p == cwd.to_string_lossy()),
+        "context cwd not granted: {granted:?}"
+    );
+    let process_cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        !granted.iter().any(|p| *p == process_cwd),
+        "process cwd leaked into the policy: {granted:?}"
+    );
+}
+
 #[test]
 fn dry_run_json_structure_and_enum_wire_spellings() {
     let root = tmp_dir("dry-run-json");

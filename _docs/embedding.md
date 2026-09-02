@@ -8,6 +8,11 @@ How to drive isol8 from another program. Three routes, in order of preference:
 | **Subprocess + `--json`** | Python, Node, C#, Go, shell | none — spawn the binary |
 | C ABI (`isol8-ffi`) | in-process non-Rust hosts | **not built** — see [§7](#7-windows-and-in-process-hosts) |
 
+Embedding isol8 inside a **host that runs other programs** (agent manager, task
+harness, CI runner)? Read [integration.md](./integration.md) — it covers the
+architecture this reference does not: extension points, host-owned config,
+generated per-session profiles and homes, registry admission.
+
 Companion docs: [config.md](./config.md) (the config contract),
 [profile-model.md](./profile-model.md) (what a policy *is*),
 [instructions.md](./instructions.md) (the CLI),
@@ -247,8 +252,10 @@ The interactive prompting stays in the CLI; these are the same steps it drives.
 
 The default entry points read `HOME`, the cwd, and `ISOL8_*` from the process
 environment. When that environment belongs to a **host** rather than to isol8,
-use the explicit-[`Context`] variants — nothing in them touches the ambient
-environment:
+use the explicit-[`Context`] variants. Real home, cwd, config dir, `@…` /
+`@managed/<id>` expansion, cage discovery and the automatic working-directory
+grant then all come from the `Context` you pass — see the one remaining ambient
+read below the table:
 
 | Ambient | Hermetic |
 |---------|----------|
@@ -268,6 +275,15 @@ let policy = isol8::resolve::effective_policy_in(&spec, &ctx)?;
 ```
 
 This is also how you resolve a Windows cage on Linux for CI linting.
+
+**One ambient read remains.** Layer and recipe *overlays from the user config
+directory* (`$XDG_CONFIG_HOME/isol8/{profiles,recipes}`, else
+`$HOME/.config/isol8/…`) are discovered from the process environment even on the
+`_in` path — `Context::config_dir` does not redirect them. Built-in layers and
+anything you pass in `Spec::profile_paths` / `Spec::recipe_paths` are unaffected.
+A host that must be fully independent of the invoking user's dotfiles should
+carry its own layers in `profile_paths` and not rely on that directory being
+absent.
 
 ---
 
@@ -310,6 +326,19 @@ pub enum Error {
 include a `_ =>` arm. `Message` is the contextual catch-all; match on the named
 variants for programmatic decisions (`NestedSandbox` means you are already inside
 an isol8 sandbox — Seatbelt cannot nest).
+
+### Forward compatibility
+
+Types the **engine produces** are `#[non_exhaustive]`, so a new field is not a
+breaking change: `Spec`, `DryRun`, `EffectivePolicy`, `AnalysisReport`,
+`AnalyzeOutcome`, `AnalyzeOptions`, `DetectResult`, `VerifyResult`, `Cage`,
+`Error`. Read their fields; never match or destructure exhaustively, and build a
+`Spec` with `Spec::new` (or `..Default::default()`) rather than a struct literal.
+
+Types you **hand to the engine** stay constructible by struct literal, because
+that is their purpose: `Context` (§4), `CageOverlay`, `HomeOpSpec`,
+`ToolchainChoice`, `Config`. Adding a field to one of these *is* a semver break
+and is treated as such.
 
 ---
 
@@ -375,6 +404,7 @@ Runnable, and built by `just ci` so they cannot rot:
 | `embed_cage` | `registry` | cage discovery → overlay → run |
 | `embed_recipes` | `registry` | enumerate recipes, detect, materialize a home |
 | `embed_analyze` | `registry` | run + denial analysis with an NDJSON feed |
+| `embed_harness` | `registry` | host integration: per-session context, generated layer, managed home ([integration.md](./integration.md)) |
 | `embed_wizard` | `wizard` | author a cage without clap |
 | `embed_json` | none | serialize `DryRun` for a non-Rust consumer |
 

@@ -111,9 +111,18 @@ and full Windows path enforcement remain deferred.
   `isol8-registry`); `resolve::spec_from_config` applies the documented
   precedence chain in one function; `resolve::effective_policy_in` and
   `sandbox::dry_run_in` are hermetic `Context`-explicit variants (the ambient
-  `effective_policy` / `dry_run` are now thin wrappers); `cage::select_name` /
-  `cage::apply_overlay` are public; `Spec` is `#[non_exhaustive]` with
-  `Spec::new(cmd)`; report types derive `Serialize` for `--json`; new `wizard`
+  `effective_policy` / `dry_run` are now thin wrappers) — including the automatic
+  cwd grant, which follows `Context::cwd` instead of the process cwd, so an
+  embedding host's own directory never leaks into a confined session
+  (`profile::load_merged` takes the `Context`); user-config layer/recipe overlays
+  (`$XDG_CONFIG_HOME/isol8/…`) remain an ambient read, documented in
+  [`_docs/embedding.md`](_docs/embedding.md) §4; `cage::select_name` /
+  `cage::apply_overlay` are public; every engine-**produced** type is
+  `#[non_exhaustive]` (`Spec` + `Spec::new(cmd)`, `DryRun`, `EffectivePolicy`,
+  `AnalysisReport`, `AnalyzeOutcome`/`AnalyzeOptions`, `DetectResult`,
+  `VerifyResult`, `Cage`, `Error`) while the types embedders **construct**
+  (`Context`, `CageOverlay`, `HomeOpSpec`, `Config`) stay open struct literals;
+  report types derive `Serialize` for `--json`; new `wizard`
   feature exposes cage authoring without clap. Guide: [`_docs/embedding.md`](_docs/embedding.md),
   plan: [`_docs/wip/crate-as-lib-plan.md`](_docs/wip/crate-as-lib-plan.md).
 - **`ISOL8_*` vs CLI flags (behaviour fix)** — env overrides used to be applied
@@ -307,11 +316,35 @@ isol8 @cage new work --yes --home managed --tools nvm,cargo --dir /my/project
 isol8 -c work -- echo hi
 ```
 
+### Release
+
+Versions are **lockstep** across the workspace. All four internal pins live in the
+root `Cargo.toml` — `[workspace.package] version` plus the three
+`[workspace.dependencies]` entries; member crates carry `version.workspace = true`
+and depend on siblings with `{ workspace = true }`.
+
+```sh
+just bump 0.3.0        # gate + rewrite all 4 pins + commit + tag (aborts if any pin lags)
+just publish-dry       # ordering + packaging check; uploads nothing
+just publish           # crates.io, leaves first (needs CARGO_REGISTRY_TOKEN)
+```
+
+**Publish order is mandatory:** `isol8-core` → `isol8-registry` → `isol8-cli` →
+`isol8`. The facade requires its members *by version*, which crates.io resolves
+against the registry and not the path, so a bare `cargo publish` at the root fails
+with ``no matching package named `isol8-cli` ``.
+`_devops/scripts/publish.sh` does the ordering, skips versions already on
+crates.io (so a partial failure can be resumed), and waits for each crate to index
+before publishing the next. `release.yml` calls it.
+
 ### Embedding isol8 as a library
 
 Prefer the root **facade** package (`isol8`) so `use isol8::…` stays stable across
 workspace splits. Full API surface (hermetic `_in` variants, `--json`, cages,
 recipes, wizard, Windows caveats): [`_docs/embedding.md`](_docs/embedding.md).
+Embedding inside a host that runs agents (extension points, host-owned config,
+generated per-session profiles and homes, registry admission gates):
+[`_docs/integration.md`](_docs/integration.md).
 
 ```toml
 # Cargo.toml — engine only (isol8-core re-exports; no clap / registry / wizard):
@@ -354,6 +387,7 @@ you need a stricter dependency graph; the facade remains the supported public AP
 |-----|----------|
 | [`_docs/instructions.md`](_docs/instructions.md) | User guide: CLI, cages, wizard, registries, analyze |
 | [`_docs/embedding.md`](_docs/embedding.md) | Embedding guide: Rust library, subprocess `--json`, hermetic `_in` variants |
+| [`_docs/integration.md`](_docs/integration.md) | Host integration (harness / agent manager): extension points, host-owned config, generated profiles, per-session homes, registry admission |
 | [`_docs/config.md`](_docs/config.md) | Config discovery, parameters, markers, env overrides |
 | [`_docs/profile-model.md`](_docs/profile-model.md) | Profile format, filters, inheritance, merge, status table |
 | [`_docs/project-structure.md`](_docs/project-structure.md) | Workspace layout and data flow |

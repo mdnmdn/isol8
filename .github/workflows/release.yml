@@ -105,8 +105,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # The workspace must be published leaves-first: the facade `isol8` requires
+      # its members by version, which crates.io resolves against the registry and
+      # not the path. A bare `cargo publish` here fails.
       - name: Publish
-        run: cargo publish
+        run: bash _devops/scripts/publish.sh
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           ISOL8_VERSION: ${{ github.ref_name }}

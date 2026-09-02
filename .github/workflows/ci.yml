@@ -27,6 +27,19 @@ jobs:
           components: clippy
       - run: cargo clippy --workspace -- -D warnings
 
+  # The embedding tiers advertised in _docs/embedding.md §1 must actually compile,
+  # and the examples in §9 must not rot. Mirrors `just ci`.
+  embed:
+    name: Embedding tiers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check -p isol8 --no-default-features
+      - run: cargo check -p isol8 --no-default-features --features registry
+      - run: cargo check -p isol8 --no-default-features --features wizard
+      - run: cargo build --workspace --examples
+
   test:
     name: Test
     runs-on: ${{ matrix.os }}

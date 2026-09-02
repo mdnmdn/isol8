@@ -1,6 +1,7 @@
 # isol8 — Crate-as-library plan (Embedding API)
 
-**Status:** active plan — Steps 1–8 pending
+**Status:** complete — Steps 1–8 + docs landed and audited (2026-09-02).
+Remaining work is §3 (Windows hook) and §6 (out of scope), both deliberately deferred.
 **Depends on:** evolution Phase 9 (crate split) — done
 **Companion docs:** [`multi-evo-plan.md`](./multi-evo-plan.md),
 [`../config.md`](../config.md), [`../project-structure.md`](../project-structure.md),
@@ -39,7 +40,7 @@ This plan closes that gap for three audiences:
 | 4 | `analyze::run_and_analyze` entry point | **done** (2026-07-28) | `just ci` |
 | 5 | serde derives + `--json` | **done** (2026-07-28) | `just ci` |
 | 6 | Wizard reachable without clap | **done** (2026-07-28) | `just ci` |
-| 7 | `#[non_exhaustive]` + `Spec::new` | **done** (2026-07-28) | `just ci` |
+| 7 | `#[non_exhaustive]` + `Spec::new` | **done** (2026-09-02) | `just ci` |
 | 8 | CI gates + de-CLI'd engine tests | **done** (2026-07-28) | `just ci` |
 | — | Docs + examples | **done** (2026-07-28) | `cargo doc`, `--examples` |
 
@@ -58,6 +59,13 @@ This plan closes that gap for three audiences:
   that only bridges clap to the engine.
 - **Context injection (G7):** `effective_policy_in`, `dry_run_in`, `config::load_in`.
 - **Forward-compat (G8):** `Spec` is `#[non_exhaustive]` with `Spec::new`.
+  Extended 2026-09-02 to every **engine-produced** type — `DryRun`,
+  `EffectivePolicy`, `AnalysisReport`, `AnalyzeOutcome`, `AnalyzeOptions`,
+  `DetectResult`, `VerifyResult`, `Cage`, `Error`. `Context` and `CageOverlay`
+  deliberately stay **exhaustive**: embedders construct them by struct literal
+  (that is the whole point of the hermetic `_in` variants and of
+  `cage::apply_overlay`), so sealing them would remove the API rather than
+  protect it. Documented in [`../embedding.md`](../embedding.md) §6.
 - **Features (G1):** `wizard` feature reaches `isol8_cli::wizard` with **zero** clap
   or dialoguer in the tree; `cli/config.rs` and `cli/diag.rs` are `pub mod`.
 - **CI (G9, G10):** `just ci` now compiles `--no-default-features` (engine-only) and
@@ -516,3 +524,5 @@ and offline-discovery paths that Step 1 rewrites — they must pass unchanged, a
 | Date | Change |
 |------|--------|
 | 2026-07-28 | Initial plan from the embedding-API audit (G1–G11); steps 1–8 + Windows requirements |
+| 2026-09-02 | Host-integration guide [`../integration.md`](../integration.md) + `examples/embed_harness.rs`. Writing it found a hermeticity leak: the automatic cwd grant read `std::env::current_dir()` even on the `_in` path, so an embedding host's own directory was granted rw in every confined session. `profile::load_merged` now takes the `Context` and `overrides_layer` the cwd from it (unit + integration test). The remaining ambient read (user-config layer/recipe overlays) is documented rather than changed |
+| 2026-09-02 | Implementation audit against the plan: Steps 1–6, 8 and the docs verified in tree; Step 7 completed (`#[non_exhaustive]` on the engine-produced types, `Context` / `CageOverlay` intentionally left open) and `embedding.md` §6 corrected to state the real contract |

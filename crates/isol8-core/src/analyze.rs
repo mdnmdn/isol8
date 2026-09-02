@@ -138,6 +138,7 @@ pub struct AnalysisItem {
 
 /// Full analysis report.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct AnalysisReport {
     /// Sum of raw denial counts before collapse.
     pub total_denials: u32,

@@ -169,8 +169,11 @@ let code = isol8::Sandbox::new()
 
 Full API surface — hermetic `_in` variants, `--json` / `Serialize` output,
 cages, recipes, detect/verify, the wizard, and Windows caveats:
-[`_docs/embedding.md`](_docs/embedding.md). Runnable examples (built by `just ci`):
-[`examples/`](examples/).
+[`_docs/embedding.md`](_docs/embedding.md). Building a **host** that runs agents
+(harness, agent manager, CI runner) — extension points, host-owned config,
+generated profiles, per-session homes, registry admission:
+[`_docs/integration.md`](_docs/integration.md). Runnable examples (built by
+`just ci`): [`examples/`](examples/).
 
 ## Docs
 
@@ -178,6 +181,7 @@ cages, recipes, detect/verify, the wizard, and Windows caveats:
 |-----|----------|
 | [`_docs/instructions.md`](_docs/instructions.md) | CLI, cages, wizard, registries, analyze |
 | [`_docs/embedding.md`](_docs/embedding.md) | Rust / subprocess embedding guide |
+| [`_docs/integration.md`](_docs/integration.md) | Host integration: harness / agent-manager architecture |
 | [`_docs/config.md`](_docs/config.md) | Config discovery, parameters, markers, env |
 | [`_docs/profile-model.md`](_docs/profile-model.md) | Profile format, filters, merge |
 | [`_docs/recipes.md`](_docs/recipes.md) | Recipes & strategies |

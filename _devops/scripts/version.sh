@@ -31,12 +31,36 @@ validate_version_format() {
   fi
 }
 
+# Rewrite every internal version pin in the root Cargo.toml.
+#
+# Two kinds, and BOTH must move together or the published facade will require a
+# version its members never got:
+#   1. [workspace.package] version = "x.y.z"   — inherited by all members
+#   2. [workspace.dependencies] isol8-* pins   — the version requirement that
+#      ends up in the published crate metadata
+# Member Cargo.tomls carry no literal version (they use `version.workspace`).
 update_cargo_version() {
   local version="$1"
   local tmp
   tmp="$(mktemp)"
-  sed "s/^version = .*/version = \"${version}\"/" "${CARGO_TOML}" >"${tmp}"
+  sed -E \
+    -e "s/^version = .*/version = \"${version}\"/" \
+    -e "s/^(isol8-(core|registry|cli) = \{ path = \"[^\"]+\", version = )\"[^\"]+\"/\1\"${version}\"/" \
+    "${CARGO_TOML}" >"${tmp}"
   mv "${tmp}" "${CARGO_TOML}"
+
+  # Fail loudly rather than tagging a half-bumped workspace. Matches only the
+  # four pins that must move: `[workspace.package] version` and the three
+  # `[workspace.dependencies]` entries. (`{ workspace = true }` lines under
+  # `[dependencies]` carry no version and must NOT be counted.)
+  local got
+  got="$(grep -cE "^(version = \"${version}\"\$|isol8-(core|registry|cli) = \{ path = \"[^\"]+\", version = \"${version}\" \}\$)" "${CARGO_TOML}" || true)"
+  if [[ "${got}" -ne 4 ]]; then
+    echo "error: expected 4 internal pins at ${version} in Cargo.toml, found ${got}" >&2
+    echo "       (1x [workspace.package] version + 3x [workspace.dependencies])" >&2
+    grep -nE '^(version = |isol8-(core|registry|cli) = \{ path)' "${CARGO_TOML}" >&2
+    exit 1
+  fi
 }
 
 cmd_bump() {
@@ -55,12 +79,19 @@ cmd_bump() {
     exit 1
   fi
 
+  # Same gate as `just ci` — without --workspace this only checked the facade
+  # package and silently skipped every member crate's tests.
   echo "running lint..."
   cargo fmt --all -- --check
-  cargo clippy --all-targets --all-features -- -D warnings
+  cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  echo "checking the published feature tiers..."
+  cargo check -p isol8 --no-default-features
+  cargo check -p isol8 --no-default-features --features registry
+  cargo check -p isol8 --no-default-features --features wizard
 
   echo "running tests..."
-  cargo test
+  cargo test --workspace
 
   local current
   current="$(cargo_version)"
