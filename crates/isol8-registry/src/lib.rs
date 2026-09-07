@@ -597,10 +597,14 @@ impl DirSource {
         self.root.join(&entry.file)
     }
 
-    /// sha256 hex of a file.
+    /// sha256 hex of a file, normalizing CRLF → LF first.
+    ///
+    /// Windows checkouts with `core.autocrlf=true` materialize `*.toml` with
+    /// `\r\n`, while the committed `index.json` pins were hashed with `\n`.
+    /// Normalizing makes `verify_content_hashes` stable on every host.
     pub fn hash_file(path: &Path) -> Result<String> {
         let bytes = fs::read(path).ctx(|| format!("hashing '{}'", path.display()))?;
-        Ok(sha256_hex(&bytes))
+        Ok(sha256_hex(&normalize_newlines(&bytes)))
     }
 
     /// Verify index sha256 pins against on-disk files. Returns mismatch messages.
@@ -1361,6 +1365,26 @@ pub fn verify_lock_against_disk(
 // Hash helper (no extra dependency)
 // ---------------------------------------------------------------------------
 
+/// Normalize `\r\n` → `\n` so text-file hashes are stable across
+/// `core.autocrlf` checkouts (Windows CRLF vs unix LF).
+fn normalize_newlines(data: &[u8]) -> Vec<u8> {
+    if !data.contains(&b'\r') {
+        return data.to_vec();
+    }
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] == b'\r' && data.get(i + 1) == Some(&b'\n') {
+            out.push(b'\n');
+            i += 2;
+        } else {
+            out.push(data[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// SHA-256 hex digest (minimal implementation via a tiny pure-Rust path).
 ///
 /// Uses the `sha2`-less approach of calling out only if needed — we implement
@@ -1494,8 +1518,13 @@ mod tests {
         d
     }
 
+    // Tests here mutate `ISOL8_CONFIG_PATH` and the process cwd (both
+    // process-global); serialize them against each other.
+    static REG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn effective_config_dir_respects_env_and_marker() {
+        let _guard = REG_TEST_LOCK.lock().unwrap();
         let root = tmp();
         let cfg = root.join("my-config");
         fs::create_dir_all(cfg.join("cages")).unwrap();
@@ -1514,9 +1543,10 @@ mod tests {
         std::env::remove_var("ISOL8_CONFIG_PATH");
         let proj = root.join("proj");
         fs::create_dir_all(&proj).unwrap();
+        // Single-quoted TOML literal: raw Windows paths (`C:\…`) stay verbatim.
         fs::write(
             proj.join(".isol8.toml"),
-            format!("config_path = \"{}\"\n", cfg.display()),
+            format!("config_path = '{}'\n", cfg.display()),
         )
         .unwrap();
         std::env::set_current_dir(&proj).unwrap();

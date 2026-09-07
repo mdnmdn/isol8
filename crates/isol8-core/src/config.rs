@@ -672,6 +672,16 @@ mod tests {
         let d = Config::builtin_defaults();
         assert!(d.default_profiles.contains(&"base".to_string()));
         assert_eq!(d.default_profiles.len(), 2);
+        let expected = if cfg!(target_os = "windows") {
+            "windows/system-runtime"
+        } else if cfg!(target_os = "macos") {
+            "macos/system-runtime"
+        } else if cfg!(target_os = "linux") {
+            "linux/system-runtime"
+        } else {
+            "base"
+        };
+        assert!(d.default_profiles.contains(&expected.to_string()));
     }
 
     #[test]
@@ -684,17 +694,17 @@ mod tests {
 
     #[test]
     fn expand_at_path_relative_to_config_dir() {
-        let dir = PathBuf::from("/cfg/isol8");
-        assert_eq!(
-            expand_at_path("@/profiles", &dir),
-            PathBuf::from("/cfg/isol8/profiles").display().to_string()
-        );
-        assert_eq!(
-            expand_at_path("@profiles", &dir),
-            PathBuf::from("/cfg/isol8/profiles").display().to_string()
-        );
+        // Absolute config dir on any host (temp dir carries a drive letter on Windows).
+        let dir = context::absolute_path(&std::env::temp_dir().join("isol8-cfg-expand-at"));
+        let expected_profiles = dir.join("profiles").display().to_string();
+        assert_eq!(expand_at_path("@/profiles", &dir), expected_profiles);
+        assert_eq!(expand_at_path("@profiles", &dir), expected_profiles);
         assert_eq!(expand_at_path("@", &dir), dir.display().to_string());
-        assert_eq!(expand_at_path("/abs", &dir), "/abs");
+        // Rooted input absolutizes against the host (drive-prefixed on Windows).
+        let abs_expected = context::absolute_path(Path::new("/abs"))
+            .display()
+            .to_string();
+        assert_eq!(expand_at_path("/abs", &dir), abs_expected);
         let rel = expand_at_path("rel", &dir);
         assert!(
             PathBuf::from(&rel).is_absolute(),
@@ -766,10 +776,13 @@ mod tests {
         let proj = tmp.join("proj");
         std::fs::create_dir_all(&proj).unwrap();
         let marker = proj.join(".isol8.toml");
+        // TOML double-quoted strings treat `\U` as a unicode escape, so a raw
+        // Windows path (`C:\Users\…`) would fail to parse. Single-quoted
+        // (literal) strings keep backslashes verbatim on every host.
         std::fs::write(
             &marker,
             format!(
-                "config_path = \"{}\"\nauto_profiles = false\ncage = \"work\"\n",
+                "config_path = '{}'\nauto_profiles = false\ncage = \"work\"\n",
                 global.display()
             ),
         )
@@ -843,6 +856,7 @@ mod tests {
 
     #[test]
     fn registries_kept_as_raw_tables_and_path_expanded() {
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let tmp = test_tmp("regs");
         std::fs::write(
             tmp.join("isol8.toml"),
@@ -861,7 +875,11 @@ mod tests {
         let scratch = cfg.registries.get("scratch").expect("scratch registry");
         let path = scratch.get("path").and_then(|v| v.as_str()).unwrap();
         assert!(Path::new(path).is_absolute(), "{path}");
-        assert!(path.ends_with("registries/scratch"), "{path}");
+        // Separator-agnostic: `C:\…\registries\scratch` on Windows.
+        assert!(
+            path.replace('\\', "/").ends_with("registries/scratch"),
+            "{path}"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

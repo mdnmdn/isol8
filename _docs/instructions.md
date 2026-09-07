@@ -3,8 +3,8 @@
 How to use `isol8` to confine commands, inspect policies, and manage profiles.
 
 > **Platform:** sandbox **enforcement** works on **macOS 12+** (Seatbelt /
-> `sandbox-exec`) and **Linux** (Landlock; WSL2 kernel 5.15 verified). Windows
-> AppContainer is a draft (compile + spawn; path grants not yet enforcing — see
+> `sandbox-exec`), **Linux** (Landlock; WSL2 kernel 5.15 verified), and
+> **Windows** (embedded `isol8-winhook.dll` user-mode hooks — see
 > [`windows-support.md`](./windows-support.md)). Use `--show-policies` /
 > `--show-profiles` on any OS to inspect the resolved policy without spawning.
 

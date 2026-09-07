@@ -6,7 +6,9 @@
 //! and restore whatever value (if any) was there before, mirroring the pattern
 //! in `crates/isol8-core/src/env.rs` and `crates/isol8-cli/src/cli/config.rs`.
 
-use isol8::{analyze, cage, config, resolve, sandbox};
+#[cfg(unix)]
+use isol8::analyze;
+use isol8::{cage, config, resolve, sandbox};
 use isol8::{
     CageOverlay, Config, Context, HomeOpKind, LayerOrigin, PlanAction, Platform, Spec,
     StrategyName, ToolchainChoice,

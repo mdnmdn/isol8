@@ -7,13 +7,14 @@ denied). Field tests are the ground truth — a profile is only correct if the O
 enforces it.
 
 > Status: implemented. Unit + integration tests (`cargo test`) and the
-> field-test binary `src/bin/isol8-field-test.rs` (`just field-test`) are in place
-> and green on macOS, Linux (WSL2), and **Windows (GNU toolchain + MinGW-w64)**.
-> On macOS/Linux scenarios 1–9 enforce path + env; on Windows scenarios **06, 07,
-> 09** enforce env + AppContainer spawn, scenarios **01–05** skip (R2 path grants
-> are documentary on AppContainer), scenario **08** skips until net tiers land.
+> field-test binary `crates/isol8-cli/src/bin/isol8-field-test.rs`
+> (`just field-test` / `just field-test-windows`) are in place and green on
+> macOS, Linux (WSL2), and **Windows (MSVC or MinGW-w64; hook DLL embedded)**.
+> Scenarios 1–9 enforce path + env on all three OSes (Windows via the hook DLL
+> + `isol8-probe`); scenario **08** skips until net tiers land.
 > Linux-specific scenarios **10–16** compile only on Linux.
-> Home materialization scenarios **17–19** (plan/apply + symlink grant semantics).
+> Home materialization scenarios **17–19** (plan/apply + symlink grant semantics;
+> 18–19 skip when symlinks need privilege, e.g. Windows without Developer Mode).
 > Pseudo-terminal seam scenarios **20–22** compile only on unix.
 > See [`AGENTS.md`](../AGENTS.md).
 
@@ -25,11 +26,11 @@ enforces it.
 |-------|-------|----------------|---------|
 | Unit | `src/**` `#[cfg(test)]` | Pure logic: profile merge, `requires` resolution, env allowlist, HOME-first resolution (default real home; replacement opt-in), executable resolution + clean "command not found", filter matching, `--show-policies` rendering. | All platforms, no privileges. |
 | Integration | `tests/*.rs` | Crate wired end-to-end *without* exec: load profiles → select layers → filter → resolve → merge → render. | All platforms. |
-| Field | `src/bin/isol8-field-test.rs` | The OS actually enforces the policy: denied paths fail, granted paths work, env is sanitized, AppContainer spawn succeeds (Windows). | Per-OS, best-effort, prints a report. |
+| Field | `crates/isol8-cli/src/bin/isol8-field-test.rs` | The OS actually enforces the policy: denied paths fail, granted paths work, env is sanitized, hook-DLL spawn succeeds (Windows). | Per-OS, best-effort, prints a report. |
 
 Unit and integration tests never touch the real filesystem outside a temp dir and
 never require the backend to be functional. Field tests require a working backend
-(Landlock on Linux, Seatbelt on macOS, AppContainer on Windows) and degrade
+(Landlock on Linux, Seatbelt on macOS, hook DLL on Windows) and degrade
 gracefully where enforcement is unavailable.
 
 ---
@@ -195,16 +196,16 @@ leave nothing behind (cleaned on exit; `--keep` to inspect failures).
 | 6 | env allowlist | non-allowlisted `SECRET_TOKEN` | **EnvAbsent** | **EnvAbsent** (`cmd.exe /c if defined …`) |
 | 7 | env allowlist | `PATH` / `HOME` present | **EnvPresent** | **EnvPresent** |
 | 8 | (N0, future) | TCP connect to a public host | **SKIP** | **SKIP** |
-| 9 | `rewrite` ensure-arg (Unix) / AppContainer spawn (Windows) | injected arg creates file / `cmd.exe /c exit 0` | **Allowed** (rewrite) | **Allowed** (spawn smoke test) |
+| 9 | `rewrite` ensure-arg (Unix) / hook-DLL spawn (Windows) | injected arg creates file / `isol8-probe` via hook DLL | **Allowed** (rewrite) | **Allowed** (spawn + hook inject) |
 
 On Unix, scenario 9 builds an ad-hoc layer with a `rewrite`, applies it via
 `profile::apply_rewrite`, and confirms the injected argument reached the executed
 program under the real sandbox.
 
-On Windows, scenario **09 appcontainer-spawn** verifies `CreateAppContainerProfile`
-+ `SECURITY_CAPABILITIES` + `CreateProcessW` can launch `cmd.exe` and return exit
-code 0. This is the ground-truth check that Tier 1 backend wiring works; it does
-**not** prove per-path R2 enforcement.
+On Windows, scenario **09 hook-spawn** verifies suspended `CreateProcessW` +
+remote `LoadLibraryW` inject of the embedded hook DLL can launch `isol8-probe`
+and return exit code 0. Scenarios 01–05 run the same probe through the hook to
+prove per-path R2 enforcement (denied reads fail with Access denied).
 
 Scenarios 1–7 only need the path/env/HOME backend (Phase 1). Network scenarios
 are gated behind the net tiers (Phase 3) and skipped with a clear `SKIP` until
@@ -257,13 +258,13 @@ sandboxing blocks the field tests.
 ```
 isol8 field tests — platform: windows   home: C:\Users\...\Temp\isol8-ft-12345\home
 
-  SKIP  01 deny-read-outside-grant   (path enforcement not available on this platform)
+  PASS  01 deny-read-outside-grant
   PASS  06 env-secret-absent
   PASS  07 env-path-home-present
   SKIP  08 net-n0-deny           (network tier not implemented)
-  PASS  09 appcontainer-spawn   (AppContainer CreateProcessW smoke test)
+  PASS  09 hook-spawn   (hook DLL CreateProcessW smoke test)
   ...
-  3 passed, 0 failed, 6 skipped
+  9 passed, 0 failed, 3 skipped
 ```
 
 Exit code: `0` all passed (skips allowed), `1` any failure. This makes it usable
@@ -292,8 +293,8 @@ No test ever references `/home/...`, `/Users/...`, `/etc`, or `C:\...` directly
 except via `%SYSTEMROOT%` expansion in profiles or resolving the host `cmd.exe`.
 
 **(b) Platform expectations are declared, not assumed.** Field tests set
-`path_enforced = matches!(platform, "macos" | "linux")` and skip path scenarios
-on Windows with an explicit reason.
+`path_enforced` per platform (Windows: hook DLL present + `isol8-probe` built)
+and skip path scenarios with an explicit reason when the backend is unavailable.
 
 | Platform | Backend | Field tests |
 |----------|---------|-------------|
@@ -301,7 +302,7 @@ on Windows with an explicit reason.
 | Linux (no Landlock) | — | Path scenarios `SKIP` with reason (kernel too old). |
 | macOS | Seatbelt (`sandbox-exec`) | Run & enforce paths + env. |
 | WSL2 | Linux backend (if WSL kernel has Landlock) | Same as Linux; probe decides. |
-| Windows | AppContainer (`CreateProcessW` + `SECURITY_CAPABILITIES`) | **06, 07, 09 enforce**; **01–05 skip** (R2 documentary; ACL mod deferred). Requires MinGW-w64 `gcc` on PATH for `x86_64-pc-windows-gnu` (see §5.1). |
+| Windows | Hook DLL (suspended `CreateProcessW` + `LoadLibraryW`) | **01–09 enforce** via `isol8-probe` (`just build-windows-test-deps`); 18–19 skip without symlink privilege (Developer Mode). Requires a Windows C toolchain (MSVC or MinGW-w64 `gcc`) for the hook cdylib (see §5.1). |
 
 The probe is the same one `select()` uses in `src/backends/mod.rs`, so field
 tests and the real CLI agree on what the current platform can do. A scenario that
@@ -320,9 +321,10 @@ tests and the real CLI agree on what the current platform can do. A scenario tha
 ## 5. Running
 
 ```sh
-just test          # unit + integration (all platforms, no privileges)
-just field-test    # real-sandbox field tests on this machine
-just ci            # fmt-check + clippy -D warnings + build + test (the gate)
+just test                 # unit + integration (all platforms, no privileges)
+just field-test           # real-sandbox field tests on this machine (macOS/Linux)
+just field-test-windows   # real-sandbox field tests on Windows (probe + hook DLL)
+just ci                   # fmt-check + clippy -D warnings + build + test (the gate)
 
 # targeted filter / profile coverage:
 cargo test profile_filters
@@ -332,20 +334,22 @@ cargo test backends::windows   # Windows-only (cfg-gated)
 
 ### 5.1 Windows build prerequisites
 
-The default Rust toolchain on Windows is often `x86_64-pc-windows-gnu`. You need
-**MinGW-w64** (`gcc`) on `PATH` to link:
+The hook DLL (`isol8-winhook` cdylib) needs a Windows C toolchain: **MSVC
+(Visual Studio Build Tools + Windows SDK)** or **MinGW-w64** (`gcc`) on `PATH`.
+`isol8-core`'s `build.rs` compiles and embeds it automatically; `ISOL8_WINHOOK_DLL`
+overrides the embedded copy at build time.
 
 ```powershell
-# Example: WinLibs via winget
+# Example: WinLibs via winget (GNU toolchain)
 winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT
 # Add mingw64\bin to PATH, then:
 cargo test
-cargo run --features field-test --bin isol8-field-test
+just field-test-windows
 ```
 
-Alternative: `x86_64-pc-windows-msvc` with **Visual Studio Build Tools** + Windows
-SDK (`link.exe` + `kernel32.lib`). The repo ships `.cargo/config.toml` pointing
-the GNU linker at `gcc` when present.
+Home `link` ops and scenarios 18–19 need symlink privilege: enable **Developer
+Mode** (Settings → Privacy & security → For developers) or run elevated.
+Without it those tests skip gracefully (unit) / report `SKIP` (field).
 
 Field tests are intentionally *not* part of `cargo test` by default: they need a
 functional backend and the right OS, and are run via their own binary so CI can

@@ -39,10 +39,10 @@ jobs:
             arch: arm64
             target: aarch64-apple-darwin
             runner: macos-latest
-          # - os: windows
-          #   arch: x64
-          #   target: x86_64-pc-windows-msvc
-          #   runner: windows-latest
+          - os: windows
+            arch: x64
+            target: x86_64-pc-windows-msvc
+            runner: windows-latest
 
     steps:
       - name: Checkout code
@@ -59,11 +59,14 @@ jobs:
           ISOL8_VERSION: ${{ github.ref_name }}
 
       - name: Package
+        shell: bash
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/isol8 dist/
+          BIN=isol8
+          if [[ "${{ matrix.os }}" == "windows" ]]; then BIN=isol8.exe; fi
+          cp "target/${{ matrix.target }}/release/${BIN}" dist/
           cd dist
-          zip ../${{ matrix.os }}-${{ matrix.arch }}.zip isol8
+          zip "../${{ matrix.os }}-${{ matrix.arch }}.zip" "${BIN}"
           cd ..
 
       - name: Upload artifact

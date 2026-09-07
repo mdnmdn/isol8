@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 #[cfg(windows)]
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
-use windows::Win32::System::Threading::{
+use windows_sys::Win32::System::Threading::{
     GetExitCodeProcess, TerminateProcess, WaitForSingleObject,
 };
 
@@ -69,6 +69,12 @@ pub struct Spec {
     pub set_env: Vec<String>,
     /// The command (and arguments) to confine.
     pub cmd: Vec<String>,
+    /// Override path to `isol8-winhook.dll` (Windows only; ignored elsewhere).
+    ///
+    /// Resolution order at spawn: this field → process `ISOL8_WINHOOK_DLL` →
+    /// sidecar next to `current_exe()` → embedded payload materialized under
+    /// `%LOCALAPPDATA%\isol8`. Missing required DLL is fail-closed.
+    pub win_hook_dll: Option<String>,
 }
 
 impl Spec {
@@ -95,7 +101,7 @@ impl Spec {
 ///
 /// The backends are heterogeneous: macOS launches a `sandbox-exec`
 /// `std::process::Child`; Linux forks and keeps the raw `Pid`; Windows uses a
-/// raw `HANDLE` from `CreateProcessW` under an AppContainer. The `on_exit`
+/// raw `HANDLE` from `CreateProcessW` after hook DLL injection. The `on_exit`
 /// closure maps a raw exit code into a rich error where the OS overloads exit codes
 /// for its own failures (macOS `sandbox-exec` 64/65/71/134); elsewhere it is the
 /// identity.
@@ -111,15 +117,9 @@ enum Handle {
     /// Linux: a forked child set up + exec'd in the fork; reaped via `waitpid`.
     #[cfg(target_os = "linux")]
     Forked(nix::unistd::Pid),
-    /// Windows: live handle from CreateProcessW under AppContainer.
+    /// Windows: live handle from CreateProcessW after hook DLL injection.
     #[cfg(windows)]
-    Windows {
-        pid: u32,
-        h_process: HANDLE,
-        /// AppContainer name (if created via CreateAppContainerProfile) for best-effort
-        /// DeleteAppContainerProfile on wait.
-        container_name: Option<String>,
-    },
+    Windows { pid: u32, h_process: HANDLE },
     /// A process whose exit code is already known (legacy or immediate-fail path).
     #[allow(dead_code)]
     Exited(i32),
@@ -156,15 +156,11 @@ impl SandboxChild {
         }
     }
 
-    /// Windows: wrap a live AppContainer-launched process + optional container name for cleanup.
+    /// Windows: wrap a live hook-launched process.
     #[cfg(windows)]
-    pub(crate) fn windows(pid: u32, h_process: HANDLE, container_name: Option<String>) -> Self {
+    pub(crate) fn windows(pid: u32, h_process: HANDLE) -> Self {
         Self {
-            handle: Handle::Windows {
-                pid,
-                h_process,
-                container_name,
-            },
+            handle: Handle::Windows { pid, h_process },
             on_exit: Box::new(Ok),
         }
     }
@@ -199,24 +195,16 @@ impl SandboxChild {
                 wait_status_code(&status)
             }
             #[cfg(windows)]
-            Handle::Windows {
-                h_process,
-                container_name,
-                ..
-            } => {
+            Handle::Windows { h_process, .. } => {
                 let mut code: i32 = 0;
                 unsafe {
-                    if !h_process.0.is_null() {
+                    if !h_process.is_null() {
                         WaitForSingleObject(*h_process, 0xFFFFFFFF);
                         let mut exit_code: u32 = 0;
-                        let _ = GetExitCodeProcess(*h_process, &mut exit_code as *mut u32);
+                        let _ = GetExitCodeProcess(*h_process, &mut exit_code);
                         code = exit_code as i32;
                         let _ = CloseHandle(*h_process);
-                        h_process.0 = std::ptr::null_mut();
-                        // best-effort cleanup of named AppContainer profile
-                        if let Some(name) = container_name.take() {
-                            let _ = delete_app_container_profile_by_name(&name);
-                        }
+                        *h_process = std::ptr::null_mut();
                     }
                 }
                 code
@@ -235,19 +223,12 @@ impl SandboxChild {
             Handle::Forked(pid) => nix::sys::signal::kill(*pid, nix::sys::signal::Signal::SIGKILL)
                 .map_err(|e| Error::Message(format!("kill failed: {e}"))),
             #[cfg(windows)]
-            Handle::Windows {
-                h_process,
-                container_name,
-                ..
-            } => {
+            Handle::Windows { h_process, .. } => {
                 unsafe {
-                    if !h_process.0.is_null() {
+                    if !h_process.is_null() {
                         let _ = TerminateProcess(*h_process, 1);
                         let _ = CloseHandle(*h_process);
-                        h_process.0 = std::ptr::null_mut();
-                        if let Some(name) = container_name.take() {
-                            let _ = delete_app_container_profile_by_name(&name);
-                        }
+                        *h_process = std::ptr::null_mut();
                     }
                 }
                 Ok(())
@@ -282,21 +263,6 @@ fn wait_status_code(status: &nix::sys::wait::WaitStatus) -> i32 {
         nix::sys::wait::WaitStatus::Signaled(_, sig, _) => 128 + (*sig as i32),
         _ => 1,
     }
-}
-
-/// Best-effort delete of a named AppContainer profile. Defined here so SandboxChild
-/// wait/kill can call it under cfg(windows) without leaking backend internals.
-/// The actual call is forwarded; on non-windows this is a no-op stub.
-#[cfg(windows)]
-fn delete_app_container_profile_by_name(name: &str) -> crate::error::Result<()> {
-    // Delegate to backend helper (defined in backends/windows.rs)
-    crate::backends::windows::delete_app_container_profile(name)
-}
-
-#[cfg(not(windows))]
-#[allow(dead_code)]
-fn delete_app_container_profile_by_name(_name: &str) -> crate::error::Result<()> {
-    Ok(())
 }
 
 /// A structured, side-effect-free dry run: the resolved layer stack (with
@@ -340,7 +306,7 @@ pub fn dry_run_in(spec: &Spec, ambient: &crate::context::Context) -> Result<DryR
     let policy_label = match std::env::consts::OS {
         "macos" => "generated Seatbelt policy (SBPL)",
         "linux" => "generated Landlock rules",
-        "windows" => "generated AppContainer policy",
+        "windows" => "generated hook-DLL path policy",
         _ => "generated policy",
     };
     Ok(DryRun {
@@ -365,6 +331,14 @@ pub fn ensure_not_nested() -> Result<()> {
     Ok(())
 }
 
+/// Copy [`Spec::win_hook_dll`] into the child env so the Windows backend can
+/// resolve it without a `Backend::spawn` signature change. Other platforms ignore it.
+fn apply_win_hook_dll(spec: &Spec, env: &mut HashMap<String, String>) {
+    if let Some(path) = &spec.win_hook_dll {
+        env.insert("ISOL8_WINHOOK_DLL".into(), path.clone());
+    }
+}
+
 /// Captured stdout/stderr from a confined run ([`run_captured`]).
 #[derive(Debug, Clone, Serialize)]
 pub struct CapturedRun {
@@ -383,6 +357,7 @@ pub fn run_captured(spec: Spec) -> Result<CapturedRun> {
     let mut eff = crate::resolve::effective_policy(&spec)?;
     crate::home::materialize(&eff.home)?;
     crate::resolve::confine_executable(&mut eff.profile, &mut eff.cmd)?;
+    apply_win_hook_dll(&spec, &mut eff.env);
     let output = crate::backends::select().output(&eff.profile, &eff.env, &eff.cmd)?;
     let code = output.status.code().unwrap_or(1);
     Ok(CapturedRun {
@@ -617,6 +592,12 @@ impl Sandbox {
         self
     }
 
+    /// Override the Windows hook DLL path (`Spec.win_hook_dll`). Ignored on other OS.
+    pub fn win_hook_dll(mut self, path: impl Into<String>) -> Self {
+        self.spec.win_hook_dll = Some(path.into());
+        self
+    }
+
     /// Set an explicit `K=V` env entry (repeatable; highest precedence).
     pub fn set_env(mut self, kv: impl Into<String>) -> Self {
         self.spec.set_env.push(kv.into());
@@ -636,6 +617,7 @@ impl Sandbox {
         let mut eff = crate::resolve::effective_policy(&spec)?;
         crate::home::materialize(&eff.home)?;
         crate::resolve::confine_executable(&mut eff.profile, &mut eff.cmd)?;
+        apply_win_hook_dll(&spec, &mut eff.env);
         crate::backends::select().spawn(&eff.profile, &eff.env, &eff.cmd)
     }
 

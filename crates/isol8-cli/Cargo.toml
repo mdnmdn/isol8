@@ -34,3 +34,8 @@ toml_edit = "0.22"
 name = "isol8-field-test"
 path = "src/bin/isol8-field-test.rs"
 required-features = ["field-test"]
+
+# Minimal read/write/spawn probe for Windows field tests (CreateFileW path).
+[[bin]]
+name = "isol8-probe"
+path = "src/bin/isol8-probe.rs"

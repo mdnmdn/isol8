@@ -505,9 +505,11 @@ State these to your users rather than discovering them in production.
   everything in `profile_paths` / `recipe_paths` are unaffected — carry the
   policy your sessions depend on there rather than assuming the directory is
   empty.
-- **Windows enforces no path grants.** The AppContainer backend isolates the
-  process; per-path ro/rw is documentary only. Do not present a Windows session
-  as path-confined ([windows-support.md](./windows-support.md)).
+- **Windows path grants are user-mode hooks, not kernel enforcement.** The
+  embedded `isol8-winhook.dll` denies-by-default via `CreateFile*` /
+  `NtCreateFile` detours and propagates to grandchildren — bypassable by
+  determined code. Do not present a Windows session as kernel-confined
+  ([windows-support.md](./windows-support.md)).
 - **Linux has no denial log.** Landlock emits nothing to scrape, so `--analyze`
   on Linux needs an NDJSON feed (`ISOL8_ANALYZE_FEED`); macOS scrapes the unified
   log. Denial observation is best-effort and non-exhaustive everywhere.

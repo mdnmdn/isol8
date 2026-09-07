@@ -412,25 +412,28 @@ and is treated as such.
 
 ## 7. Windows and in-process hosts
 
-**Path grants are not enforced on Windows today.** The AppContainer backend
-isolates the *process* (see [windows-support.md](./windows-support.md)); the
-per-path ro/rw model that Seatbelt and Landlock provide is **documentary only**.
-Do not present a Windows run as path-confined. `--show-policies` and the `--json`
-`DryRun` label those grants explicitly.
+**Path grants are enforced on Windows** via an embedded `isol8-winhook.dll`
+payload (see [windows-support.md](./windows-support.md)). `isol8-core`'s
+`build.rs` compiles the cdylib and embeds the bytes; at spawn the engine
+materializes the DLL under `%LOCALAPPDATA%\isol8\` and injects it into the
+child. **`cargo add isol8` is enough** — embedders do not ship a sidecar DLL.
+`default-features = false` still includes the payload because it lives in
+`isol8-core`.
 
-Enforcement will require an injected user-mode hook DLL (`isol8-winhook`), which
-does not exist yet. Requirements that shape the API you depend on today:
+Resolution order:
 
-- **The DLL is a build artifact, not a crate item.** `cargo add isol8` will not
-  produce it. Resolution order will be `Spec.win_hook_dll` → `ISOL8_WINHOOK_DLL`
-  → next to `current_exe()` → `%LOCALAPPDATA%\isol8\bin`. `Spec` is
-  `#[non_exhaustive]` so adding that field is not a break.
-- **No silent downgrade.** If the hook is required and cannot load, the run fails
-  with a typed error rather than running unconfined.
+1. `Spec.win_hook_dll` (builder: `Sandbox::win_hook_dll`)
+2. process environment `ISOL8_WINHOOK_DLL`
+3. sidecar next to `current_exe()` (`isol8_winhook.dll` / `isol8-winhook.dll`)
+4. embedded payload, content-addressed cache
+
+- **No silent downgrade.** If the hook cannot load, the run fails with a typed
+  error rather than running unconfined.
 - **Arch-matched.** An x64 host spawning an x86 or ARM64EC child needs the
   matching DLL; selection happens inside the backend after `CREATE_SUSPENDED`.
   No public API change — which holds only because `SandboxChild`'s constructors
-  are `pub(crate)`.
+  are `pub(crate)`. User-mode hooks are bypassable; do not present them as
+  kernel-grade confinement.
 
 **If your host is itself a DLL** (a .NET / Electron / C++ addin):
 

@@ -504,6 +504,8 @@ pub fn print_help() {
     println!("  isol8 @registry show <ID>                 # index entry for a recipe id");
     println!("  isol8 @diag [OPTIONS] <COMMAND> [ARGS]...   # why does it abort at launch?");
     println!("  isol8 @version                              # print version and exit");
+    #[cfg(windows)]
+    print_windows_quick_start();
     println!();
     println!("Cages (named selection units → profiles / home / dirs):");
     println!("  isol8 -c work <COMMAND>...                  # --cage / ISOL8_CAGE / config cage=");
@@ -518,6 +520,21 @@ pub fn print_help() {
     println!("  isol8 --analyze <COMMAND>...                # denials → recipe suggestions");
     println!("  isol8 --analyze --author <COMMAND>...       # macOS: Seatbelt trace (permissive)");
     println!("  ISOL8_ANALYZE_FEED=denials.ndjson isol8 --analyze …  # synthetic/offline feed");
+}
+
+#[cfg(windows)]
+fn print_windows_quick_start() {
+    println!();
+    println!("Windows quick start:");
+    println!("  isol8 @init --path .              # config in current directory");
+    println!("  isol8 cmd /c echo hi              # cwd is read-write by default");
+    println!("  isol8 --show-profiles             # layers for this OS");
+    println!("  isol8 --show-policies cmd /c dir  # preview policy before running");
+    if backends::path_enforcement_available() {
+        println!("  Path enforcement: ON (isol8-winhook.dll embedded)");
+    } else {
+        println!("  Path enforcement: OFF — rebuild isol8 for Windows");
+    }
 }
 
 // ===== CLI entry point and command glue (the `isol8` binary lives here) =====
@@ -1686,8 +1703,9 @@ fn profiles_list_cmd(list: ProfilesListArgs) -> Result<()> {
     prepare_opts(&mut opts)?;
     let registry = profile::LayerRegistry::load(opts.profile_paths.as_slice())?;
     if opts.json {
+        let ctx = isol8_core::filter::RunContext::host();
         let rows: Vec<_> = registry
-            .list()
+            .list_for_host(&ctx)
             .into_iter()
             .map(|(name, source)| {
                 let p = registry.get(&name);
@@ -1706,7 +1724,8 @@ fn profiles_list_cmd(list: ProfilesListArgs) -> Result<()> {
 }
 
 fn profiles_list(registry: profile::LayerRegistry, verbose: bool) -> Result<()> {
-    for (name, source) in registry.list() {
+    let ctx = isol8_core::filter::RunContext::host();
+    for (name, source) in registry.list_for_host(&ctx) {
         if verbose {
             if let Some(p) = registry.get(&name) {
                 let filt = p
@@ -1717,7 +1736,7 @@ fn profiles_list(registry: profile::LayerRegistry, verbose: bool) -> Result<()> 
                 println!(
                     "{name}\trequires={:?}\tfilter={filt}\tpolicies={}\tsource={source:?}",
                     p.requires,
-                    p.policies.len()
+                    registry.visible_policy_count(&name, &ctx)
                 );
             }
         } else {

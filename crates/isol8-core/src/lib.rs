@@ -10,7 +10,7 @@ pub mod analyze;
 /// macOS unified-log denial scrape for `--analyze`.
 #[cfg(target_os = "macos")]
 pub mod analyze_macos;
-/// Per-OS sandbox backends (Seatbelt / Landlock / AppContainer).
+/// Per-OS sandbox backends (Seatbelt / Landlock / hook DLL).
 pub mod backends;
 /// Named local isolation units (cages).
 pub mod cage;
@@ -50,3 +50,11 @@ pub use sandbox::{DryRun, Sandbox, SandboxChild, Spec};
 
 #[cfg(unix)]
 pub use pty::{open_pty, PtyChild, PtySize, SandboxStdio};
+
+/// Serialize tests that mutate process-global env (`PATH`, `SYSTEMROOT`,
+/// `ISOL8_CONFIG_PATH`, …). `std::env::set_var` is process-global, so two
+/// tests touching different vars still race when one reads what the other
+/// wrote (e.g. `resolve_executable` reading `PATH` while an `env` test
+/// overwrites it). Hold this lock in every test that reads or writes env.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

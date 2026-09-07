@@ -900,23 +900,31 @@ pub fn expand_path_prepend(
         return vec![expanded];
     }
     // Redirect through a planned symlink, remembering how to map results back.
+    // Separator-agnostic: compare via `Path::strip_prefix`, not `starts_with("{l}/")`.
+    let expanded_path = PathBuf::from(&expanded);
     let mut probe = expanded.clone();
-    let mut mapping: Option<(String, String)> = None;
+    let mut mapping: Option<(PathBuf, PathBuf)> = None;
     for (link, target) in planned_links {
-        let l = link.to_string_lossy();
-        if expanded.starts_with(&format!("{l}/")) {
-            let t = target.to_string_lossy().into_owned();
-            probe = expanded.replacen(l.as_ref(), &t, 1);
-            mapping = Some((t, l.into_owned()));
+        if let Ok(rel) = expanded_path.strip_prefix(link) {
+            probe = target.join(rel).to_string_lossy().into_owned();
+            mapping = Some((target.clone(), link.clone()));
             break;
         }
     }
     let path = PathBuf::from(&probe);
     let mut comps = path.components();
     // Anchor on the path root (or cwd for a relative entry), then walk segments.
+    // On Windows a drive root is `Prefix + RootDir` (`C:\`); keep both.
     let root = match comps.next() {
+        Some(std::path::Component::Prefix(p)) => {
+            let mut r = PathBuf::from(p.as_os_str());
+            if let Some(std::path::Component::RootDir) = comps.clone().next() {
+                comps.next();
+                r.push(std::path::MAIN_SEPARATOR.to_string());
+            }
+            r
+        }
         Some(std::path::Component::RootDir) => PathBuf::from("/"),
-        Some(std::path::Component::Prefix(p)) => PathBuf::from(p.as_os_str()),
         Some(other) => PathBuf::from(other.as_os_str()),
         None => return Vec::new(),
     };
@@ -928,7 +936,11 @@ pub fn expand_path_prepend(
         .map(|p| {
             let s = p.to_string_lossy().into_owned();
             match &mapping {
-                Some((target, link)) => s.replacen(target.as_str(), link.as_str(), 1),
+                Some((target, link)) => {
+                    let t = target.to_string_lossy();
+                    let l = link.to_string_lossy();
+                    s.replacen(t.as_ref(), l.as_ref(), 1)
+                }
                 None => s,
             }
         })
@@ -1062,13 +1074,22 @@ env = { NVM_DIR = "~/.nvm" }
 
     #[test]
     fn expand_env_tokens() {
+        // Compare as paths: separators are `\` on Windows.
         assert_eq!(
-            expand_env_value("~/.nvm", Path::new("/real"), Path::new("/eff")),
-            "/eff/.nvm"
+            PathBuf::from(expand_env_value(
+                "~/.nvm",
+                Path::new("/real"),
+                Path::new("/eff")
+            )),
+            Path::new("/eff").join(".nvm")
         );
         assert_eq!(
-            expand_env_value("#HOME/.nvm", Path::new("/real"), Path::new("/eff")),
-            "/real/.nvm"
+            PathBuf::from(expand_env_value(
+                "#HOME/.nvm",
+                Path::new("/real"),
+                Path::new("/eff")
+            )),
+            Path::new("/real").join(".nvm")
         );
     }
 
@@ -1155,24 +1176,34 @@ path_prepend = ["~/.pyenv/shims", "~/.pyenv/bin"]
 
     #[test]
     fn path_prepend_expands_tokens_and_globs() {
-        let base = std::env::temp_dir().join(format!("isol8-pp-{}", std::process::id()));
-        let versions = base.join(".nvm/versions/node");
-        std::fs::create_dir_all(versions.join("v18.20.0/bin")).unwrap();
-        std::fs::create_dir_all(versions.join("v22.1.0/bin")).unwrap();
+        let base = std::env::temp_dir().join(format!(
+            "isol8-pp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let versions = base.join(".nvm").join("versions").join("node");
+        std::fs::create_dir_all(versions.join("v18.20.0").join("bin")).unwrap();
+        std::fs::create_dir_all(versions.join("v22.1.0").join("bin")).unwrap();
         let eff = base.join("eff-home");
+
+        let as_paths =
+            |v: Vec<String>| -> Vec<PathBuf> { v.into_iter().map(PathBuf::from).collect() };
 
         // Literal entry: kept even though it does not exist yet (materialization
         // may still create it), and `~` resolves against the effective home.
         let lit = expand_path_prepend("~/.local/bin", &base, &eff, &[]);
-        assert_eq!(lit, vec![eff.join(".local/bin").to_string_lossy()]);
+        assert_eq!(as_paths(lit), vec![eff.join(".local").join("bin")]);
 
         // Glob entry: one segment, sorted, only real directories.
         let globbed = expand_path_prepend("#HOME/.nvm/versions/node/*/bin", &base, &eff, &[]);
         assert_eq!(
-            globbed,
+            as_paths(globbed),
             vec![
-                versions.join("v18.20.0/bin").to_string_lossy().into_owned(),
-                versions.join("v22.1.0/bin").to_string_lossy().into_owned(),
+                versions.join("v18.20.0").join("bin"),
+                versions.join("v22.1.0").join("bin"),
             ]
         );
 
@@ -1184,14 +1215,18 @@ path_prepend = ["~/.pyenv/shims", "~/.pyenv/bin"]
         let planned = vec![(eff.join(".nvm"), base.join(".nvm"))];
         let cold = expand_path_prepend("~/.nvm/versions/node/*/bin", &base, &eff, &planned);
         assert_eq!(
-            cold,
+            as_paths(cold),
             vec![
-                eff.join(".nvm/versions/node/v18.20.0/bin")
-                    .to_string_lossy()
-                    .into_owned(),
-                eff.join(".nvm/versions/node/v22.1.0/bin")
-                    .to_string_lossy()
-                    .into_owned(),
+                eff.join(".nvm")
+                    .join("versions")
+                    .join("node")
+                    .join("v18.20.0")
+                    .join("bin"),
+                eff.join(".nvm")
+                    .join("versions")
+                    .join("node")
+                    .join("v22.1.0")
+                    .join("bin"),
             ]
         );
         std::fs::remove_dir_all(&base).ok();

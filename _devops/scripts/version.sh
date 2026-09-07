@@ -45,20 +45,20 @@ update_cargo_version() {
   tmp="$(mktemp)"
   sed -E \
     -e "s/^version = .*/version = \"${version}\"/" \
-    -e "s/^(isol8-(core|registry|cli) = \{ path = \"[^\"]+\", version = )\"[^\"]+\"/\1\"${version}\"/" \
+    -e "s/^(isol8-(core|registry|cli|path-policy) = \{ path = \"[^\"]+\", version = )\"[^\"]+\"/\1\"${version}\"/" \
     "${CARGO_TOML}" >"${tmp}"
   mv "${tmp}" "${CARGO_TOML}"
 
   # Fail loudly rather than tagging a half-bumped workspace. Matches only the
-  # four pins that must move: `[workspace.package] version` and the three
+  # pins that must move: `[workspace.package] version` and the
   # `[workspace.dependencies]` entries. (`{ workspace = true }` lines under
   # `[dependencies]` carry no version and must NOT be counted.)
   local got
-  got="$(grep -cE "^(version = \"${version}\"\$|isol8-(core|registry|cli) = \{ path = \"[^\"]+\", version = \"${version}\" \}\$)" "${CARGO_TOML}" || true)"
-  if [[ "${got}" -ne 4 ]]; then
-    echo "error: expected 4 internal pins at ${version} in Cargo.toml, found ${got}" >&2
-    echo "       (1x [workspace.package] version + 3x [workspace.dependencies])" >&2
-    grep -nE '^(version = |isol8-(core|registry|cli) = \{ path)' "${CARGO_TOML}" >&2
+  got="$(grep -cE "^(version = \"${version}\"\$|isol8-(core|registry|cli|path-policy) = \{ path = \"[^\"]+\", version = \"${version}\" \}\$)" "${CARGO_TOML}" || true)"
+  if [[ "${got}" -ne 5 ]]; then
+    echo "error: expected 5 internal pins at ${version} in Cargo.toml, found ${got}" >&2
+    echo "       (1x [workspace.package] version + 4x [workspace.dependencies])" >&2
+    grep -nE '^(version = |isol8-(core|registry|cli|path-policy) = \{ path)' "${CARGO_TOML}" >&2
     exit 1
   fi
 }

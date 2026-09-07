@@ -5,7 +5,7 @@
 //! prefixes, and classifies missing home materialization.
 //!
 //! Phase 5: shared layer + NDJSON I/O. Phase 6: macOS unified-log scrape
-//! ([`crate::analyze_macos`]). Windows hook still deferred (R2 documentary).
+//! (`analyze_macos` on macOS). Windows hook enforces R2 via user-mode DLL.
 //! Linux shadow mode is Phase 10.
 //!
 //! See evo-repo §8.4 and `_docs/wip/multi-evo-plan.md` Phases 5–6.

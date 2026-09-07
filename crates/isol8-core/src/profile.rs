@@ -84,7 +84,7 @@ pub enum Capability {
     Pasteboard,
 }
 
-/// Windows AppContainer capabilities, mapped to well-known capability SIDs (§5).
+/// Windows capability SIDs (reserved for future network / WFP tiers).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WindowsCapability {
@@ -127,11 +127,11 @@ pub struct MacosExtra {
     pub raw: String,
 }
 
-/// Windows AppContainer capability grants. Applied only by the Windows backend.
+/// Windows capability grants (parsed for forward compatibility; not applied at spawn yet).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowsExtra {
-    /// AppContainer capability SIDs to grant the sandboxed process.
+    /// Capability SIDs declared by the profile (future Windows network tiers).
     #[serde(default)]
     pub capabilities: Vec<WindowsCapability>,
 }
@@ -231,7 +231,7 @@ pub struct Profile {
     /// macOS-only Seatbelt extras (capabilities + raw SBPL) for this layer.
     #[serde(default)]
     pub macos: Option<MacosExtra>,
-    /// Windows-only AppContainer extras for this layer.
+    /// Windows-only profile extras for this layer.
     #[serde(default)]
     pub windows: Option<WindowsExtra>,
 }
@@ -309,6 +309,86 @@ impl LayerRegistry {
             .collect();
         names.sort_by(|a, b| a.0.cmp(&b.0));
         names
+    }
+
+    /// Like [`list`](Self::list), but only layers applicable on the host OS/arch.
+    ///
+    /// A layer is hidden when its own `filter` excludes the host, when any `requires`
+    /// dependency is unavailable on the host, or when it is a policy-only shell with
+    /// no host-matching `[[policies]]` blocks.
+    pub fn list_for_host(&self, ctx: &RunContext) -> Vec<(String, LayerSource)> {
+        let mut memo = HashMap::new();
+        let mut names: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(name, _)| self.layer_visible_on_host(name, ctx, &mut memo))
+            .map(|(n, e)| (n.clone(), e.source.clone()))
+            .collect();
+        names.sort_by(|a, b| a.0.cmp(&b.0));
+        names
+    }
+
+    /// Count `[[policies]]` entries that would apply on the host (ignores executable filters).
+    pub fn visible_policy_count(&self, name: &str, ctx: &RunContext) -> usize {
+        let Some(layer) = self.get(name) else {
+            return 0;
+        };
+        layer
+            .policies
+            .iter()
+            .filter(|p| filter::filter_matches_host(&p.filter, ctx))
+            .count()
+    }
+
+    fn layer_visible_on_host(
+        &self,
+        name: &str,
+        ctx: &RunContext,
+        memo: &mut HashMap<String, bool>,
+    ) -> bool {
+        if let Some(&visible) = memo.get(name) {
+            return visible;
+        }
+        let Some(layer) = self.get(name) else {
+            memo.insert(name.to_string(), true);
+            return true;
+        };
+
+        let visible = self.layer_visible_on_host_inner(layer, ctx, memo);
+        memo.insert(name.to_string(), visible);
+        visible
+    }
+
+    fn layer_visible_on_host_inner(
+        &self,
+        layer: &Profile,
+        ctx: &RunContext,
+        memo: &mut HashMap<String, bool>,
+    ) -> bool {
+        if let Some(ref f) = layer.filter {
+            if !filter::filter_matches_host(f, ctx) {
+                return false;
+            }
+        }
+        for req in &layer.requires {
+            if !self.layer_visible_on_host(req, ctx, memo) {
+                return false;
+            }
+        }
+        if layer.paths.is_empty()
+            && layer.env.is_empty()
+            && layer.home_replace.is_none()
+            && layer.rewrite.is_none()
+            && layer.macos.is_none()
+            && layer.windows.is_none()
+            && !layer.policies.is_empty()
+        {
+            return layer
+                .policies
+                .iter()
+                .any(|p| filter::filter_matches_host(&p.filter, ctx));
+        }
+        true
     }
 }
 
@@ -1147,5 +1227,52 @@ paths = []
     fn all_builtin_profiles_parse() {
         let registry = LayerRegistry::load(&[]).unwrap();
         assert!(registry.list().len() >= 60);
+    }
+
+    #[test]
+    fn resolve_windows_system_alias_pulls_system_runtime() {
+        let registry = LayerRegistry::load(&[]).unwrap();
+        let all = registry.profiles();
+        let order = resolve_requires(&["windows-system".into()], &all).unwrap();
+        assert_eq!(order.len(), 3); // base → windows/system-runtime → windows-system
+        assert!(order[0].1.requires.is_empty());
+        assert_eq!(order[1].1.requires, vec!["base".to_string()]);
+        assert_eq!(
+            order[2].1.requires,
+            vec!["windows/system-runtime".to_string()]
+        );
+    }
+
+    #[test]
+    fn list_for_host_excludes_foreign_os_runtimes() {
+        let registry = LayerRegistry::load(&[]).unwrap();
+        let ctx = RunContext::host();
+        let names: Vec<String> = registry
+            .list_for_host(&ctx)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+
+        match ctx.os.as_str() {
+            "macos" => {
+                assert!(names.contains(&"macos/system-runtime".to_string()));
+                assert!(!names.contains(&"linux/system-runtime".to_string()));
+                assert!(!names.contains(&"windows/system-runtime".to_string()));
+            }
+            "linux" => {
+                assert!(names.contains(&"linux/system-runtime".to_string()));
+                assert!(!names.contains(&"macos/system-runtime".to_string()));
+                assert!(!names.contains(&"windows/system-runtime".to_string()));
+            }
+            "windows" => {
+                assert!(names.contains(&"windows/system-runtime".to_string()));
+                assert!(names.contains(&"windows-system".to_string()));
+                assert!(names.contains(&"base".to_string()));
+                assert!(!names.contains(&"macos/system-runtime".to_string()));
+                assert!(!names.contains(&"macos-system".to_string()));
+                assert!(!names.contains(&"linux/system-runtime".to_string()));
+            }
+            _ => {}
+        }
     }
 }

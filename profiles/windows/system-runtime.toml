@@ -1,5 +1,5 @@
 # windows/system-runtime
-# Windows system runtime essentials — system dirs, temp, and device paths.
+# Windows system runtime essentials — system dirs, user profile metadata, temp.
 # Uses %VAR% tokens that the Windows backend expands at runtime.
 
 filter = { os = ["windows"] }
@@ -12,16 +12,32 @@ paths = [
   { path = "%PROGRAMFILES%", access = "ro" },
   { path = "%PROGRAMFILES(X86)%", access = "ro" },
 
-  # Per-user ProgramData (roaming app data, read-only).
+  # Per-machine ProgramData (read-only).
   { path = "%ALLUSERSPROFILE%", access = "ro" },
 
   # Temp directories (read-write).
   { path = "%TEMP%", access = "rw" },
   { path = "%TMP%", access = "rw" },
 
-  # Root drive for path resolution.
+  # Root drive literal for path resolution (e.g. volume labels).
   { path = "%SYSTEMDRIVE%", access = "ro", match = "literal" },
-]
 
-[windows]
-capabilities = ["internet-client"]
+  # User profile trees — metadata for path resolution; higher layers grant specifics.
+  { path = "%USERPROFILE%", access = "metadata", match = "literal" },
+  { path = "%APPDATA%", access = "metadata" },
+  { path = "%LOCALAPPDATA%", access = "metadata" },
+  { path = "~/.config", access = "metadata", match = "literal" },
+  { path = "~/.cache", access = "metadata", match = "literal" },
+  { path = "~/.local", access = "metadata", match = "literal" },
+  { path = "~/.local/share", access = "metadata", match = "literal" },
+  { path = "~/.local/bin", access = "metadata", match = "literal" },
+  { path = "~/.ssh", access = "metadata", match = "literal" },
+
+  # Common read-only user config/cache roots (agents extend with rw in higher layers).
+  { path = "~/.config", access = "ro", match = "literal" },
+  { path = "~/.cache", access = "ro", match = "literal" },
+
+  # Network name resolution (read-only).
+  { path = "%SYSTEMROOT%\\System32\\drivers\\etc\\hosts", access = "ro", match = "literal" },
+  { path = "%SYSTEMROOT%\\System32\\drivers\\etc\\services", access = "ro", match = "literal" },
+]

@@ -13,9 +13,29 @@ pub mod linux;
 pub mod macos;
 #[cfg(windows)]
 pub mod windows;
+#[cfg(windows)]
+mod windows_hook;
+#[cfg(windows)]
+mod windows_policy;
+
+/// Whether Windows path grants are enforced (embedded hook DLL or sidecar).
+///
+/// On macOS/Linux this is always `false` — those backends enforce via Seatbelt
+/// / Landlock, not this helper.
+pub fn path_enforcement_available() -> bool {
+    #[cfg(windows)]
+    {
+        windows_hook::resolve_hook_dll().is_ok()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
 
 /// A platform sandbox implementation. Renders the merged `Profile` into the
-/// OS-native policy (Landlock ruleset, Seatbelt text, …) and execs the command.
+/// OS-native policy (Landlock ruleset, Seatbelt text, hook-DLL JSON, …) and execs
+/// the command.
 pub trait Backend {
     /// Apply the policy and launch `cmd`, returning a non-blocking handle.
     ///

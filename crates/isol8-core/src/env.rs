@@ -119,14 +119,10 @@ fn apply_windows_home_vars(env: &mut HashMap<String, String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // These tests mutate process-global env; serialize them to avoid races.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn home_applied_first_and_authoritative() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap();
         std::env::set_var("HOME", "/real/home");
         let profile = Profile::default();
         let env = build_minimal(&profile, Path::new("/scratch"), &[], &[]);
@@ -135,8 +131,9 @@ mod tests {
 
     #[test]
     fn allowlist_filters_secrets() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap();
         std::env::set_var("SECRET_TOKEN", "shh");
+        let prev_path = std::env::var_os("PATH");
         #[cfg(not(windows))]
         std::env::set_var("PATH", "/usr/bin");
         #[cfg(windows)]
@@ -145,18 +142,23 @@ mod tests {
         assert!(!env.contains_key("SECRET_TOKEN"));
         assert!(env.contains_key("PATH"));
         std::env::remove_var("SECRET_TOKEN");
+        match prev_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
     }
 
     #[test]
     fn sandbox_marker_is_set() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap();
         let env = build_minimal(&Profile::default(), Path::new("/scratch"), &[], &[]);
         assert_eq!(env[SANDBOX_MARKER], "1");
     }
 
     #[test]
     fn profile_env_is_default_no_override() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap();
+        let prev_path = std::env::var_os("PATH");
         std::env::set_var("PATH", "/host/path");
         let profile = Profile {
             env: HashMap::from([
@@ -170,12 +172,16 @@ mod tests {
         assert_eq!(env["PATH"], "/host/path");
         // a profile-only var is folded in.
         assert_eq!(env["CARGO_TERM_COLOR"], "always");
+        match prev_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
     }
 
     #[cfg(windows)]
     #[test]
     fn windows_home_vars_follow_effective_home() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap();
         let env = build_minimal(&Profile::default(), Path::new("D:\\scratch"), &[], &[]);
         assert_eq!(env["HOME"], "D:\\scratch");
         assert_eq!(env["USERPROFILE"], "D:\\scratch");
@@ -187,7 +193,7 @@ mod tests {
 
     #[test]
     fn cli_env_pass_and_set_override_profile() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap();
         std::env::set_var("FROM_HOST", "host-val");
         let profile = Profile {
             env: HashMap::from([("CARGO_TERM_COLOR".into(), "always".into())]),

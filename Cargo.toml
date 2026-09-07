@@ -1,17 +1,21 @@
 [workspace]
 resolver = "2"
 members = [
+  "crates/isol8-path-policy",
   "crates/isol8-core",
   "crates/isol8-registry",
   "crates/isol8-cli",
+  "crates/isol8-winhook",
   ".",
 ]
 default-members = ["."]
 
 # Internal crate versions live here ONLY — `_devops/scripts/version.sh bump`
-# rewrites `[workspace.package] version` and these three pins together, so a
+# rewrites `[workspace.package] version` and these pins together, so a
 # release can never ship a facade requiring a version its members don't have.
+# `isol8-winhook` is a Windows-only cdylib payload (not published).
 [workspace.dependencies]
+isol8-path-policy = { path = "crates/isol8-path-policy", version = "0.3.0" }
 isol8-core = { path = "crates/isol8-core", version = "0.3.0" }
 isol8-registry = { path = "crates/isol8-registry", version = "0.3.0" }
 isol8-cli = { path = "crates/isol8-cli", version = "0.3.0" }

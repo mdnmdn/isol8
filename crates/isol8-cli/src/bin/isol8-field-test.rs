@@ -3,10 +3,9 @@
 //! temp dir, runs a probe command through the real backend, and asserts the
 //! observed effect (see _docs/testing-strategies.md §3).
 //!
-//! macOS (Seatbelt) and Linux (Landlock) enforce all path scenarios. Windows runs
-//! the env scenarios; path scenarios SKIP (ACL-level enforcement deferred — see
-//! _docs/wip/windows-review.md). Linux-specific scenarios (10–16) compile in only
-//! on Linux.
+//! macOS (Seatbelt) and Linux (Landlock) enforce all path scenarios. Windows
+//! enforces path grants via the embedded hook DLL (`isol8-probe` required).
+//! Linux-specific scenarios (10–16) compile in only on Linux.
 //!
 //! Exit 0 if every scenario passes (skips allowed), 1 on any failure.
 //! Temp dirs removed on exit unless `--keep`.
@@ -68,8 +67,26 @@ fn system_base() -> Vec<PathGrant> {
                 grant("/proc", Ro, Subpath),
             ]
         }
+        "windows" => {
+            use Access::Ro;
+            use MatchKind::Subpath;
+            let sysroot = std::env::var("SYSTEMROOT").unwrap_or_else(|_| "C:\\Windows".into());
+            vec![grant(&sysroot, Ro, Subpath)]
+        }
         _ => vec![],
     }
+}
+
+fn probe_exe() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let name = if cfg!(windows) {
+        "isol8-probe.exe"
+    } else {
+        "isol8-probe"
+    };
+    let probe = dir.join(name);
+    probe.is_file().then_some(probe)
 }
 
 /// A profile with the platform system base + scenario-specific grants.
@@ -249,9 +266,15 @@ fn main() {
 
     let mut results = Vec::new();
 
-    // Path scenarios need ACL-level enforcement. macOS (Seatbelt) and Linux
-    // (Landlock) do it; Windows AppContainer would need ACL modification (deferred).
-    let path_enforced = matches!(platform, "macos" | "linux");
+    // Path scenarios: Seatbelt / Landlock / Windows hook DLL.
+    let path_enforced = match platform {
+        "macos" | "linux" => true,
+        "windows" => backends::path_enforcement_available() && probe_exe().is_some(),
+        _ => false,
+    };
+    if platform == "windows" && !path_enforced {
+        eprintln!("note: Windows path scenarios need isol8-probe (just build-windows-test-deps)");
+    }
 
     // ===== Cross-platform scenarios (1–9) =====
 
@@ -259,11 +282,24 @@ fn main() {
     {
         let p = profile_with(vec![]);
         let (code, note) = if path_enforced {
-            let c = run(
-                &p,
-                &home,
-                &["/bin/sh", "-c", &format!("/bin/cat {out}/secret.txt")],
-            );
+            let c = if platform == "windows" {
+                let probe = probe_exe().unwrap();
+                run(
+                    &p,
+                    &home,
+                    &[
+                        probe.to_str().unwrap(),
+                        "read",
+                        &format!("{out}\\secret.txt"),
+                    ],
+                )
+            } else {
+                run(
+                    &p,
+                    &home,
+                    &["/bin/sh", "-c", &format!("/bin/cat {out}/secret.txt")],
+                )
+            };
             (c, "")
         } else {
             (-1, "path enforcement not available on this platform")
@@ -278,11 +314,20 @@ fn main() {
     {
         let p = profile_with(vec![grant(ws, Access::Rw, MatchKind::Subpath)]);
         let (code, wrote, note) = if path_enforced {
-            let c = run(
-                &p,
-                &home,
-                &["/bin/sh", "-c", &format!("echo hi > {ws}/out.txt")],
-            );
+            let c = if platform == "windows" {
+                let probe = probe_exe().unwrap();
+                run(
+                    &p,
+                    &home,
+                    &[probe.to_str().unwrap(), "write", &format!("{ws}\\out.txt")],
+                )
+            } else {
+                run(
+                    &p,
+                    &home,
+                    &["/bin/sh", "-c", &format!("echo hi > {ws}/out.txt")],
+                )
+            };
             (c, workspace.join("out.txt").exists(), "")
         } else {
             (-1, false, "path enforcement not available on this platform")
@@ -301,11 +346,20 @@ fn main() {
     {
         let p = profile_with(vec![grant(sd, Access::Ro, MatchKind::Subpath)]);
         let (code, blocked, note) = if path_enforced {
-            let c = run(
-                &p,
-                &home,
-                &["/bin/sh", "-c", &format!("echo hi > {sd}/x.txt")],
-            );
+            let c = if platform == "windows" {
+                let probe = probe_exe().unwrap();
+                run(
+                    &p,
+                    &home,
+                    &[probe.to_str().unwrap(), "write", &format!("{sd}\\x.txt")],
+                )
+            } else {
+                run(
+                    &p,
+                    &home,
+                    &["/bin/sh", "-c", &format!("echo hi > {sd}/x.txt")],
+                )
+            };
             (c, !seed.join("x.txt").exists(), "")
         } else {
             (-1, false, "path enforcement not available on this platform")
@@ -324,11 +378,20 @@ fn main() {
     {
         let p = profile_with(vec![grant(sd, Access::Ro, MatchKind::Subpath)]);
         let (code, note) = if path_enforced {
-            let c = run(
-                &p,
-                &home,
-                &["/bin/sh", "-c", &format!("/bin/cat {sd}/data.txt")],
-            );
+            let c = if platform == "windows" {
+                let probe = probe_exe().unwrap();
+                run(
+                    &p,
+                    &home,
+                    &[probe.to_str().unwrap(), "read", &format!("{sd}\\data.txt")],
+                )
+            } else {
+                run(
+                    &p,
+                    &home,
+                    &["/bin/sh", "-c", &format!("/bin/cat {sd}/data.txt")],
+                )
+            };
             (c, "")
         } else {
             (-1, "path enforcement not available on this platform")
@@ -343,11 +406,24 @@ fn main() {
     {
         let p = profile_with(vec![]);
         let (code, note) = if path_enforced {
-            let c = run(
-                &p,
-                &home,
-                &["/bin/sh", "-c", &format!("/bin/ls {real_home}")],
-            );
+            let c = if platform == "windows" {
+                let probe = probe_exe().unwrap();
+                run(
+                    &p,
+                    &home,
+                    &[
+                        probe.to_str().unwrap(),
+                        "read",
+                        &format!("{real_home}\\ntuser.ini"),
+                    ],
+                )
+            } else {
+                run(
+                    &p,
+                    &home,
+                    &["/bin/sh", "-c", &format!("/bin/ls {real_home}")],
+                )
+            };
             (c, "")
         } else {
             (-1, "path enforcement not available on this platform")
@@ -422,12 +498,12 @@ fn main() {
         pass: None,
         note: "network tier not implemented",
     });
-    // 9. command rewrite (Unix) or AppContainer spawn smoke test (Windows).
+    // 9. command rewrite (Unix) or hook-DLL spawn smoke test (Windows).
     {
         let (code, injected_made, note) = if platform == "windows" {
             let p = profile_with(vec![]);
             let c = run(&p, &home, &["cmd.exe", "/c", "exit 0"]);
-            (c, c == 0, "AppContainer CreateProcessW smoke test")
+            (c, c == 0, "hook DLL CreateProcessW smoke test")
         } else if path_enforced {
             let mut p = profile_with(vec![grant(ws, Access::Rw, MatchKind::Subpath)]);
             let injected = format!("{ws}/injected.txt");
@@ -444,7 +520,7 @@ fn main() {
         };
         results.push(Outcome {
             name: if platform == "windows" {
-                "09 appcontainer-spawn"
+                "09 hook-spawn"
             } else {
                 "09 rewrite-injects-arg"
             },
@@ -635,8 +711,8 @@ fn main() {
 
         let (pass, note) = if !linked {
             (
-                Some(false),
-                "symlink create failed (Windows may need Developer Mode)",
+                None,
+                "symlink unavailable (Windows needs Developer Mode) — skipped",
             )
         } else if path_enforced {
             // Grant only the real target — does open(link) succeed?
@@ -646,7 +722,12 @@ fn main() {
                 grant(&target, Access::Ro, MatchKind::Subpath),
                 grant(eff.to_str().unwrap(), Access::Ro, MatchKind::Subpath),
             ]);
-            let code = run(&p, &eff, &["/bin/sh", "-c", &format!("/bin/cat {link}")]);
+            let code = if platform == "windows" {
+                let probe = probe_exe().unwrap();
+                run(&p, &eff, &[probe.to_str().unwrap(), "read", &link])
+            } else {
+                run(&p, &eff, &["/bin/sh", "-c", &format!("/bin/cat {link}")])
+            };
             (
                 Some(code == 0),
                 "grant on target + home; read through symlink",
@@ -687,11 +768,16 @@ fn main() {
             let link_file = eff.join(".tool/data.txt").to_string_lossy().into_owned();
             // Grant only the link path under effective home — NOT the real target.
             let p = profile_with(vec![grant(&link_root, Access::Ro, MatchKind::Subpath)]);
-            let code = run(
-                &p,
-                &eff,
-                &["/bin/sh", "-c", &format!("/bin/cat {link_file}")],
-            );
+            let code = if platform == "windows" {
+                let probe = probe_exe().unwrap();
+                run(&p, &eff, &[probe.to_str().unwrap(), "read", &link_file])
+            } else {
+                run(
+                    &p,
+                    &eff,
+                    &["/bin/sh", "-c", &format!("/bin/cat {link_file}")],
+                )
+            };
             // Record outcome as informational: pass if either works or cleanly denied.
             // We mark PASS when we got a definitive answer (code 0 or !=0); the note
             // records which, for multi-evo-plan resume notes.

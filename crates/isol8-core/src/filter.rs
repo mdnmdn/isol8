@@ -24,6 +24,15 @@ impl RunContext {
             arch: std::env::consts::ARCH.to_string(),
         }
     }
+
+    /// Host-only context for profile listing (no command executable).
+    pub fn host() -> Self {
+        Self {
+            cmd: Vec::new(),
+            os: map_os(std::env::consts::OS),
+            arch: std::env::consts::ARCH.to_string(),
+        }
+    }
 }
 
 fn map_os(os: &str) -> String {
@@ -41,6 +50,19 @@ pub fn executable_basename(cmd: &[String]) -> Option<String> {
     let path = Path::new(first);
     let stem = path.file_stem()?.to_str()?;
     Some(stem.to_string())
+}
+
+/// True when OS/arch constraints in `filter` match `ctx` (ignores `executables`).
+///
+/// Used when listing layers for the current host — executable auto-selection does not apply.
+pub fn filter_matches_host(filter: &ProfileFilter, ctx: &RunContext) -> bool {
+    if !filter.os.is_empty() && !filter.os.iter().any(|o| o == &ctx.os) {
+        return false;
+    }
+    if !filter.arch.is_empty() && !filter.arch.iter().any(|a| a == &ctx.arch) {
+        return false;
+    }
+    true
 }
 
 /// True when every non-empty constraint in `filter` matches `ctx`.
@@ -158,6 +180,21 @@ mod tests {
             executable_basename(&["/usr/bin/claude".into()]),
             Some("claude".into())
         );
+    }
+
+    #[test]
+    fn filter_matches_host_ignores_executables() {
+        let f = ProfileFilter {
+            os: vec!["windows".into()],
+            executables: vec!["claude".into()],
+            ..Default::default()
+        };
+        let ctx = RunContext {
+            cmd: vec![],
+            os: "windows".into(),
+            arch: "x86_64".into(),
+        };
+        assert!(filter_matches_host(&f, &ctx));
     }
 
     #[test]

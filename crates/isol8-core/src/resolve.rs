@@ -356,8 +356,10 @@ fn resolve_executable(name: &str) -> Result<PathBuf> {
         } else {
             std::env::current_dir()?.join(p)
         };
-        if is_executable_file(&abs) {
-            return Ok(abs);
+        for cand in executable_candidates(&abs) {
+            if is_executable_file(&cand) {
+                return Ok(cand);
+            }
         }
         return Err(Error::CommandNotFound(name.to_string()));
     }
@@ -366,12 +368,70 @@ fn resolve_executable(name: &str) -> Result<PathBuf> {
         if dir.as_os_str().is_empty() {
             continue;
         }
-        let cand = dir.join(name);
-        if is_executable_file(&cand) {
-            return Ok(cand);
+        for variant in executable_name_variants(name) {
+            let cand = dir.join(&variant);
+            if is_executable_file(&cand) {
+                return Ok(cand);
+            }
         }
     }
     Err(Error::CommandNotFound(name.to_string()))
+}
+
+/// Bare command names to try in each `PATH` directory (includes `PATHEXT` on Windows).
+fn executable_name_variants(name: &str) -> Vec<String> {
+    #[cfg(not(windows))]
+    {
+        vec![name.to_string()]
+    }
+    #[cfg(windows)]
+    {
+        executable_candidates(Path::new(name))
+            .into_iter()
+            .filter_map(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
+            .collect()
+    }
+}
+
+/// Path candidates for a command that already looks like a filesystem path.
+fn executable_candidates(path: &Path) -> Vec<PathBuf> {
+    #[cfg(not(windows))]
+    {
+        vec![path.to_path_buf()]
+    }
+    #[cfg(windows)]
+    {
+        if path.extension().is_some() {
+            return vec![path.to_path_buf()];
+        }
+        let parent = path.parent().unwrap_or_else(|| Path::new(""));
+        let file_name = path
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut out = vec![path.to_path_buf()];
+        for ext in windows_pathext_suffixes() {
+            out.push(parent.join(format!("{file_name}{ext}")));
+        }
+        out
+    }
+}
+
+#[cfg(windows)]
+fn windows_pathext_suffixes() -> Vec<String> {
+    std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            if s.starts_with('.') {
+                s.to_ascii_lowercase()
+            } else {
+                format!(".{}", s.to_ascii_lowercase())
+            }
+        })
+        .collect()
 }
 
 /// True if `p` exists, is a regular file (symlinks followed), and is executable.
@@ -389,10 +449,12 @@ fn is_executable_file(p: &Path) -> bool {
     match std::fs::metadata(p) {
         Ok(m) => {
             m.is_file()
-                && p.extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| matches!(e, "exe" | "bat" | "cmd" | "ps1"))
-                    .unwrap_or(false)
+                && p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                    matches!(
+                        e.to_ascii_lowercase().as_str(),
+                        "exe" | "com" | "bat" | "cmd" | "ps1"
+                    )
+                })
         }
         Err(_) => false,
     }
@@ -424,7 +486,28 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn resolves_bare_cmd_via_pathext() {
+        // `PATH` is mutated by `env` tests; serialize so we never read a
+        // half-overwritten value (`/host/path` would hide `cmd.exe`).
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
+        let system_root = std::env::var("SYSTEMROOT").unwrap_or_else(|_| "C:\\Windows".into());
+        let expected = PathBuf::from(format!("{system_root}\\System32\\cmd.exe"));
+        if is_executable_file(&expected) {
+            let resolved = resolve_executable("cmd").unwrap();
+            assert_eq!(
+                resolved.file_name().and_then(|n| n.to_str()),
+                expected.file_name().and_then(|n| n.to_str())
+            );
+            assert!(
+                resolved.ends_with("System32\\cmd.exe") || resolved.ends_with("system32\\cmd.exe")
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn windows_absolute_path_with_backslashes() {
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let system_root = std::env::var("SYSTEMROOT").unwrap_or_else(|_| "C:\\Windows".into());
         let cmd = format!("{system_root}\\System32\\cmd.exe");
         if is_executable_file(Path::new(&cmd)) {

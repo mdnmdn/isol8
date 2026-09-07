@@ -24,6 +24,7 @@ anyhow = "1"
 thiserror = "1"
 serde_json = "1"
 serde_yaml = { version = "0.9", optional = true }
+isol8-path-policy = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
@@ -31,10 +32,13 @@ nix = { version = "0.31", features = ["sched", "mount", "fs", "user", "signal"] 
 enumflags2 = "0.7"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = [
+windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Security",
-  "Win32_Security_Isolation",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_System_SystemServices",
   "Win32_System_Threading",
 ] }
 

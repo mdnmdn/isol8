@@ -11,8 +11,21 @@ default:
 build:
     cargo build
 
+# Build the Windows hook DLL (also built automatically by isol8-core's build.rs on Windows).
+build-winhook:
+    cargo build -p isol8-winhook
+
+# Windows field-test helpers (probe binary; hook DLL is embedded in isol8-core).
+build-windows-test-deps:
+    cargo build -p isol8-cli --bin isol8-probe
+    cargo build -p isol8-cli --features field-test --bin isol8-field-test
+
 # Release build.
 release:
+    cargo build --release
+
+# Release build on Windows (hook DLL embedded).
+release-windows:
     cargo build --release
 
 # Run the binary (pass args: `just run --show-policies -- echo hi`).
@@ -26,6 +39,10 @@ test:
 # Field tests: real sandbox checks on an ad-hoc env/profile (see _docs/testing-strategies.md).
 # Pass --keep to retain the temp workspace.
 field-test *args:
+    cargo run -p isol8-cli --features field-test --bin isol8-field-test -- {{args}}
+
+# Windows field tests with probe binary (hook DLL is embedded).
+field-test-windows *args: build-windows-test-deps
     cargo run -p isol8-cli --features field-test --bin isol8-field-test -- {{args}}
 
 
@@ -49,7 +66,7 @@ fmt:
 # Lint: format check + clippy with warnings denied (the CI lint gate).
 lint:
     cargo fmt --all -- --check
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --exclude isol8-winhook --all-targets --all-features -- -D warnings
     # Public API docs are the embedding contract — broken links fail the lint.
     RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
 
@@ -61,7 +78,7 @@ check:
 
 # Full pre-commit gate: everything CI runs.
 ci: fmt-check
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --exclude isol8-winhook --all-targets --all-features -- -D warnings
     # The advertised embedding tiers must actually compile (_docs/embedding.md §1).
     cargo check -p isol8 --no-default-features
     cargo check -p isol8 --no-default-features --features registry

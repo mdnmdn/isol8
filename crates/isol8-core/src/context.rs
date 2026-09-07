@@ -276,12 +276,17 @@ mod tests {
     use super::*;
 
     fn test_ctx() -> Context {
+        // Absolute, host-native fixtures: drive-prefixed on Windows so
+        // `absolute_path` round-trips instead of re-rooting them.
+        let config_dir = absolute_path(&std::env::temp_dir().join("isol8-ctx-cfg"));
+        let managed_root = config_dir.join("homes");
+        let real_home = absolute_path(&std::env::temp_dir().join("isol8-ctx-home"));
         Context {
-            real_home: PathBuf::from("/Users/alice"),
-            cwd: PathBuf::from("/tmp"),
+            real_home,
+            cwd: std::env::temp_dir(),
             platform: Platform::current(),
-            config_dir: PathBuf::from("/cfg/isol8"),
-            managed_root: PathBuf::from("/cfg/isol8/homes"),
+            config_dir,
+            managed_root,
         }
     }
 
@@ -290,14 +295,17 @@ mod tests {
         let ctx = test_ctx();
         let d = ctx.describe_home("@managed/work").unwrap();
         assert!(d.contains("@managed/work"), "{d}");
-        assert!(d.contains("/cfg/isol8/homes/work"), "{d}");
+        assert!(
+            d.contains(&ctx.managed_root.join("work").display().to_string()),
+            "{d}"
+        );
         assert!(
             d.contains("created on first run") || d.contains("exists"),
             "{d}"
         );
 
         let i = ctx.describe_home("inherit").unwrap();
-        assert!(i.contains("/Users/alice"), "{i}");
+        assert!(i.contains(&ctx.real_home.display().to_string()), "{i}");
         assert!(ctx.describe_home("ephemeral").unwrap().contains("temp"));
     }
 
@@ -306,13 +314,13 @@ mod tests {
         let ctx = test_ctx();
         assert_eq!(
             ctx.expand_at("@/profiles").unwrap(),
-            PathBuf::from("/cfg/isol8/profiles")
+            ctx.config_dir.join("profiles")
         );
         assert_eq!(
             ctx.expand_at("@profiles").unwrap(),
-            PathBuf::from("/cfg/isol8/profiles")
+            ctx.config_dir.join("profiles")
         );
-        assert_eq!(ctx.expand_at("@").unwrap(), PathBuf::from("/cfg/isol8"));
+        assert_eq!(ctx.expand_at("@").unwrap(), ctx.config_dir);
         assert!(ctx.expand_at("/abs").is_none());
         assert!(ctx.expand_at("rel").is_none());
     }
@@ -331,16 +339,14 @@ mod tests {
         let ctx = test_ctx();
         assert_eq!(
             ctx.managed_home("work").unwrap(),
-            PathBuf::from("/cfg/isol8/homes/work")
+            ctx.managed_root.join("work")
         );
     }
 
     #[test]
     fn managed_root_for_config_is_homes_subdir() {
-        assert_eq!(
-            managed_root_for_config(Path::new("/data/config")),
-            PathBuf::from("/data/config/homes")
-        );
+        let base = absolute_path(&std::env::temp_dir().join("isol8-ctx-data"));
+        assert_eq!(managed_root_for_config(&base), base.join("homes"));
     }
 
     #[test]
@@ -349,9 +355,14 @@ mod tests {
         let abs = absolute_path(Path::new("./foo/../bar"));
         assert!(abs.is_absolute(), "{abs:?}");
         assert_eq!(abs, normalize_lexically(&cwd.join("bar")));
-        assert_eq!(
-            absolute_path(Path::new("/already/abs")),
-            PathBuf::from("/already/abs")
-        );
+        // `/already/abs` is absolute on unix; on Windows it is rooted without
+        // a drive prefix, so it absolutizes against the cwd drive.
+        let rooted = absolute_path(Path::new("/already/abs"));
+        assert!(rooted.is_absolute(), "{rooted:?}");
+        #[cfg(not(windows))]
+        assert_eq!(rooted, PathBuf::from("/already/abs"));
+        // A host-absolute path round-trips.
+        let abs_host = absolute_path(&std::env::temp_dir().join("already-abs"));
+        assert_eq!(absolute_path(&abs_host), abs_host);
     }
 }

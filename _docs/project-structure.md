@@ -67,7 +67,9 @@ isol8/                              # Cargo workspace (resolver = "2")
 │   │           ├── mod.rs          # Backend trait, select()
 │   │           ├── linux.rs        # Landlock + no_new_privs
 │   │           ├── macos.rs        # Seatbelt + sandbox-exec
-│   │           └── windows.rs      # AppContainer draft
+│   │           ├── windows.rs      # hook DLL spawn
+│   │           ├── windows_hook.rs # materialize + inject
+│   │           └── windows_policy.rs
 │   ├── isol8-registry/             # offline registries (depends on isol8-core only)
 │   │   ├── Cargo.toml
 │   │   └── src/lib.rs              # ProfileSource, DirSource, lockfile, cache, trust
@@ -471,8 +473,9 @@ UX — see `caps.rs` below.
 - `backends/macos.rs` — `MacosBackend`. Generate Seatbelt policy text
   (`(deny default)`, `(allow file-read* (subpath …))`, `(allow file-write* …)`,
   metadata via `file-read-metadata`) and invoke `/usr/bin/sandbox-exec -p <policy>`.
-- `backends/windows.rs` — `WindowsBackend` (Phase 5). AppContainer SID + per-object
-  ACLs, Job Objects for limits, env block construction. Stubbed until then.
+- `backends/windows.rs` — `WindowsBackend`. Embedded hook DLL injects
+  `isol8-winhook.dll` and enforces path grants (see `_docs/windows-support.md`).
+  Job Objects / WFP network tiers are Phase 5+.
 
 ### `net/` — R5 (Phase 3)
 

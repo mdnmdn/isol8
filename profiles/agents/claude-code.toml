@@ -26,3 +26,12 @@ paths = [
   { path = "/Applications/Visual Studio Code.app", access = "metadata" },
   { path = "/Applications/Visual Studio Code - Insiders.app", access = "metadata" },
 ]
+
+[[policies]]
+filter = { os = ["windows"] }
+paths = [
+  { path = "%APPDATA%\\Claude\\claude_desktop_config.json", access = "ro", match = "literal" },
+  { path = "%LOCALAPPDATA%\\Programs", access = "metadata", match = "literal" },
+  { path = "%LOCALAPPDATA%\\Programs\\Microsoft VS Code", access = "metadata" },
+  { path = "%LOCALAPPDATA%\\Programs\\Microsoft VS Code Insiders", access = "metadata" },
+]

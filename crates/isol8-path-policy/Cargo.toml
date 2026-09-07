@@ -1,0 +1,12 @@
+[package]
+name = "isol8-path-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Portable path-grant policy matching for isol8 (Windows hook DLL + engine)"
+authors.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

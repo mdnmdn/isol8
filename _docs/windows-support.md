@@ -1,368 +1,201 @@
-# isol8 — Windows AppContainer Backend
+# isol8 — Windows Backend (Hook DLL)
 
-> **Status: Tier 1 implemented (review feedback addressed).**
-> The backend now uses the documented `CreateAppContainerProfile` + `Derive...` +
-> `SECURITY_CAPABILITIES` + `CreateProcessW(EXTENDED_STARTUPINFO_PRESENT | ...)` path.
-> Env block, command quoting, and attr list alignment fixed. Path grants remain
-> documentary (inherent to AppContainer model). Full enforcement verified on a
-> real Windows host is still recommended before production use.
+> **Status: working on real Windows hosts.**
+> Path grants are **enforced** via an embedded `isol8-winhook.dll` payload:
+> `isol8-core`'s `build.rs` builds the cdylib and embeds it with `include_bytes!`;
+> at runtime the engine materializes it to `%LOCALAPPDATA%\isol8\` and injects it
+> into each confined child. This works for both the `isol8` CLI and library
+> embedders (`isol8` / `isol8-core`).
 
 ---
 
 ## 1. Overview
 
-The Windows backend is the Phase 5 target for `isol8`. The goal is to provide
-AppContainer-based process isolation on Windows, mapping isol8's profile model
-(deny-by-default, composable path grants, Windows capability SIDs) onto the
-`SECURITY_CAPABILITIES` / `CreateProcessW` launch path that Windows offers for
-unprivileged AppContainer creation.
+The Windows backend maps isol8's profile model onto user-mode file API hooking:
 
-This document covers:
+| Property | Behavior |
+|----------|----------|
+| **R2 path grants** | **Enforced** (deny-first `CreateFile*` / `NtCreateFile` hooks) |
+| **Process isolation** | Normal user token + suspended `CreateProcessW` + DLL inject |
+| **Library embedding** | Hook DLL ships inside `isol8-core` — no separate artifact required |
 
-- What the backend currently does (and does not do).
-- What the correct, intended implementation looks like.
-- The concrete blockers identified by code review that must be fixed before the
-  backend can enforce anything.
-- The limitations inherent to the AppContainer model vs. macOS Seatbelt and Linux Landlock.
-- The Phase 5 roadmap.
+**Primary targets remain macOS and Linux.** Windows R2 enforcement is pragmatic
+user-mode hooking — bypassable by determined code, not kernel-grade.
 
-**Primary targets remain macOS and Linux.** The Windows backend is provided for
-completeness and future development; it is not part of the Phase 1 MVP.
-
-### Analyze mode (`--analyze`)
-
-Phase 5 of the evolution track lands the **shared** denial → recipe-suggestion
-engine (`isol8-core` `analyze.rs`) and `isol8 --analyze`. On Windows, **live path denials
-are not produced yet**: profile path grants remain documentary, and there is no
-shipping `isol8-winhook` writing denials.
-
-| Input | Status |
-|-------|--------|
-| NDJSON feed (`ISOL8_ANALYZE_FEED` or `$TMP/isol8-analyze-<pid>.ndjson`) | Supported — exercises the shared layer |
-| Live user-mode path hook | **Not wired** — parent already looks for the per-pid NDJSON path |
-
-When a hook lands, surface that **user-mode hooks are non-exhaustive**. Do not
-treat Windows `--analyze` as proof of filesystem confinement until R2 or an
-equivalent observer exists.
+AppContainer was removed: without the hook DLL it could not enforce per-path `ro`/`rw`,
+so it added complexity without matching isol8's core contract.
 
 ---
 
-## 2. Intended architecture
+## 2. Architecture
 
-### 2.1 Three-tier model
+### 2.1 Profile model mapping
 
-The Windows backend is designed around three escalating tiers of isolation. Only Tier 1
-is in scope for Phase 5 MVP; Tiers 2–3 are deferred.
+- **Deny-by-default path grants (R2)** — merged grants serialize to JSON
+  (`ISOL8_PATH_POLICY` env var) and are enforced in the child via MinHook detours.
+- **`paths`** — expanded via `expand_windows_vars()` (`%SYSTEMROOT%`, `%TEMP%`, …);
+  converted to `PathPolicy` JSON by `windows_policy.rs`.
+- **`[windows].capabilities`** — parsed for forward compatibility (network tiers);
+  not applied at spawn today.
+- **HOME** — `env.rs` sets `HOME` first; `USERPROFILE`, `APPDATA`, etc. follow the
+  effective scratch home.
 
-| Tier | Mechanism | Admin required | Intended enforcement |
-|------|-----------|----------------|----------------------|
-| 1 | AppContainer + `SECURITY_CAPABILITIES` | No | Deny-by-default FS, IPC, device isolation |
-| 2 | Elevated AppContainer (`ShellExecuteExW("runas")`) | Yes | Tier 1, retried via UAC when needed |
-| 3 | Job Object + Low IL + Restricted Token | No | Process tree teardown, write-restriction, privilege reduction |
+### 2.2 Launch flow
 
-### 2.2 Profile model mapping
+1. Merge profile → `PathPolicy` JSON.
+2. Resolve hook DLL: `Spec.win_hook_dll` → `ISOL8_WINHOOK_DLL` → sidecar beside the
+   host binary (dev override) → embedded payload.
+3. `CreateProcessW` with `CREATE_SUSPENDED` and inline `ISOL8_PATH_POLICY` env.
+4. Remote `LoadLibraryW` inject `isol8-winhook.dll`.
+5. Resume thread; child hooks file APIs before main runs.
+6. **Child propagation:** the hook DLL detours `kernelbase!CreateProcessInternalW`
+   and `CreateProcessA`. Every descendant is created suspended, receives the same hook
+   DLL via remote `LoadLibraryW`, then resumes. Policy travels via inherited
+   `ISOL8_PATH_POLICY` env. Injection failure is fail-closed.
 
-isol8's profile model maps onto Windows concepts as follows:
+### 2.3 Embedded DLL payload (CLI and embedders)
 
-- **Deny-by-default process confinement** — AppContainer provides a low-privilege
-  token that loses access to most user-level resources (named pipes, COM objects,
-  most registry hives) unless explicitly granted.
-- **`[windows].capabilities`** — each `WindowsCapability` variant maps to a
-  well-known capability SID (`S-1-15-3-{N}`) in the
-  `SECURITY_APP_PACKAGE_AUTHORITY` authority (value 15). The capability SID list
-  is passed as `SECURITY_CAPABILITIES.Capabilities` to the kernel when launching
-  the process.
-- **`paths`** — profile path grants on Windows are documentary placeholders. The
-  AppContainer model does not provide the same per-path ro/rw API as Seatbelt
-  or Landlock; see section 5 for the full limitation.
-- **`%VAR%` tokens** — Windows-specific path grants use `%SYSTEMROOT%`,
-  `%TEMP%`, etc., expanded at runtime by `expand_windows_vars()`.
+`crates/isol8-core/build.rs` (Windows targets only):
 
-### 2.3 Intended launch flow (the correct design)
+1. Builds `isol8-winhook` for the active `TARGET`/`PROFILE` (or honors
+   `ISOL8_WINHOOK_DLL` at **build** time).
+2. Copies `isol8_winhook.dll` into `OUT_DIR` and generates `winhook_embedded.rs`.
+3. `windows_hook.rs` materializes bytes to
+   `%LOCALAPPDATA%\isol8\isol8-winhook-<hash>.dll` on first use (content-addressed cache).
 
-The `_docs/wip/windows-support.md` design document specifies this flow:
+Consumers depending on `isol8` or `isol8-core` get path enforcement without copying a
+DLL beside their binary. Local hook development can still override by placing
+`isol8_winhook.dll` next to the host binary, setting `Spec.win_hook_dll`, or exporting
+`ISOL8_WINHOOK_DLL` at runtime.
 
-1. Generate a unique container name (e.g. `Isol8.<hex>`).
-2. Allocate capability SIDs (`S-1-15-3-{N}`) via `AllocateAndInitializeSid`.
-3. Call `CreateAppContainerProfile` to register the named container (no admin needed).
-4. Derive the package SID via `DeriveAppContainerSidFromAppContainerName`.
-5. Build a `SECURITY_CAPABILITIES` struct with the package SID and capability SIDs.
-6. Launch the command via `CreateProcessW` with `EXTENDED_STARTUPINFO_PRESENT` and
-   a process attribute list containing `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`.
-7. Wait for exit (`WaitForSingleObject` + `GetExitCodeProcess`).
-8. Clean up: free SIDs, call `DeleteAppContainerProfile`.
-
-This is the only supported, non-privileged API surface for launching a real
-AppContainer (lowbox) process. The package SID established in step 4 is what
-Windows uses to scope named objects, ACLs, and capability checks.
+Missing required DLL is **fail-closed** — no silent downgrade to an unconfined run.
 
 ---
 
-## 3. Current implementation
-
-### 3.1 What `crates/isol8-core/src/backends/windows.rs` does
-
-The backend follows the documented Tier 1 flow:
-
-1. `CreateAppContainerProfile` — registers a unique `Isol8.<hex>` container (no admin).
-2. On `ERROR_ALREADY_EXISTS`, `DeriveAppContainerSidFromAppContainerName` reuses the SID.
-3. `SECURITY_CAPABILITIES` + `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` on a
-   `STARTUPINFOEXW` attribute list.
-4. `CreateProcessW` with `EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT`,
-   an explicit UTF-16 env block, MSDN-compatible command-line quoting, and
-   `lpApplicationName` when `argv[0]` is absolute.
-5. Non-blocking `SandboxChild::windows` handle; `wait`/`kill` delete the profile.
-
-Review blockers #1–#4 from `_docs/wip/windows-review.md` are addressed in the
-current tree. **Full enforcement on a real Windows host is still recommended**
-before production use (run `cargo run --features field-test --bin isol8-field-test`).
-
-### 3.2 Capability SIDs (12 supported)
-
-The RID mapping in `CAPABILITY_RIDS` is correct and complete for the twelve
-well-known capability SIDs. These will be usable once the launch path is rewritten.
-
-| `WindowsCapability` variant | RID | SID |
-|-----------------------------|-----|-----|
-| `InternetClient` | 1 | `S-1-15-3-1` |
-| `InternetClientServer` | 2 | `S-1-15-3-2` |
-| `PrivateNetworkClientServer` | 3 | `S-1-15-3-3` |
-| `PicturesLibrary` | 4 | `S-1-15-3-4` |
-| `VideosLibrary` | 5 | `S-1-15-3-5` |
-| `MusicLibrary` | 6 | `S-1-15-3-6` |
-| `DocumentsLibrary` | 7 | `S-1-15-3-7` |
-| `EnterpriseAuthentication` | 8 | `S-1-15-3-8` |
-| `SharedUserCertificates` | 9 | `S-1-15-3-9` |
-| `RemovableStorage` | 10 | `S-1-15-3-10` |
-| `Appointments` | 11 | `S-1-15-3-11` |
-| `Contacts` | 12 | `S-1-15-3-12` |
-
-### 3.3 `%VAR%` path expansion
-
-`home::expand_windows_vars()` (called from `expand_grant` during merge) expands
-twelve well-known `%VAR%` tokens against the host environment at runtime:
-
-```
-%SYSTEMROOT%    %USERPROFILE%   %LOCALAPPDATA%  %APPDATA%
-%PROGRAMFILES%  %PROGRAMFILES(X86)%  %ALLUSERSPROFILE%
-%SYSTEMDRIVE%   %TEMP%          %TMP%
-%HOMEDRIVE%     %HOMEPATH%
-```
-
-This expansion is called in `render_policy` for display, and must also be called
-in any enforcement path once path grants become real.
-
-### 3.4 System profile (`windows/system-runtime`)
-
-`profiles/windows/system-runtime.toml` declares a system profile that requires
-`base` and grants read-only access to `%SYSTEMROOT%`, `%PROGRAMFILES%`,
-`%PROGRAMFILES(X86)%`, `%ALLUSERSPROFILE%`, `%SYSTEMDRIVE%`, and read-write
-access to `%TEMP%` and `%TMP%`. It also requests the `internet-client` capability.
-Like all path grants on Windows today, these are **documentary only** (see section 5).
-
-### 3.5 `render_policy`
-
-`WindowsBackend::render_policy` prints the capability list and path grants,
-explicitly labelling the grants as "documentary". This text is what `--show-policies`
-and `--dry-run` display on Windows. The label is intentional and must remain.
-
-### 3.6 `SandboxChild` (non-blocking)
-
-`Backend::spawn` returns a live `SandboxChild::windows` handle immediately.
-`wait()` blocks on `WaitForSingleObject`, reads the exit code, closes the process
-handle, and best-effort calls `DeleteAppContainerProfile` for the invocation's
-container name.
-
----
-
-## 4. Resolved review items (commit `867b056` → current)
-
-The static review in `_docs/wip/windows-review.md` identified four implementation
-bugs in the original draft. Status in the current tree:
-
-| Item | Status |
-|------|--------|
-| Wrong launch path (`SetTokenInformation` / `CreateProcessAsUserW`) | **Fixed** — `CreateAppContainerProfile` + `SECURITY_CAPABILITIES` + `CreateProcessW` |
-| Missing `CREATE_UNICODE_ENVIRONMENT` / empty env block | **Fixed** |
-| Misaligned `TOKEN_GROUPS` hand-pack | **Fixed** — `Vec<SID_AND_ATTRIBUTES>` passed to `SECURITY_CAPABILITIES` |
-| Naive `cmd.join(" ")` quoting | **Fixed** — `quote_arg` / `build_quoted_command_line` |
-
----
-
-## 5. PATH CONFINEMENT IS NOT ENFORCED ON WINDOWS
-
-> **R2 (per-path ro/rw control) is not met on Windows.** This is the headline
-> limitation of the AppContainer model and must be clearly communicated to users.
-
-Profile `paths` entries are **documentary only** on Windows. `render_policy`
-labels them as such. The AppContainer model provides coarse deny-by-default
-isolation (UWP-style: named pipes, COM, registry, device access are blocked) but
-does **not** provide a per-path filesystem allow/deny API analogous to macOS
-Seatbelt's `(allow file-read* (subpath …))` or Linux Landlock's `PathBeneath`
-ruleset.
-
-What AppContainer does control by default:
-
-- `%ProgramFiles%` and `%SystemRoot%` are readable via the
-  `ALL RESTRICTED APPLICATION PACKAGES` ACE on those directories.
-- The package's own data folder (`%LocalAppData%\Packages\<name>\AC`) is
-  readable and writable.
-- Everything else (user profile, documents, drives) is inaccessible by default
-  unless the user adds an `icacls` ACE for the package SID — which requires
-  knowing the SID ahead of time and modifies the host filesystem, defeating
-  the policy-only approach.
-
-**Consequence:** on Windows, `isol8` confines the *process* (network, IPC, device
-access) but does not confine the *filesystem view*. A confined process can still
-read and write any path the host user can access. The `--show-policies` and
-`--dry-run` output on Windows must make this clear.
-
-Possible future paths for R2 on Windows:
-
-1. Grant the package SID explicit ACEs on profile-declared paths at launch time
-   (using `SetNamedSecurityInfo` or similar), then revoke on exit. Invasive:
-   modifies the host ACL.
-2. Declare Windows path confinement out of scope for Phase 5 and document the
-   limitation explicitly. Isolation remains at the process/network/IPC level.
-
-The decision on which path to take is deferred to Phase 5 planning.
-
----
-
-## 5a. Embedding on Windows
-
-Today, an embedder targeting Windows gets **process isolation only**
-(AppContainer, still a draft — see §3–4) and **no path enforcement**. R2
-(per-path ro/rw) is documentary on this backend: `Spec.add_dirs_rw` /
-`add_dirs_ro` and profile `paths` are recorded and shown by `--show-policies` /
-`DryRun`, but nothing stops the confined process from reading or writing
-outside them. Do not present a Windows run as path-confined to your own users.
-
-Enforcement will require an injected user-mode hook DLL (`isol8-winhook`),
-which does not exist yet — it is a **build artifact, not a crate item**;
-`cargo add isol8` will not produce it. When it lands, resolution order is:
-`Spec.win_hook_dll` → `ISOL8_WINHOOK_DLL` → next to `current_exe()` →
-`%LOCALAPPDATA%\isol8\bin`, arch-matched to the child process (an x64 host
-spawning an x86 or ARM64EC child needs the matching DLL). If the hook is
-required and cannot load, the run must fail with a typed error — **no silent
-downgrade** to an unconfined run.
-
-Full requirements and the in-process-host implications:
-[`embedding.md`](./embedding.md) §7.
-
----
-
-## 6. Limitations vs. macOS and Linux
-
-| Property | macOS (Seatbelt) | Linux (Landlock) | Windows (AppContainer) |
-|----------|-----------------|-----------------|------------------------|
-| Per-path ro/rw control | Yes (`subpath`, `literal`) | Yes (`PathBeneath`) | No — documentary only |
-| Deny-by-default fs | Yes | Yes | Partial (UWP objects only) |
-| Process confinement | Yes | Yes (no-new-privs) | Intended (not yet working) |
-| Network isolation | Via profile capabilities | Via netns (Phase 3) | Via capability SIDs (not yet) |
-| HOME replacement | Full (Seatbelt allows rebinding) | Full (bind mount) | Best-effort (`USERPROFILE` vs `HOME`) |
-| Ancestor metadata | Emitted in SBPL | Not needed (Landlock handles subtrees) | Not applicable |
-| No-admin required | Yes | Yes | Yes (Tier 1) |
-| Verified enforcing | Yes | Yes (WSL2 kernel 5.15) | No — not yet |
-
-### HOME convention
-
-Unix tools running on Windows under WSL or native Cygwin/MSYS2 environments
-expect `HOME`; native Win32 tools expect `USERPROFILE`. The `env.rs` allowlist
-includes `HOME`, but `home::real_home()` on Windows tries `USERPROFILE` → `HOME`
-→ `C:\` as the fallback chain. Verify that tools invoked under isol8 receive
-whichever variable they expect; this may require passing both through the env
-sanitization step.
-
-### Transient vs. named package SID
-
-The current code generates a unique transient SID from `{pid, nanos, counter}`.
-Named AppContainers (via `CreateAppContainerProfile`) get a stable, registered SID
-associated with the container name, which gives them access to the named-object
-namespace boundary that profiled AppContainers receive. Transient SIDs lack this
-boundary; note this limitation in documentation and consider whether it matters for
-the agent use case.
-
----
-
-## 7. Roadmap (Phase 5)
-
-The following work items are needed to bring the Windows backend to enforcing status.
-Items are listed in dependency order.
-
-1. **Rewrite launch to `SECURITY_CAPABILITIES` flow (BLOCKER 1).**
-   Replace the `OpenProcessToken` / `DuplicateTokenEx` / `SetTokenInformation`
-   approach with the documented `CreateAppContainerProfile` →
-   `DeriveAppContainerSidFromAppContainerName` → `SECURITY_CAPABILITIES` →
-   `CreateProcessW` + `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` flow. Nothing
-   else matters until this is correct.
-
-2. **Fix env block (`CREATE_UNICODE_ENVIRONMENT`) and empty-map case (BLOCKER 2).**
-
-3. **Fix `TOKEN_GROUPS` alignment (BLOCKER 3).** Use a proper `#[repr(C)]`
-   layout or explicit alignment offset for the capabilities buffer.
-
-4. **Add command-line quoting.** Implement MSDN-compatible per-argument quoting
-   before concatenating the command line.
-
-5. **Decide the R2 story.** Either implement ACL-based path grants against the
-   package SID (invasive, modifies host ACLs), or formally document that
-   filesystem path confinement is out of scope on Windows for Phase 5. Update
-   `--show-policies` output to state this unambiguously, not just as a label.
-
-6. **Make `SandboxChild` non-blocking.** The current implementation blocks
-   synchronously. Return a real non-blocking handle so the `Backend::spawn`
-   contract is honoured on Windows.
-
-7. **Trim unused Cargo features.** `Win32_Security_Isolation`,
-   `Win32_System_JobObjects`, `Win32_UI_Shell` etc. belong with Tiers 2–3.
-   Remove them until those tiers land.
-
-8. **Add Windows field-test scenarios.** Mirror the `just field-test` suite
-   (scenarios 1–9 cross-platform) for Windows once Tier 1 enforces correctly.
-   Verify on a real Windows host; the macOS/Linux CI host cannot compile or
-   execute `cfg(windows)` code.
-
-9. **Tier 2 — Elevated retry (Phase 5+).** Detect non-admin + interactive
-   context; retry via `ShellExecuteExW("runas")` for cases requiring UAC.
-   Controlled by `--elevate` / `--no-elevate` CLI flags.
-
-10. **Tier 3 — Job Object + Low IL (Phase 5+).** `CreateJobObject` +
-    `KILL_ON_JOB_CLOSE` + `CreateRestrictedToken` +
-    `SetTokenInformation(TokenIntegrityLevel)` for process tree teardown and
-    write-restriction. Resource limits via `JOB_OBJECT_LIMIT_*`. WFP for
-    network enforcement.
-
----
-
-## 8. Files
+## 3. Components
 
 | Path | Role |
 |------|------|
-| `crates/isol8-core/src/backends/windows.rs` | Backend implementation (current draft) |
-| `profiles/windows/system-runtime.toml` | System profile (`%SYSTEMROOT%`, `%TEMP%`, etc.) |
-| `_docs/wip/windows-support.md` | Original design doc (intended correct flow) |
-| `_docs/wip/windows-review.md` | Code review: concrete blockers and gaps |
-| `AGENTS.md` | Windows backend bullet and Phase 5 roadmap entry |
-| `_docs/project-structure.md` | Module blueprint (§3 `backends/windows.rs` entry) |
+| `crates/isol8-core/build.rs` | Embed profiles, recipes, and winhook DLL bytes (Windows) |
+| `crates/isol8-core/src/backends/windows.rs` | Hook-mode `CreateProcessW` launch |
+| `crates/isol8-core/src/backends/windows_hook.rs` | DLL resolve/materialize + `LoadLibraryW` inject |
+| `crates/isol8-core/src/backends/windows_policy.rs` | `Profile` → `PathPolicy` JSON |
+| `crates/isol8-path-policy` | Deny-first path matching (shared with hook DLL) |
+| `crates/isol8-winhook` | `cdylib`: MinHook on `CreateFileA/W`, `FindFirstFileA/W`, `NtCreateFile` |
+| `crates/isol8-cli/src/bin/isol8-probe.rs` | Minimal read/write probe for field tests |
+| `profiles/windows/system-runtime.toml` | System paths for Windows agents |
 
 ---
 
-## 9. Building and testing
+## 4. Path confinement (R2)
 
-```sh
-# Cross-compile from macOS/Linux (requires the MSVC target):
-cargo build --target x86_64-pc-windows-msvc
+- Profile path grants serialize to JSON and pass via `ISOL8_PATH_POLICY`.
+- The hook DLL denies-by-default and allows only matching grants (longest-prefix wins).
+- `ro` grants allow read opens; `rw` allows read and write.
+- Known gaps: 8.3 short names, junctions/symlinks, memory-mapped I/O, `CopyFile`,
+  registry, direct `NtCreateUserProcess` (bypassing hooked `CreateProcess*`).
+  `..` path components are fail-closed (denied).
 
-# The Windows backend is cfg(windows)-gated and does not compile natively
-# on macOS/Linux. Cross-compilation verifies syntax and type-checking only
-# — it cannot run or enforce.
+---
 
-# On a real Windows host:
-cargo build
-cargo test
-isol8 --show-policies cmd /c echo hi   # inspect the documentary policy output
+## 5. Limitations vs. macOS and Linux
+
+| Property | macOS (Seatbelt) | Linux (Landlock) | Windows (hook) |
+|----------|-----------------|-----------------|----------------|
+| Per-path ro/rw control | Yes | Yes | Yes (user-mode hook) |
+| Deny-by-default fs | Yes | Yes | Yes |
+| Bypass resistance | Strong | Strong | Weak (hook bypassable) |
+| Process confinement | Yes | Yes (no-new-privs) | Partial (normal user token) |
+| Network isolation | Via capabilities | Via netns (Phase 3) | Not yet (Phase 3 / WFP) |
+| HOME replacement | Full | Full (bind mount) | Best-effort (env vars) |
+| No-admin required | Yes | Yes | Yes |
+
+---
+
+## 6. Embedding
+
+```rust
+let code = isol8::Sandbox::new()
+    .profile("base")
+    .profile("windows/system-runtime")
+    .grant_rw(r"C:\my\project")
+    .run(["cmd", "/c", "echo hi"])?;
 ```
 
-Run `cargo run --features field-test --bin isol8-field-test` on a Windows host to verify AppContainer
-spawn and env scenarios. Path scenarios remain skipped (R2 documentary only).
+No extra feature flag. `default-features = false` still embeds the hook DLL because
+the payload lives in `isol8-core`, which the facade always depends on.
+
+Optional override for hosts that ship their own copy:
+
+```rust
+let mut spec = isol8::Spec::new(["cmd", "/c", "dir"]);
+spec.win_hook_dll = Some(r"C:\opt\isol8-winhook.dll".into());
+```
+
+---
+
+## 7. Roadmap
+
+**Done:**
+
+- Hook DLL path enforcement
+- Embedded DLL payload for CLI and library consumers
+- Field tests scenarios 01–07 and 09 hook spawn
+- GitHub Release packages `isol8.exe` (DLL embedded)
+
+**Planned (Phase 5+):**
+
+- Job Object + Low IL + Restricted Token
+- WFP network tiers
+- Registry hooks
+
+---
+
+## 8. Build
+
+```bash
+# Windows: build isol8 (isol8-core build.rs builds + embeds isol8-winhook automatically)
+cargo build
+
+# Optional: iterate on the hook crate alone
+cargo build -p isol8-winhook
+
+# Field tests (probe binary)
+just field-test-windows
+
+# Override embedded DLL at build time
+ISOL8_WINHOOK_DLL=/path/to/isol8_winhook.dll cargo build
+```
+
+Requires a Windows C toolchain (MSVC or MinGW-w64 `gcc`) so `isol8-winhook` can
+compile. See `_docs/testing-strategies.md`.
+
+Home `link` materialization needs symlink privilege — enable **Developer Mode**
+or run elevated; without it link tests skip (unit) / report `SKIP` (field
+scenarios 18–19).
+
+### Release packaging
+
+| Artifact | Contents |
+|----------|----------|
+| `windows-x64.zip` | `isol8.exe` (hook DLL embedded) |
+| `linux-x64.zip` | `isol8` |
+| `macos-arm64.zip` | `isol8` |
+
+---
+
+## 9. Dry-run output
+
+`--show-policies` / `DryRun` report path grants as **ENFORCED via hook DLL**
+and show the materialized DLL path when resolved.
+
+---
+
+## Related docs
+
+| Doc | Contents |
+|-----|----------|
+| [`embedding.md`](embedding.md) §7 | Embedder contract for the hook payload |
+| [`inbox/windows-policy-approach.md`](inbox/windows-policy-approach.md) | Historical hybrid design notes |
+| [`testing-strategies.md`](testing-strategies.md) | Field test matrix |
+| [`profile-model.md`](profile-model.md) | Profile TOML, `[[policies]]`, merge rules |

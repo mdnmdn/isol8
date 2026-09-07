@@ -7,7 +7,7 @@ for AI coding agents and CLI tools. It wraps an arbitrary command so it runs
 unprivileged with a deny-by-default, restricted view of the filesystem, a sanitized environment, a
 replaceable `$HOME`, and (later) tiered network confinement. It generalizes the
 macOS `sandbox-exec` (Seatbelt) model to Linux (Landlock + namespaces), WSL2, and
-Windows (deferred). **Primary targets: Linux and macOS.**
+Windows (embedded hook DLL for R2). **Primary targets: Linux and macOS.**
 
 Primary inspiration: the macOS **Agent Safehouse** project
 (<https://github.com/eugene1g/agent-safehouse>), whose composable profile model
@@ -36,9 +36,11 @@ Full specification: [`_docs/project-description.md`](_docs/project-description.m
 
 | Crate | Path | Role |
 |-------|------|------|
-| `isol8-core` | `crates/isol8-core/` | Engine: profiles, resolve, home, backends, detect, analyze, recipe, cage, plan, context, env, filter, error, sandbox, pty |
+| `isol8-core` | `crates/isol8-core/` | Engine: profiles, resolve, home, backends, detect, analyze, recipe, cage, plan, context, env, filter, error, sandbox, pty. Embeds `isol8-winhook.dll` on Windows. |
 | `isol8-registry` | `crates/isol8-registry/` | Offline registries: `ProfileSource`, `DirSource`, lockfile, cache, trust (depends on core only) |
 | `isol8-cli` | `crates/isol8-cli/` | CLI library: `cli/*`, wizard (depends on core + registry) |
+| `isol8-path-policy` | `crates/isol8-path-policy/` | Deny-first path matching shared by the engine and the Windows hook DLL |
+| `isol8-winhook` | `crates/isol8-winhook/` | Windows `cdylib` payload (not published); built by `isol8-core` `build.rs` and embedded |
 | `isol8` (facade) | repo root | Re-exports the above; binary shim. Features: `default = ["cli", "registry"]` |
 
 - Root features: `registry` → dep `isol8-registry`; `cli` → registry + `isol8-cli`;
@@ -207,11 +209,14 @@ and full Windows path enforcement remain deferred.
   overrides, `isol8 @init`. Defaults: `base` + OS system-runtime; `auto_profiles`
   selects agent layers by executable name (e.g. `claude` → `agents/claude-code`).
   Optional `[registries.*]` for offline recipe sources.
-- **Windows backend (Phase 1)** — token-based AppContainer (`DuplicateTokenEx` +
-  `SetTokenInformation(TokenAppContainerSid, TokenCapabilities)` +
-  `CreateProcessAsUserW`). Supports 12 capability SIDs. Tiers 2–3 deferred.
-  `%VAR%` expansion for path grants. System profile with `%SYSTEMROOT%`,
-  `%TEMP%` etc. embedded. Compiles on `x86_64-pc-windows-msvc`.
+- **Windows backend (Phase 1)** — embedded hook DLL: `isol8-core` `build.rs` builds
+  `isol8-winhook` and embeds it (`include_bytes!`); at runtime the engine materializes
+  the DLL and injects it via suspended `CreateProcessW` + `LoadLibraryW`, enforcing
+  path grants via `CreateFile*` / `NtCreateFile` hooks (`crates/isol8-winhook`,
+  `crates/isol8-path-policy`). Embedders depending on `isol8` (or `isol8-core`) get
+  the payload without a sidecar DLL. Override: `Spec.win_hook_dll` → `ISOL8_WINHOOK_DLL`
+  → sidecar next to `current_exe()`. `%VAR%` expansion; `windows/system-runtime`
+  profile. AppContainer removed (could not enforce R2). See `_docs/windows-support.md`.
 - **CLI** — direct `isol8 CMD` (no `run`); `--show-policies` (layer stack tagged
   explicit/auto/required) / `--show-profiles`; `--analyze` / `--author`; `--no-seed`,
   `--env-pass`, `--set-env`; meta commands `@init`, `@profiles-list`, `@profiles-show`,
@@ -225,8 +230,9 @@ and full Windows path enforcement remain deferred.
 - **@diag** — `isol8 @diag <cmd>` (macOS) diagnoses launch aborts (SIGABRT/exit 134) by
   delta-debugging the effective Seatbelt policy down to the missing path grant
   (`isol8-cli` `cli/diag.rs`).
-- **profiles** — Safehouse port embedded; `macos-system` / `linux-system` are backward-compat
-  aliases. `isol8 echo hi` works without `--profile` when config defaults apply.
+- **profiles** — Safehouse port embedded; `macos-system` / `linux-system` /
+  `windows-system` are backward-compat aliases. `isol8 echo hi` works without `--profile`
+  when config defaults apply.
   Every `agents/*` layer `requires` `integrations/macos-gui` — agent TUIs need
   HIToolbox, input methods and the window server even with no window on screen;
   that layer now carries `filter = { os = ["macos"] }` so it is inert elsewhere.
@@ -240,14 +246,14 @@ and full Windows path enforcement remain deferred.
   file declaring `kind = "recipe"` that fails to parse now warns instead of vanishing.
 - **tests** — unit + integration (`cargo test --workspace`, including
   `tests/{registry,wizard,recipe,cage,analyze}.rs`) and a real-sandbox field-test
-  binary (`just field-test`, scenarios 1–9 cross-platform, 10–16 Linux-specific,
-  17–19 home materialization, 20–22 pty seam on unix) prove the OS enforces the
-  policy.
+  binary (`just field-test` / `just field-test-windows`, scenarios 1–9 cross-platform,
+  10–16 Linux-specific, 17–19 home materialization, 20–22 pty seam on unix) prove the
+  OS enforces the policy. Windows path scenarios require `isol8-probe`
+  (`just build-windows-test-deps`); `tests/windows_spawn.rs` covers ro-seed read.
 
-**Not yet:** `--env-file`, resource limits, and network tiers are unstarted. The
-Windows (AppContainer) backend is an early draft — it compiles and wires through
-the pipeline but does not yet enforce path grants (see `_docs/wip/windows-review.md`).
-HTTP registries, registry signing, full TUI / `@cage clone` / `@cage fix`.
+**Not yet:** `--env-file`, resource limits, and network tiers are unstarted.
+Windows hook enforcement is bypassable user-mode policy. HTTP registries, registry
+signing, full TUI / `@cage clone` / `@cage fix`.
 Known gaps: macOS `git`/`cargo` need extra developer-tool paths beyond `macos-system`.
 
 **Evolution track (post-0.2.x):** Phases **0–9 done** — cages, Context/HomePlan, recipes,
@@ -261,8 +267,8 @@ Win path hook —
 ## Roadmap
 
 1. **Phase 1** — Core path + HOME MVP (Linux Landlock + macOS Seatbelt + Windows
-   AppContainer T1); profile parser/merger; minimal env sanitization; opt-in scratch
-   home. **(macOS + Linux MVP done; Windows draft)**
+   embedded hook DLL); profile parser/merger; minimal env sanitization; opt-in scratch
+   home. **(macOS + Linux + Windows path/env working)**
 2. **Phase 2** — Full R3 env features, resource limits, `--dry-run` policy dump,
    WSL2 testing, docs. *(partially done: dry-run, env-pass/set-env, WSL2 verified)*
 3. **Phase 3** — Network tiers N1→N2 (pasta)→N3 (helper + nftables); DNS/IPv6/MITM.
@@ -323,6 +329,8 @@ cargo build                 # facade + default features (cli + registry)
 cargo test --workspace      # all workspace members
 just ci                     # fmt + clippy --workspace + build + test
 just field-test             # real-sandbox field tests (macOS / Linux)
+just field-test-windows     # Windows: probe + embedded hook DLL field tests
+just build-winhook          # Windows: build isol8-winhook cdylib (also run by isol8-core build.rs)
 
 # run with defaults (base + macos/system-runtime) and auto agent profiles:
 isol8 --add-dirs-rw /my/project -- /bin/sh -c 'echo hi'
@@ -338,8 +346,8 @@ isol8 -c work -- echo hi
 
 ### Release
 
-Versions are **lockstep** across the workspace. All four internal pins live in the
-root `Cargo.toml` — `[workspace.package] version` plus the three
+Versions are **lockstep** across the workspace. Internal pins live in the
+root `Cargo.toml` — `[workspace.package] version` plus the
 `[workspace.dependencies]` entries; member crates carry `version.workspace = true`
 and depend on siblings with `{ workspace = true }`.
 

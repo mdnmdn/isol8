@@ -1,0 +1,6 @@
+# windows-system — backward-compat alias for windows/system-runtime.
+#
+# Older invocations may use `--profile windows-system`. This thin layer preserves
+# that name while delegating to the namespaced Windows runtime.
+
+requires = ["windows/system-runtime"]

@@ -2,7 +2,7 @@
 //!
 //! | Crate | Role |
 //! |-------|------|
-//! | [`isol8_core`] | Profiles, resolve, home plan, backends, detect/analyze |
+//! | [`isol8_core`] | Profiles, resolve, home plan, backends (Seatbelt / Landlock / hook DLL), detect/analyze |
 //! | [`isol8_registry`] | Offline registries, lockfile, trust (feature `registry`) |
 //! | [`isol8_cli`] | Cage wizard API (feature `wizard`); clap CLI (feature `cli`) |
 //!

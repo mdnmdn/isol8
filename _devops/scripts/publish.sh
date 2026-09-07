@@ -21,9 +21,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
-# Dependency order: isol8-core → isol8-registry → isol8-cli → isol8 (facade).
-# isol8-registry depends on core; isol8-cli on both; the facade on all three.
-CRATES=(isol8-core isol8-registry isol8-cli isol8)
+# Dependency order: isol8-path-policy → isol8-core → isol8-registry → isol8-cli → isol8.
+# isol8-core depends on path-policy; isol8-winhook is a Windows-only payload (not published).
+CRATES=(isol8-path-policy isol8-core isol8-registry isol8-cli isol8)
 
 DRY_RUN=0
 if [[ "${1:-}" == "--dry-run" ]]; then

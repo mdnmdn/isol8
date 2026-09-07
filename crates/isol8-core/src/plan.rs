@@ -487,34 +487,35 @@ mod tests {
             managed.to_path_buf()
         };
         Context {
-            real_home: real.to_path_buf(),
-            cwd: PathBuf::from("/tmp"),
+            real_home: crate::context::absolute_path(real),
+            cwd: std::env::temp_dir(),
             platform: Platform::Linux,
-            config_dir,
-            managed_root: managed.to_path_buf(),
+            config_dir: crate::context::absolute_path(&config_dir),
+            managed_root: crate::context::absolute_path(managed),
         }
     }
 
     #[test]
     fn expand_tokens_home_and_managed() {
-        let c = ctx(Path::new("/real"), Path::new("/data/homes"));
-        let eff = Path::new("/eff");
+        let tmp = tmp();
+        let real = tmp.join("real");
+        let managed = tmp.join("data-homes").join("homes");
+        let eff = tmp.join("eff");
+        let c = ctx(&real, &managed);
         assert_eq!(
-            expand_tokens("#HOME/.nvm", &c, eff).unwrap(),
-            PathBuf::from("/real/.nvm")
+            expand_tokens("#HOME/.nvm", &c, &eff).unwrap(),
+            c.real_home.join(".nvm")
+        );
+        assert_eq!(expand_tokens("~/.nvm", &c, &eff).unwrap(), eff.join(".nvm"));
+        assert_eq!(
+            expand_tokens("@managed/work", &c, &eff).unwrap(),
+            c.managed_root.join("work")
         );
         assert_eq!(
-            expand_tokens("~/.nvm", &c, eff).unwrap(),
-            PathBuf::from("/eff/.nvm")
+            expand_tokens("@/profiles", &c, &eff).unwrap(),
+            c.config_dir.join("profiles")
         );
-        assert_eq!(
-            expand_tokens("@managed/work", &c, eff).unwrap(),
-            PathBuf::from("/data/homes/work")
-        );
-        assert_eq!(
-            expand_tokens("@/profiles", &c, eff).unwrap(),
-            PathBuf::from("/data/profiles")
-        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -555,7 +556,17 @@ mod tests {
         ];
         let plan = HomePlan::compute(&specs, &c, &eff).unwrap();
         assert_eq!(plan.apply_count(), 2);
-        plan.apply().unwrap();
+        if let Err(e) = plan.apply() {
+            // Windows without symlink privilege (os error 1314): seed-ro is the
+            // portable assertion; skip the link part instead of failing.
+            let msg = e.to_string();
+            if cfg!(windows) && (msg.contains("1314") || msg.contains("privilege is not held")) {
+                assert_eq!(std::fs::read(eff.join(".gitconfig")).unwrap(), b"cfg");
+                let _ = std::fs::remove_dir_all(&root);
+                return;
+            }
+            panic!("plan apply: {e}");
+        }
 
         assert_eq!(std::fs::read(eff.join(".gitconfig")).unwrap(), b"cfg");
         assert!(std::fs::symlink_metadata(eff.join(".nvm"))
